@@ -1,8 +1,12 @@
 export type GameModeState = 'TITLE_MENU' | 'PLAYING';
 
-export type DifficultyLevel = 'BOOTSTRAP' | 'STANDARD' | 'TYCOON_SANDBOX';
+export type DifficultyLevel = 'BOOTSTRAP' | 'STANDARD' | 'TYCOON_SANDBOX' | 'SANDBOX';
 
 export type TechEra = 'CPU' | 'GPU' | 'FPGA' | 'ASIC';
+
+export type HardwareGen = 1 | 2 | 3 | 4;
+
+export type HardwareConditionTier = 'NEW' | 'REFURBISHED' | 'USED' | 'DAMAGED';
 
 export type CoinSymbol = 'BTC' | 'LTC' | 'DOGE' | 'XMR' | 'ETH' | 'XCH';
 
@@ -37,6 +41,7 @@ export interface ChassisPart {
   name: string;
   category: 'chassis';
   era: TechEra;
+  generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
   maxGpus: number;
@@ -55,6 +60,7 @@ export interface ComputePart {
   category: 'compute';
   kind: 'CPU' | 'FPGA' | 'ASIC';
   era: TechEra;
+  generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
   watts: number;
@@ -69,6 +75,7 @@ export interface GpuPart {
   name: string;
   category: 'gpu';
   era: TechEra;
+  generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
   watts: number;
@@ -83,6 +90,7 @@ export interface StoragePart {
   name: string;
   category: 'storage';
   era: TechEra;
+  generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
   ramGb: number;
@@ -98,6 +106,7 @@ export interface PsuPart {
   name: string;
   category: 'psu';
   era: TechEra;
+  generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
   maxWatts: number;
@@ -111,6 +120,7 @@ export interface CoolingPart {
   name: string;
   category: 'cooling';
   era: TechEra;
+  generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
   coolingPowerC: number;
@@ -124,6 +134,7 @@ export interface OsPart {
   name: string;
   category: 'os';
   era: TechEra;
+  generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
   hashrateMultiplier: number;
@@ -154,6 +165,11 @@ export interface MiningRig extends RigBuildConfig {
   gridY: number;
   temperatureC: number;
   healthPct: number;
+  conditionTier: HardwareConditionTier;
+  ageSteps: number;
+  failureCount: number;
+  isUsedPurchase?: boolean;
+  purchasePriceUsd?: number;
   status:
     | 'MINING'
     | 'THROTTLED'
@@ -161,7 +177,8 @@ export interface MiningRig extends RigBuildConfig {
     | 'UNDERPOWERED'
     | 'PAUSED'
     | 'COIN_LOCKED'
-    | 'NEEDS_REPAIR';
+    | 'NEEDS_REPAIR'
+    | 'FAILED';
   poolMode: PoolMode;
   firmwareProfile: FirmwareProfile;
   pasteStepsRemaining: number;
@@ -175,7 +192,13 @@ export interface MiningRig extends RigBuildConfig {
   createdStep: number;
 }
 
-export type RoomCoolingType = 'cool_unit_fan' | 'cool_unit_ac' | 'cool_unit_chiller';
+export type RoomCoolingType =
+  | 'cool_unit_fan'
+  | 'cool_unit_ind_fan'
+  | 'cool_unit_ac'
+  | 'cool_unit_liquid'
+  | 'cool_unit_chiller'
+  | 'cool_unit_facility_hvac';
 
 export interface RoomCoolingSpec {
   id: RoomCoolingType;
@@ -185,7 +208,10 @@ export interface RoomCoolingSpec {
   noiseDba: number;
   coolingRadiusTiles: number;
   coolingPowerC: number;
+  maintenancePerCycle: number;
+  maxRigsSupported: number;
   unlockFacilityIndex: number;
+  researchRequired?: string;
   description: string;
 }
 
@@ -195,6 +221,44 @@ export interface PlacedCoolingUnit {
   gridX: number;
   gridY: number;
   enabled: boolean;
+}
+
+export type FacilityUpgradeId =
+  | 'additional_circuits'
+  | 'ventilation_ducts'
+  | 'industrial_cooling_loop'
+  | 'bay_expansion'
+  | 'power_distribution'
+  | 'backup_power';
+
+export interface FacilityUpgradeSpec {
+  id: FacilityUpgradeId;
+  name: string;
+  maxLevel: number;
+  baseCost: number;
+  costScale: number;
+  cycleUpkeepPerLevel: number;
+  unlockFacilityIndex: number;
+  researchRequired?: string;
+  effectLabel: string;
+  description: string;
+}
+
+export type PowerContractId =
+  | 'contract_budget'
+  | 'contract_standard'
+  | 'contract_highcap'
+  | 'contract_premium_flex';
+
+export interface PowerContractSpec {
+  id: PowerContractId;
+  name: string;
+  rateMultiplier: number;
+  capacityMultiplier: number;
+  cycleFixedFee: number;
+  brownoutProtectionPct: number;
+  unlockFacilityIndex: number;
+  summary: string;
 }
 
 export interface FacilityTier {
@@ -210,6 +274,8 @@ export interface FacilityTier {
   maxPowerKw: number;
   noiseLimitDba: number;
   ambientTempC: number;
+  coolingBonusC: number;
+  maintenanceCostPerCycle: number;
   description: string;
 }
 
@@ -241,6 +307,8 @@ export interface CoinMarketState {
 
 export type EmployeeRole =
   | 'TECHNICIAN'
+  | 'ELECTRICIAN'
+  | 'MANAGER'
   | 'SYS_ENGINEER'
   | 'RESEARCHER'
   | 'PR_STRATEGIST'
@@ -270,8 +338,17 @@ export interface HiredEmployee {
   shift: ShiftType;
   priority: TaskPriority;
   morale: number;
+  skillLevel: number;
+  experienceXp: number;
   hiredStep: number;
 }
+
+export type ResearchCategory =
+  | 'HARDWARE'
+  | 'COOLING'
+  | 'ELECTRICAL'
+  | 'AUTOMATION'
+  | 'BUSINESS';
 
 export interface ResearchNode {
   id: string;
@@ -281,7 +358,7 @@ export interface ResearchNode {
   costCash: number;
   prereqIds: string[];
   effectSummary: string;
-  category: 'HARDWARE' | 'SOFTWARE' | 'FACILITY' | 'MARKET';
+  category: ResearchCategory;
 }
 
 export interface PRCampaignTemplate {
@@ -310,12 +387,25 @@ export interface ActivePRCampaign {
   sentimentDeltaPerStep: number;
 }
 
+export type RivalStrategy =
+  | 'CHEAP_POWER'
+  | 'EFFICIENT_HARDWARE'
+  | 'RAPID_EXPANSION'
+  | 'ADVANCED_TECH'
+  | 'LOW_OVERHEAD';
+
 export interface RivalSyndicate {
   id: string;
   name: string;
   archetype: 'HYDRO_GIANT' | 'SILICON_CARTEL' | 'DARKNET_POOL';
+  strategy: RivalStrategy;
   specialtyCoin: CoinSymbol;
   hashPowerIndex: number;
+  cashReserveUsd: number;
+  facilityTierIndex: number;
+  hardwareQuality: number;
+  rigCount: number;
+  powerCapacityKw: number;
   baseGrowthRate: number;
   marketSharePct: number;
   aggressiveness: number;
@@ -324,7 +414,15 @@ export interface RivalSyndicate {
   lastActionSummary: string;
 }
 
-export type ContractType = 'COIN_REVENUE' | 'POOL_HASH' | 'LOW_NOISE_RUN';
+export type ContractType =
+  | 'COIN_REVENUE'
+  | 'POOL_HASH'
+  | 'LOW_NOISE_RUN'
+  | 'EQUIPMENT_SUPPLY'
+  | 'FACILITY_EXPANSION'
+  | 'MAINTENANCE_SLA'
+  | 'RESEARCH_PARTNERSHIP'
+  | 'OPERATIONAL_PERFORMANCE';
 
 export interface ContractSpec {
   id: string;
@@ -333,13 +431,54 @@ export interface ContractSpec {
   type: ContractType;
   targetCoin?: CoinSymbol;
   targetAmount: number;
+  targetConditionPct?: number;
+  targetFacilityIndex?: number;
+  minReputation: number;
   progress: number;
   durationSteps: number;
   stepsRemaining: number;
   rewardCash: number;
   rewardRp: number;
   penaltyCredibility: number;
+  penaltyCash: number;
   description: string;
+}
+
+export interface UsedMarketListing {
+  id: string;
+  title: string;
+  conditionTier: HardwareConditionTier;
+  conditionPct: number;
+  ageSteps: number;
+  generation: HardwareGen;
+  listPriceUsd: number;
+  retailPriceUsd: number;
+  config: Omit<RigBuildConfig, 'name'>;
+  summary: string;
+}
+
+export type MarketModifierType =
+  | 'HARDWARE_SHORTAGE'
+  | 'HARDWARE_CRASH'
+  | 'POWER_SPIKE'
+  | 'POWER_REBATE'
+  | 'MINING_BOOM'
+  | 'MINING_CRASH'
+  | 'HIGH_COMPETITION'
+  | 'HARDWARE_RELEASE'
+  | 'EQUIPMENT_DEMAND';
+
+export interface ActiveMarketModifier {
+  id: string;
+  type: MarketModifierType;
+  label: string;
+  stepsRemaining: number;
+  hardwarePriceMult: number;
+  powerRateMult: number;
+  resaleValueMult: number;
+  rivalGrowthMult: number;
+  coinPriceDriftDelta: number;
+  summary: string;
 }
 
 export interface BlackMarketListing {
@@ -366,7 +505,13 @@ export interface UndergroundState {
   blackMarketRefreshStep: number;
 }
 
-export type PendingEventCategory = 'MARKET' | 'HARDWARE' | 'GRID' | 'RIVAL' | 'RAID';
+export type PendingEventCategory =
+  | 'MARKET'
+  | 'HARDWARE'
+  | 'GRID'
+  | 'RIVAL'
+  | 'RAID'
+  | 'OPERATIONS';
 
 export interface PendingEventOption {
   key: '1' | '2' | '3';
@@ -395,8 +540,30 @@ export interface CycleLedgerEntry {
   electricityCostUsd: number;
   rentCostUsd: number;
   payrollCostUsd: number;
+  maintenanceCostUsd: number;
   otherSpendUsd: number;
   netCashflowUsd: number;
+}
+
+export type TransactionCategory =
+  | 'HARDWARE'
+  | 'SALE'
+  | 'REPAIR'
+  | 'FACILITY'
+  | 'POWER'
+  | 'STAFF'
+  | 'CONTRACT'
+  | 'RESEARCH'
+  | 'EVENT'
+  | 'REWARD';
+
+export interface TransactionEntry {
+  id: string;
+  step: number;
+  stepLabel: string;
+  category: TransactionCategory;
+  amountUsd: number;
+  description: string;
 }
 
 export interface NewsItem {
@@ -408,17 +575,80 @@ export interface NewsItem {
   category: 'MILESTONE' | 'MARKET' | 'PR' | 'FACILITY' | 'ALERT' | 'UNDERGROUND' | 'CONTRACT';
 }
 
+export interface MilestoneSpec {
+  id: string;
+  title: string;
+  description: string;
+  rewardCash: number;
+  rewardRp: number;
+  rewardReputation: number;
+}
+
+export interface AchievementSpec {
+  id: string;
+  title: string;
+  description: string;
+  category: 'HARDWARE' | 'OPERATIONS' | 'ECONOMY' | 'RESEARCH' | 'EMPIRE';
+}
+
+export type ChallengeId =
+  | 'challenge_bootstrap'
+  | 'challenge_power_cap'
+  | 'challenge_used_only'
+  | 'challenge_warehouse_rush'
+  | 'challenge_pristine';
+
+export interface ChallengeSpec {
+  id: ChallengeId;
+  title: string;
+  description: string;
+  rewardCash: number;
+  rewardRp: number;
+  achievementId: string;
+}
+
 export interface EmpireStats {
   soloBlocksHit: number;
   contractsCompleted: number;
+  contractsFailed: number;
   covertOpsCount: number;
   raidsSurvived: number;
   totalFinesAndBribesUsd: number;
+  totalRevenueUsd: number;
+  totalElectricityCostUsd: number;
+  totalMaintenanceCostUsd: number;
+  totalPayrollCostUsd: number;
+  totalHardwareSpendUsd: number;
+  totalHardwareSalesUsd: number;
+  totalFacilitySpendUsd: number;
+  totalResearchSpendUsd: number;
+  totalCoolingSpendUsd: number;
+  totalContractIncomeUsd: number;
+  peakFleetHashScore: number;
+  equipmentFailuresCount: number;
+  repairsCompleted: number;
+  rigPurchasesCount: number;
+  usedRigPurchasesCount: number;
+  maxPowerKwObserved: number;
+  pristineHealthStreak: number;
+  usedOnlyEligible: boolean;
+}
+
+export interface SandboxConfig {
+  startingCash: number;
+  startingFacilityId: string;
+  startingRigs: number;
+  unlockAllResearch: boolean;
+  unlockAllCoins: boolean;
+  marketRegime: MarketRegime;
+  operatingCostMult: number;
 }
 
 export interface GameState {
   mode: GameModeState;
   difficulty: DifficultyLevel;
+  isSandbox?: boolean;
+  sandboxConfig?: SandboxConfig;
   runSeed: string;
   stepCount: number;
   soundEnabled: boolean;
@@ -429,8 +659,14 @@ export interface GameState {
   activeResearchProgress: number;
   facilityId: string;
   ownedFacilityIds: string[];
+  facilityUpgrades: Partial<Record<FacilityUpgradeId, number>>;
+  powerContractId: PowerContractId;
   rigs: MiningRig[];
+  backupRigs: MiningRig[];
   coolingUnits: PlacedCoolingUnit[];
+  usedMarketListings: UsedMarketListing[];
+  usedMarketRefreshStep: number;
+  activeMarketModifiers: ActiveMarketModifier[];
   coins: Record<CoinSymbol, CoinMarketState>;
   marketRegime: MarketRegime;
   regimeStepsRemaining: number;
@@ -445,10 +681,18 @@ export interface GameState {
   underground: UndergroundState;
   pendingEvent: PendingEvent | null;
   ledger: CycleLedgerEntry[];
+  transactions: TransactionEntry[];
   currentCycleStats: {
     miningRevenueUsd: number;
+    electricitySpendUsd: number;
+    maintenanceSpendUsd: number;
     otherSpendUsd: number;
   };
+  unlockedMilestones: string[];
+  unlockedAchievements: string[];
+  activeChallengeId: ChallengeId | null;
+  completedChallenges: ChallengeId[];
+  failedChallenges: ChallengeId[];
   news: NewsItem[];
   competitorTechScore: number;
   noiseFinesTotal: number;
@@ -456,4 +700,12 @@ export interface GameState {
   tutorialStep?: number;
   devMode: boolean;
   devUnlockAll: boolean;
+}
+
+export interface SaveFileEnvelope {
+  format: 'BLOCKWORKS_SAVE_V2';
+  exportedAt: string;
+  version: number;
+  isSandbox: boolean;
+  state: GameState;
 }

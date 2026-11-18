@@ -9,56 +9,76 @@ import {
   Play,
 } from 'lucide-react';
 import {
+  CHALLENGES,
   CHASSIS_PARTS,
   COMPUTE_PARTS,
   COOLING_PARTS,
   EMPLOYEE_SPECS,
   FACILITY_TIERS,
+  FACILITY_UPGRADES,
   GPU_PARTS,
   MARKET_REGIME_SPECS,
   OS_PARTS,
+  POWER_CONTRACTS,
   PR_CAMPAIGNS,
   PSU_PARTS,
   RESEARCH_NODES,
   ROOM_COOLING_UNITS,
   STORAGE_PARTS,
 } from './data/catalog';
-import { createInitialCoins } from './data/history';
 import {
   advanceOneStep,
   BILLING_CYCLE_STEPS,
   calculatePartTradeInCost,
   calculateRigBuildCost,
-  createInitialRivals,
+  calculateRigResaleValue,
   createNewGameState,
   findOpenGridSlot,
   generateBlackMarketListings,
-  generateContractBoard,
   generateInteractiveEvent,
+  generateUsedMarketListings,
+  getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
   getFacility,
   getFacilityTotals,
+  getFacilityUpgradeCost,
   getRigRepasteCost,
   getRigRepairCost,
   resolvePendingEvent,
 } from './engine/simulation';
+import { getGlobalHardwarePriceMult } from './engine/usedMarket';
 import {
+  CAREER_STORAGE_KEY,
+  clearSavedState,
+  createLocalBackup,
+  loadLocalBackup,
+  loadSavedState,
+  SANDBOX_STORAGE_KEY,
+  serializeSaveEnvelope,
+  validateAndParseImportedSave,
+} from './engine/saveSystem';
+import {
+  ChallengeId,
   CoinSymbol,
   DifficultyLevel,
   EmployeeRole,
+  FacilityUpgradeId,
   FirmwareProfile,
   GameState,
   MarketRegime,
   MiningRig,
   PlacedCoolingUnit,
   PoolMode,
+  PowerContractId,
   RigBuildConfig,
   RoomCoolingType,
+  SandboxConfig,
   ShiftType,
   TaskPriority,
+  TransactionCategory,
+  TransactionEntry,
 } from './types/game';
 import { formatStepLabel, formatUsd } from './utils/format';
-import { generateRandomSeed } from './utils/rng';
 import { soundFx } from './utils/sound';
 import { TitleMenu } from './components/TitleMenu';
 import { EducationLanding } from './components/EducationLanding';
@@ -69,8 +89,6 @@ import {
   TextGameTerminal,
 } from './components/TextGameTerminal';
 import { MatrixRainCanvas } from './components/MatrixRainCanvas';
-
-const STORAGE_KEY = 'blockworks_tycoon_save_v2';
 
 const EMPLOYEE_NAMES = [
   'Alex Mercer',
@@ -85,115 +103,47 @@ const EMPLOYEE_NAMES = [
   'Maya Patel',
 ];
 
-function loadSavedState(): GameState | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as GameState & { dayCount?: number };
-    if (!parsed || typeof parsed.cash !== 'number' || !parsed.coins) return null;
-
-    const runSeed = parsed.runSeed || generateRandomSeed();
-    const defaultCoins = createInitialCoins(runSeed);
-    const migratedCoins = { ...defaultCoins };
-    (Object.keys(defaultCoins) as CoinSymbol[]).forEach((sym) => {
-      const savedCoin = parsed.coins[sym];
-      if (savedCoin && typeof savedCoin.tier === 'number') {
-        migratedCoins[sym] = {
-          ...defaultCoins[sym],
-          ...savedCoin,
-        };
-      }
-    });
-
-    const coolingUnits = parsed.coolingUnits ?? [];
-    const rigs: MiningRig[] = (parsed.rigs ?? []).map((r, idx) => ({
-      ...r,
-      gridX: typeof r.gridX === 'number' ? r.gridX : 1 + (idx % 4),
-      gridY: typeof r.gridY === 'number' ? r.gridY : 1 + Math.floor(idx / 4),
-      poolMode: r.poolMode ?? 'PPS',
-      firmwareProfile: r.firmwareProfile ?? 'BALANCED',
-      pasteStepsRemaining: typeof r.pasteStepsRemaining === 'number' ? r.pasteStepsRemaining : 8,
-      soloBlocksWon: typeof r.soloBlocksWon === 'number' ? r.soloBlocksWon : 0,
-      lastStepBlockHit: Boolean(r.lastStepBlockHit),
-      illicitMod: r.illicitMod ?? null,
-      lastStepCoins: typeof r.lastStepCoins === 'number' ? r.lastStepCoins : 0,
-      lastStepUsd: typeof r.lastStepUsd === 'number' ? r.lastStepUsd : 0,
-      totalEarnedUsd: typeof r.totalEarnedUsd === 'number' ? r.totalEarnedUsd : 0,
-    }));
-
-    const stepCount = typeof parsed.stepCount === 'number' ? parsed.stepCount : parsed.dayCount ?? 0;
-
-    const hydrated: GameState = {
-      ...parsed,
-      runSeed,
-      stepCount,
-      rigs,
-      coolingUnits,
-      coins: migratedCoins,
-      marketRegime: parsed.marketRegime ?? 'ACCUMULATION',
-      regimeStepsRemaining:
-        typeof parsed.regimeStepsRemaining === 'number' ? parsed.regimeStepsRemaining : 14,
-      rivals: parsed.rivals?.length ? parsed.rivals : createInitialRivals(runSeed),
-      availableContracts: parsed.availableContracts ?? [],
-      activeContract: parsed.activeContract ?? null,
-      underground: parsed.underground ?? {
-        powerSiphonActive: false,
-        botnetCoin: null,
-        botnetBonusHash: 0,
-        botnetStepsRemaining: 0,
-        washCooldownStep: 0,
-        launderCooldownStep: 0,
-        bribeProtectionSteps: 0,
-        blackMarketListings: [],
-        blackMarketRefreshStep: stepCount + 15,
-      },
-      pendingEvent: parsed.pendingEvent ?? null,
-      stats: parsed.stats ?? {
-        soloBlocksHit: 0,
-        contractsCompleted: 0,
-        covertOpsCount: 0,
-        raidsSurvived: 0,
-        totalFinesAndBribesUsd: 0,
-      },
-      devMode: Boolean(parsed.devMode),
-      devUnlockAll: Boolean(parsed.devUnlockAll),
-      tutorialStep: typeof parsed.tutorialStep === 'number' ? parsed.tutorialStep : 0,
-    };
-
-    if (hydrated.availableContracts.length === 0) {
-      hydrated.availableContracts = generateContractBoard(hydrated, 3);
-    }
-    if (hydrated.underground.blackMarketListings.length === 0) {
-      hydrated.underground = {
-        ...hydrated.underground,
-        blackMarketListings: generateBlackMarketListings(hydrated),
-      };
-    }
-
-    return hydrated;
-  } catch {
-    return null;
-  }
+function makeTx(
+  step: number,
+  category: TransactionCategory,
+  amountUsd: number,
+  description: string
+): TransactionEntry {
+  return {
+    id: `tx_${step}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    step,
+    stepLabel: formatStepLabel(step),
+    category,
+    amountUsd,
+    description,
+  };
 }
 
 export default function App() {
-  const [savedSnapshot, setSavedSnapshot] = useState<GameState | null>(() => loadSavedState());
+  const [careerSnapshot, setCareerSnapshot] = useState<GameState | null>(() =>
+    loadSavedState(CAREER_STORAGE_KEY)
+  );
+  const [sandboxSnapshot, setSandboxSnapshot] = useState<GameState | null>(() =>
+    loadSavedState(SANDBOX_STORAGE_KEY)
+  );
   const [state, setState] = useState<GameState | null>(() => {
-    const saved = loadSavedState();
+    const saved = loadSavedState(CAREER_STORAGE_KEY);
     if (saved) {
       return { ...saved, mode: 'TITLE_MENU' };
     }
     return null;
   });
 
-const AUTO_STEP_SECONDS = 30;
+  const AUTO_STEP_SECONDS = 30;
 
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
   const [showEduLanding, setShowEduLanding] = useState<boolean>(true);
   const [devPanelOpen, setDevPanelOpen] = useState<boolean>(false);
   const [matrixRain, setMatrixRain] = useState<boolean>(true);
   const [userPaused, setUserPaused] = useState<boolean>(false);
-  const [activeTerminalModal, setActiveTerminalModal] = useState<'BUILDER' | 'TINKER' | null>(null);
+  const [activeTerminalModal, setActiveTerminalModal] = useState<'BUILDER' | 'TINKER' | null>(
+    null
+  );
   const [autoCountdown, setAutoCountdown] = useState<number>(AUTO_STEP_SECONDS);
   const [commandTrigger, setCommandTrigger] = useState<TerminalCommandTrigger | null>(null);
   const autoStepRef = useRef<() => void>(() => {});
@@ -222,39 +172,145 @@ const AUTO_STEP_SECONDS = 30;
   useEffect(() => {
     if (!state) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      setSavedSnapshot(state);
+      const key = state.isSandbox ? SANDBOX_STORAGE_KEY : CAREER_STORAGE_KEY;
+      localStorage.setItem(key, JSON.stringify(state));
+      if (state.isSandbox) {
+        setSandboxSnapshot(state);
+      } else {
+        setCareerSnapshot(state);
+      }
     } catch {
-      // Ignore quota errors
+      // Ignore storage quota errors
     }
   }, [state]);
 
   const handleStartNew = (
     difficulty: DifficultyLevel,
     devMode = false,
-    runSeed?: string
+    runSeed?: string,
+    sandboxConfig?: SandboxConfig,
+    challengeId: ChallengeId | null = null
   ) => {
     soundFx.playMilestone();
-    const fresh = createNewGameState(difficulty, devMode, runSeed);
+    const fresh = createNewGameState(difficulty, devMode, runSeed, sandboxConfig, challengeId);
     setState(fresh);
     setDevPanelOpen(false);
     setActiveTerminalModal(null);
     setUserPaused(false);
     setAutoCountdown(AUTO_STEP_SECONDS);
-    if (devMode) {
-      showBanner(`Dev Mode active (${fresh.runSeed}): $2.50M, 1,000 RP, all coins & dev event tools ready.`);
+    if (sandboxConfig || difficulty === 'SANDBOX') {
+      showBanner(`Sandbox launched (${fresh.runSeed}): isolated save slot active.`);
+    } else if (devMode) {
+      showBanner(
+        `Dev Mode active (${fresh.runSeed}): $2.50M, 1,000 RP, all coins & dev event tools ready.`
+      );
+    } else if (challengeId) {
+      const ch = CHALLENGES.find((c) => c.id === challengeId);
+      showBanner(`Challenge run "${ch?.title ?? challengeId}" started on seed ${fresh.runSeed}.`);
     } else {
-      showBanner(`New run started on seed ${fresh.runSeed}.`);
+      showBanner(`New career run started on seed ${fresh.runSeed}.`);
     }
   };
 
-  const handleResume = () => {
+  const handleResume = (sandbox = false) => {
     soundFx.playClick();
-    if (savedSnapshot) {
-      setState({ ...savedSnapshot, mode: 'PLAYING' });
+    const snap = sandbox ? sandboxSnapshot : careerSnapshot;
+    if (snap) {
+      setState({ ...snap, mode: 'PLAYING' });
       setActiveTerminalModal(null);
       setAutoCountdown(AUTO_STEP_SECONDS);
     }
+  };
+
+  const handleBackupSave = (targetState?: GameState): boolean => {
+    const src = targetState ?? state ?? careerSnapshot;
+    if (!src) return false;
+    const ok = createLocalBackup(src);
+    if (ok) {
+      soundFx.playClick();
+      showBanner(`Created local backup for ${src.isSandbox ? 'Sandbox' : 'Career'} save.`);
+    }
+    return ok;
+  };
+
+  const handleRestoreBackup = (sandbox = false): boolean => {
+    const backed = loadLocalBackup(sandbox);
+    if (!backed) {
+      soundFx.playAlert();
+      showBanner(`No ${sandbox ? 'Sandbox' : 'Career'} backup found in local storage.`);
+      return false;
+    }
+    soundFx.playMilestone();
+    const playing: GameState = { ...backed, mode: 'PLAYING' };
+    try {
+      localStorage.setItem(
+        playing.isSandbox ? SANDBOX_STORAGE_KEY : CAREER_STORAGE_KEY,
+        JSON.stringify(playing)
+      );
+    } catch {
+      // Ignore storage errors
+    }
+    if (playing.isSandbox) setSandboxSnapshot(playing);
+    else setCareerSnapshot(playing);
+    setState(playing);
+    showBanner(`Restored ${sandbox ? 'Sandbox' : 'Career'} backup (Step ${playing.stepCount}).`);
+    return true;
+  };
+
+  const handleExportSave = (sandbox = false): string | null => {
+    const target =
+      state && Boolean(state.isSandbox) === sandbox
+        ? state
+        : sandbox
+        ? sandboxSnapshot
+        : careerSnapshot;
+    if (!target) return null;
+    return serializeSaveEnvelope(target);
+  };
+
+  const handleImportSaveJson = (
+    jsonText: string
+  ): { ok: boolean; error?: string; summary?: string } => {
+    const res = validateAndParseImportedSave(jsonText);
+    if (!res.ok || !res.state) {
+      soundFx.playAlert();
+      return { ok: false, error: res.error ?? 'Invalid save file.' };
+    }
+    const imported = res.state;
+    try {
+      localStorage.setItem(
+        imported.isSandbox ? SANDBOX_STORAGE_KEY : CAREER_STORAGE_KEY,
+        JSON.stringify(imported)
+      );
+    } catch {
+      // Ignore storage errors
+    }
+    if (imported.isSandbox) setSandboxSnapshot(imported);
+    else setCareerSnapshot(imported);
+    setState(imported);
+    soundFx.playMilestone();
+    showBanner(
+      `Imported ${imported.isSandbox ? 'Sandbox' : 'Career'} save (Step ${imported.stepCount}).`
+    );
+    return {
+      ok: true,
+      summary: `Loaded ${imported.isSandbox ? 'Sandbox' : 'Career'} Step ${imported.stepCount} (${formatUsd(
+        imported.cash
+      )}).`,
+    };
+  };
+
+  const handleResetSave = (sandbox = false) => {
+    clearSavedState(sandbox);
+    if (sandbox) {
+      setSandboxSnapshot(null);
+      if (state?.isSandbox) setState(null);
+    } else {
+      setCareerSnapshot(null);
+      if (state && !state.isSandbox) setState(null);
+    }
+    soundFx.playClick();
+    showBanner(`Cleared ${sandbox ? 'Sandbox' : 'Career'} saved progress.`);
   };
 
   const handleStepSteps = (steps: number, silent = false): StepBatchResult | null => {
@@ -390,6 +446,10 @@ const AUTO_STEP_SECONDS = 30;
           ...prev.currentCycleStats,
           otherSpendUsd: prev.currentCycleStats.otherSpendUsd + target.unlockCostUsd,
         },
+        transactions: [
+          makeTx(prev.stepCount, 'FACILITY', -target.unlockCostUsd, `Unlocked ${symbol} coin desk`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
         coins: {
           ...prev.coins,
           [symbol]: {
@@ -481,6 +541,7 @@ const AUTO_STEP_SECONDS = 30;
 
     const isUnlocked = (req?: string) =>
       state.devUnlockAll || !req || state.unlockedResearch.includes(req);
+    const hwMult = getGlobalHardwarePriceMult(state);
 
     let netCost = 0;
     let nextRigPatch: Partial<MiningRig> = {};
@@ -492,15 +553,17 @@ const AUTO_STEP_SECONDS = 30;
       if (!newPart) return { ok: false, summary: 'Chassis part not found.' };
       if (!isUnlocked(newPart.researchRequired)) {
         const node = RESEARCH_NODES.find((n) => n.id === newPart.researchRequired);
-        return { ok: false, summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".` };
+        return {
+          ok: false,
+          summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".`,
+        };
       }
       if (oldPart.id === newPart.id) {
         return { ok: false, summary: `${rig.name} already uses ${newPart.name}.` };
       }
 
-      netCost += calculatePartTradeInCost(oldPart.cost, newPart.cost);
+      netCost += calculatePartTradeInCost(oldPart.cost, Math.round(newPart.cost * hwMult));
 
-      // Keep GPUs within maxGpus, crediting 60% trade-in for removed cards
       let nextGpus = [...rig.gpuIds];
       if (nextGpus.length > newPart.maxGpus) {
         const removed = nextGpus.slice(newPart.maxGpus);
@@ -513,7 +576,6 @@ const AUTO_STEP_SECONDS = 30;
         detailNote += ` (Removed ${removed.length} GPU(s) beyond slot cap)`;
       }
 
-      // If switching between ASIC Rack and GPU/CPU frame, swap compute cleanly
       let nextComputeId = rig.computeId;
       const oldCompute = COMPUTE_PARTS.find((c) => c.id === rig.computeId) ?? COMPUTE_PARTS[0];
       const compatible = newPart.isAsicRack
@@ -533,7 +595,7 @@ const AUTO_STEP_SECONDS = 30;
             } compute module available.`,
           };
         }
-        netCost += calculatePartTradeInCost(oldCompute.cost, replacement.cost);
+        netCost += calculatePartTradeInCost(oldCompute.cost, Math.round(replacement.cost * hwMult));
         nextComputeId = replacement.id;
         detailNote += ` & swapped compute to ${replacement.name}`;
       }
@@ -553,18 +615,24 @@ const AUTO_STEP_SECONDS = 30;
       if (!newPart) return { ok: false, summary: 'Compute part not found.' };
       if (!isUnlocked(newPart.researchRequired)) {
         const node = RESEARCH_NODES.find((n) => n.id === newPart.researchRequired);
-        return { ok: false, summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".` };
+        return {
+          ok: false,
+          summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".`,
+        };
       }
       if (chassis.isAsicRack && newPart.kind !== 'ASIC') {
         return { ok: false, summary: `${chassis.name} only accepts ASIC blades.` };
       }
       if (!chassis.isAsicRack && newPart.kind === 'ASIC') {
-        return { ok: false, summary: `${chassis.name} requires a 42U/Hydro ASIC chassis for ASIC blades.` };
+        return {
+          ok: false,
+          summary: `${chassis.name} requires a 42U/Hydro ASIC chassis for ASIC blades.`,
+        };
       }
       if (oldPart.id === newPart.id) {
         return { ok: false, summary: `${rig.name} already uses ${newPart.name}.` };
       }
-      netCost = calculatePartTradeInCost(oldPart.cost, newPart.cost);
+      netCost = calculatePartTradeInCost(oldPart.cost, Math.round(newPart.cost * hwMult));
       if (state.cash < netCost) {
         return {
           ok: false,
@@ -579,12 +647,15 @@ const AUTO_STEP_SECONDS = 30;
       if (!newPart) return { ok: false, summary: 'Storage part not found.' };
       if (!isUnlocked(newPart.researchRequired)) {
         const node = RESEARCH_NODES.find((n) => n.id === newPart.researchRequired);
-        return { ok: false, summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".` };
+        return {
+          ok: false,
+          summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".`,
+        };
       }
       if (oldPart.id === newPart.id) {
         return { ok: false, summary: `${rig.name} already uses ${newPart.name}.` };
       }
-      netCost = calculatePartTradeInCost(oldPart.cost, newPart.cost);
+      netCost = calculatePartTradeInCost(oldPart.cost, Math.round(newPart.cost * hwMult));
       if (state.cash < netCost) {
         return {
           ok: false,
@@ -599,12 +670,15 @@ const AUTO_STEP_SECONDS = 30;
       if (!newPart) return { ok: false, summary: 'PSU part not found.' };
       if (!isUnlocked(newPart.researchRequired)) {
         const node = RESEARCH_NODES.find((n) => n.id === newPart.researchRequired);
-        return { ok: false, summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".` };
+        return {
+          ok: false,
+          summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".`,
+        };
       }
       if (oldPart.id === newPart.id) {
         return { ok: false, summary: `${rig.name} already uses ${newPart.name}.` };
       }
-      netCost = calculatePartTradeInCost(oldPart.cost, newPart.cost);
+      netCost = calculatePartTradeInCost(oldPart.cost, Math.round(newPart.cost * hwMult));
       if (state.cash < netCost) {
         return {
           ok: false,
@@ -619,12 +693,15 @@ const AUTO_STEP_SECONDS = 30;
       if (!newPart) return { ok: false, summary: 'Cooling part not found.' };
       if (!isUnlocked(newPart.researchRequired)) {
         const node = RESEARCH_NODES.find((n) => n.id === newPart.researchRequired);
-        return { ok: false, summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".` };
+        return {
+          ok: false,
+          summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".`,
+        };
       }
       if (oldPart.id === newPart.id) {
         return { ok: false, summary: `${rig.name} already uses ${newPart.name}.` };
       }
-      netCost = calculatePartTradeInCost(oldPart.cost, newPart.cost);
+      netCost = calculatePartTradeInCost(oldPart.cost, Math.round(newPart.cost * hwMult));
       if (state.cash < netCost) {
         return {
           ok: false,
@@ -639,12 +716,15 @@ const AUTO_STEP_SECONDS = 30;
       if (!newPart) return { ok: false, summary: 'OS part not found.' };
       if (!isUnlocked(newPart.researchRequired)) {
         const node = RESEARCH_NODES.find((n) => n.id === newPart.researchRequired);
-        return { ok: false, summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".` };
+        return {
+          ok: false,
+          summary: `Locked: requires R&D "${node?.name ?? newPart.researchRequired}".`,
+        };
       }
       if (oldPart.id === newPart.id) {
         return { ok: false, summary: `${rig.name} already runs ${newPart.name}.` };
       }
-      netCost = calculatePartTradeInCost(oldPart.cost, newPart.cost);
+      netCost = calculatePartTradeInCost(oldPart.cost, Math.round(newPart.cost * hwMult));
       if (state.cash < netCost) {
         return {
           ok: false,
@@ -665,13 +745,29 @@ const AUTO_STEP_SECONDS = 30;
               ...prev.currentCycleStats,
               otherSpendUsd: prev.currentCycleStats.otherSpendUsd + Math.max(0, netCost),
             },
+            stats: {
+              ...prev.stats,
+              totalHardwareSpendUsd: prev.stats.totalHardwareSpendUsd + Math.max(0, netCost),
+              totalHardwareSalesUsd: prev.stats.totalHardwareSalesUsd + Math.max(0, -netCost),
+            },
+            transactions: [
+              makeTx(
+                prev.stepCount,
+                netCost >= 0 ? 'HARDWARE' : 'SALE',
+                -netCost,
+                `${rig.name}: ${detailNote}`
+              ),
+              ...(prev.transactions ?? []),
+            ].slice(0, 200),
             rigs: prev.rigs.map((r, i) => (i === rigIndex ? { ...r, ...nextRigPatch } : r)),
           }
         : prev
     );
 
     const costLabel =
-      netCost >= 0 ? `Paid ${formatUsd(netCost)} net` : `Refunded +${formatUsd(Math.abs(netCost))}`;
+      netCost >= 0
+        ? `Paid ${formatUsd(netCost)} net`
+        : `Refunded +${formatUsd(Math.abs(netCost))}`;
     return { ok: true, summary: `${rig.name}: ${detailNote} (${costLabel} w/ 60% trade-in).` };
   };
 
@@ -685,6 +781,7 @@ const AUTO_STEP_SECONDS = 30;
     const rig = state.rigs[rigIndex];
     if (!rig) return { ok: false, summary: `Rig #${rigIndex + 1} not found.` };
     const chassis = CHASSIS_PARTS.find((c) => c.id === rig.chassisId) ?? CHASSIS_PARTS[0];
+    const hwMult = getGlobalHardwarePriceMult(state);
 
     if (action === 'CLEAR') {
       if (rig.gpuIds.length === 0) {
@@ -700,11 +797,22 @@ const AUTO_STEP_SECONDS = 30;
           ? {
               ...prev,
               cash: prev.cash + refund,
+              stats: {
+                ...prev.stats,
+                totalHardwareSalesUsd: prev.stats.totalHardwareSalesUsd + refund,
+              },
+              transactions: [
+                makeTx(prev.stepCount, 'SALE', refund, `Removed all GPUs from ${rig.name}`),
+                ...(prev.transactions ?? []),
+              ].slice(0, 200),
               rigs: prev.rigs.map((r, i) => (i === rigIndex ? { ...r, gpuIds: [] } : r)),
             }
           : prev
       );
-      return { ok: true, summary: `Removed all GPUs from ${rig.name} (+${formatUsd(refund)} trade-in).` };
+      return {
+        ok: true,
+        summary: `Removed all GPUs from ${rig.name} (+${formatUsd(refund)} trade-in).`,
+      };
     }
 
     if (action === 'REMOVE') {
@@ -719,6 +827,19 @@ const AUTO_STEP_SECONDS = 30;
           ? {
               ...prev,
               cash: prev.cash + refund,
+              stats: {
+                ...prev.stats,
+                totalHardwareSalesUsd: prev.stats.totalHardwareSalesUsd + refund,
+              },
+              transactions: [
+                makeTx(
+                  prev.stepCount,
+                  'SALE',
+                  refund,
+                  `Trade-in ${spec?.name ?? 'GPU'} from ${rig.name}`
+                ),
+                ...(prev.transactions ?? []),
+              ].slice(0, 200),
               rigs: prev.rigs.map((r, i) =>
                 i === rigIndex
                   ? { ...r, gpuIds: r.gpuIds.filter((_id, gIdx) => gIdx !== slotIdx) }
@@ -729,11 +850,12 @@ const AUTO_STEP_SECONDS = 30;
       );
       return {
         ok: true,
-        summary: `Removed ${spec?.name ?? 'GPU'} from slot #${slotIdx + 1} (+${formatUsd(refund)} trade-in).`,
+        summary: `Removed ${spec?.name ?? 'GPU'} from slot #${slotIdx + 1} (+${formatUsd(
+          refund
+        )} trade-in).`,
       };
     }
 
-    // ADD
     if (chassis.maxGpus <= 0) {
       return { ok: false, summary: `${chassis.name} does not support discrete GPUs.` };
     }
@@ -749,10 +871,13 @@ const AUTO_STEP_SECONDS = 30;
       !state.unlockedResearch.includes(gpuSpec.researchRequired)
     ) {
       const node = RESEARCH_NODES.find((n) => n.id === gpuSpec.researchRequired);
-      return { ok: false, summary: `Locked: requires R&D "${node?.name ?? gpuSpec.researchRequired}".` };
+      return {
+        ok: false,
+        summary: `Locked: requires R&D "${node?.name ?? gpuSpec.researchRequired}".`,
+      };
     }
     const toAdd = Math.min(slotsLeft, Math.max(1, qty));
-    const totalCost = gpuSpec.cost * toAdd;
+    const totalCost = Math.round(gpuSpec.cost * hwMult) * toAdd;
     if (state.cash < totalCost) {
       return { ok: false, summary: `Insufficient cash (need ${formatUsd(totalCost)}).` };
     }
@@ -766,8 +891,23 @@ const AUTO_STEP_SECONDS = 30;
               ...prev.currentCycleStats,
               otherSpendUsd: prev.currentCycleStats.otherSpendUsd + totalCost,
             },
+            stats: {
+              ...prev.stats,
+              totalHardwareSpendUsd: prev.stats.totalHardwareSpendUsd + totalCost,
+            },
+            transactions: [
+              makeTx(
+                prev.stepCount,
+                'HARDWARE',
+                -totalCost,
+                `Added ${toAdd}x ${gpuSpec.name} to ${rig.name}`
+              ),
+              ...(prev.transactions ?? []),
+            ].slice(0, 200),
             rigs: prev.rigs.map((r, i) =>
-              i === rigIndex ? { ...r, gpuIds: [...r.gpuIds, ...Array(toAdd).fill(gpuSpec.id)] } : r
+              i === rigIndex
+                ? { ...r, gpuIds: [...r.gpuIds, ...Array(toAdd).fill(gpuSpec.id)] }
+                : r
             ),
           }
         : prev
@@ -817,10 +957,12 @@ const AUTO_STEP_SECONDS = 30;
     rigIndexOrAll: number | 'ALL'
   ): { ok: boolean; count: number; cost: number } => {
     if (!state) return { ok: false, count: 0, cost: 0 };
-    const targets = state.rigs.filter((r, idx) =>
-      (rigIndexOrAll === 'ALL' || idx === rigIndexOrAll) && r.healthPct < 100
+    const targets = state.rigs.filter(
+      (r, idx) =>
+        (rigIndexOrAll === 'ALL' || idx === rigIndexOrAll) &&
+        (r.healthPct < 100 || r.status === 'FAILED')
     );
-    const totalCost = targets.reduce((s, r) => s + getRigRepairCost(r), 0);
+    const totalCost = targets.reduce((s, r) => s + getRigRepairCost(r, state), 0);
     if (targets.length === 0 || state.cash < totalCost) {
       return { ok: false, count: 0, cost: totalCost };
     }
@@ -833,8 +975,22 @@ const AUTO_STEP_SECONDS = 30;
         cash: prev.cash - totalCost,
         currentCycleStats: {
           ...prev.currentCycleStats,
-          otherSpendUsd: prev.currentCycleStats.otherSpendUsd + totalCost,
+          maintenanceSpendUsd: prev.currentCycleStats.maintenanceSpendUsd + totalCost,
         },
+        stats: {
+          ...prev.stats,
+          totalMaintenanceCostUsd: prev.stats.totalMaintenanceCostUsd + totalCost,
+          repairsCompleted: prev.stats.repairsCompleted + targets.length,
+        },
+        transactions: [
+          makeTx(
+            prev.stepCount,
+            'REPAIR',
+            -totalCost,
+            `Repaired ${targets.length} mining rig(s) to 100%`
+          ),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
         rigs: prev.rigs.map((r) =>
           targetIds.has(r.id)
             ? {
@@ -869,8 +1025,21 @@ const AUTO_STEP_SECONDS = 30;
         cash: prev.cash - totalCost,
         currentCycleStats: {
           ...prev.currentCycleStats,
-          otherSpendUsd: prev.currentCycleStats.otherSpendUsd + totalCost,
+          maintenanceSpendUsd: prev.currentCycleStats.maintenanceSpendUsd + totalCost,
         },
+        stats: {
+          ...prev.stats,
+          totalMaintenanceCostUsd: prev.stats.totalMaintenanceCostUsd + totalCost,
+        },
+        transactions: [
+          makeTx(
+            prev.stepCount,
+            'REPAIR',
+            -totalCost,
+            `Refreshed thermal paste on ${targets.length} rig(s)`
+          ),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
         rigs: prev.rigs.map((r) =>
           targetIds.has(r.id) ? { ...r, pasteStepsRemaining: 16 } : r
         ),
@@ -879,20 +1048,124 @@ const AUTO_STEP_SECONDS = 30;
     return { ok: true, count: targets.length, cost: totalCost };
   };
 
-  const handleSalvageRig = (rigId: string) => {
+  const handleSalvageRig = (rigId: string): number => {
+    if (!state) return 0;
+    const target = state.rigs.find((r) => r.id === rigId);
+    if (!target) return 0;
+    const refund = calculateRigResaleValue(target, state);
     setState((prev) => {
       if (!prev) return prev;
-      const target = prev.rigs.find((r) => r.id === rigId);
-      if (!target) return prev;
-      const refund = Math.round(calculateRigBuildCost(target) * 0.55);
+      const t = prev.rigs.find((r) => r.id === rigId);
+      if (!t) return prev;
+      const val = calculateRigResaleValue(t, prev);
       soundFx.playCash();
-      showBanner(`Salvaged ${target.name} for ${formatUsd(refund)}.`);
+      showBanner(`Sold ${t.name} for ${formatUsd(val)}.`);
       return {
         ...prev,
-        cash: prev.cash + refund,
+        cash: prev.cash + val,
+        stats: {
+          ...prev.stats,
+          totalHardwareSalesUsd: prev.stats.totalHardwareSalesUsd + val,
+        },
+        transactions: [
+          makeTx(prev.stepCount, 'SALE', val, `Sold/salvaged ${t.name}`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
         rigs: prev.rigs.filter((r) => r.id !== rigId),
       };
     });
+    return refund;
+  };
+
+  const handleRetireRig = (rigIndex: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const target = state.rigs[rigIndex];
+    if (!target) return { ok: false, summary: `Rig #${rigIndex + 1} not found.` };
+    soundFx.playClick();
+    setState((prev) => {
+      if (!prev) return prev;
+      const t = prev.rigs[rigIndex];
+      if (!t) return prev;
+      return {
+        ...prev,
+        rigs: prev.rigs.filter((_r, idx) => idx !== rigIndex),
+        backupRigs: [
+          ...(prev.backupRigs ?? []),
+          { ...t, enabled: false, lastStepCoins: 0, lastStepUsd: 0 },
+        ],
+      };
+    });
+    return {
+      ok: true,
+      summary: `Moved ${target.name} to Backup Hardware Vault (run "backup" to deploy or sell).`,
+    };
+  };
+
+  const handleDeployBackupRig = (backupIdx: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const target = (state.backupRigs ?? [])[backupIdx];
+    if (!target) return { ok: false, summary: `Backup rig #${backupIdx + 1} not found.` };
+    const maxRigs = getEffectiveFacilityMaxRigs(state);
+    if (state.rigs.length >= maxRigs) {
+      return { ok: false, summary: `Facility full (${maxRigs} max rigs).` };
+    }
+    soundFx.playClick();
+    setState((prev) => {
+      if (!prev) return prev;
+      const item = (prev.backupRigs ?? [])[backupIdx];
+      if (!item || prev.rigs.length >= getEffectiveFacilityMaxRigs(prev)) return prev;
+      const fac = getFacility(prev.facilityId);
+      const slot = findOpenGridSlot(fac, prev.rigs, prev.coolingUnits ?? []);
+      return {
+        ...prev,
+        backupRigs: (prev.backupRigs ?? []).filter((_r, i) => i !== backupIdx),
+        rigs: [
+          ...prev.rigs,
+          {
+            ...item,
+            enabled: true,
+            gridX: slot.gridX,
+            gridY: slot.gridY,
+            temperatureC: fac.ambientTempC + 18,
+            status:
+              item.status === 'FAILED'
+                ? 'FAILED'
+                : item.healthPct <= 20
+                ? 'NEEDS_REPAIR'
+                : 'MINING',
+          },
+        ],
+      };
+    });
+    return { ok: true, summary: `Re-deployed ${target.name} from Backup Vault into active bay.` };
+  };
+
+  const handleSellBackupRig = (backupIdx: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const target = (state.backupRigs ?? [])[backupIdx];
+    if (!target) return { ok: false, summary: `Backup rig #${backupIdx + 1} not found.` };
+    const val = calculateRigResaleValue(target, state);
+    soundFx.playCash();
+    setState((prev) => {
+      if (!prev) return prev;
+      const item = (prev.backupRigs ?? [])[backupIdx];
+      if (!item) return prev;
+      const saleVal = calculateRigResaleValue(item, prev);
+      return {
+        ...prev,
+        cash: prev.cash + saleVal,
+        backupRigs: (prev.backupRigs ?? []).filter((_r, i) => i !== backupIdx),
+        stats: {
+          ...prev.stats,
+          totalHardwareSalesUsd: prev.stats.totalHardwareSalesUsd + saleVal,
+        },
+        transactions: [
+          makeTx(prev.stepCount, 'SALE', saleVal, `Sold backup rig ${item.name}`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
+      };
+    });
+    return { ok: true, summary: `Sold backup rig ${target.name} for ${formatUsd(val)}.` };
   };
 
   const handleRenameRig = (rigId: string, name: string) => {
@@ -909,17 +1182,17 @@ const AUTO_STEP_SECONDS = 30;
 
   const handleDeployRig = (config: RigBuildConfig): boolean => {
     if (!state) return false;
-    const newCost = calculateRigBuildCost(config);
-    const facility = getFacility(state.facilityId);
-    if (state.cash < newCost || state.rigs.length >= facility.maxRigs) {
+    const newCost = calculateRigBuildCost(config, state);
+    const maxRigs = getEffectiveFacilityMaxRigs(state);
+    if (state.cash < newCost || state.rigs.length >= maxRigs) {
       return false;
     }
 
     setState((prev) => {
       if (!prev) return prev;
-      const cost = calculateRigBuildCost(config);
+      const cost = calculateRigBuildCost(config, prev);
       const fac = getFacility(prev.facilityId);
-      if (prev.cash < cost || prev.rigs.length >= fac.maxRigs) return prev;
+      if (prev.cash < cost || prev.rigs.length >= getEffectiveFacilityMaxRigs(prev)) return prev;
       const slot = findOpenGridSlot(fac, prev.rigs, prev.coolingUnits ?? []);
 
       const newRig: MiningRig = {
@@ -936,6 +1209,11 @@ const AUTO_STEP_SECONDS = 30;
         gridY: slot.gridY,
         temperatureC: fac.ambientTempC + 25,
         healthPct: 100,
+        conditionTier: 'NEW',
+        ageSteps: 0,
+        failureCount: 0,
+        isUsedPurchase: false,
+        purchasePriceUsd: cost,
         status: 'MINING',
         lastStepCoins: 0,
         lastStepUsd: 0,
@@ -953,18 +1231,157 @@ const AUTO_STEP_SECONDS = 30;
           ...prev.currentCycleStats,
           otherSpendUsd: prev.currentCycleStats.otherSpendUsd + cost,
         },
+        stats: {
+          ...prev.stats,
+          rigPurchasesCount: prev.stats.rigPurchasesCount + 1,
+          totalHardwareSpendUsd: prev.stats.totalHardwareSpendUsd + cost,
+          usedOnlyEligible: false,
+        },
+        transactions: [
+          makeTx(prev.stepCount, 'HARDWARE', -cost, `Built & deployed ${config.name}`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
         rigs: [...prev.rigs, newRig],
       };
     });
     return true;
   };
 
+  const handleBuyUsedListing = (
+    listingId: string,
+    customName?: string
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const listing = (state.usedMarketListings ?? []).find((l) => l.id === listingId);
+    if (!listing) return { ok: false, summary: 'Used listing unavailable.' };
+    if (state.cash < listing.listPriceUsd) {
+      return {
+        ok: false,
+        summary: `Insufficient cash (need ${formatUsd(listing.listPriceUsd)}).`,
+      };
+    }
+    const maxRigs = getEffectiveFacilityMaxRigs(state);
+    if (state.rigs.length >= maxRigs) {
+      return { ok: false, summary: `Facility full (${maxRigs} max rigs).` };
+    }
+
+    const coinUnlocked = state.coins[listing.config.targetCoin]?.unlocked;
+    const assignedCoin: CoinSymbol = coinUnlocked ? listing.config.targetCoin : 'BTC';
+    const rigName = customName?.trim() || `${listing.title.slice(0, 20)} #${state.rigs.length + 1}`;
+
+    soundFx.playCash();
+    setState((prev) => {
+      if (!prev) return prev;
+      const item = (prev.usedMarketListings ?? []).find((l) => l.id === listingId);
+      if (!item || prev.cash < item.listPriceUsd || prev.rigs.length >= getEffectiveFacilityMaxRigs(prev)) {
+        return prev;
+      }
+      const fac = getFacility(prev.facilityId);
+      const slot = findOpenGridSlot(fac, prev.rigs, prev.coolingUnits ?? []);
+      const newRig: MiningRig = {
+        ...item.config,
+        name: rigName,
+        targetCoin: prev.coins[item.config.targetCoin]?.unlocked ? item.config.targetCoin : 'BTC',
+        id: `rig_used_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+        poolMode: 'PPS',
+        firmwareProfile: 'BALANCED',
+        pasteStepsRemaining: item.conditionTier === 'DAMAGED' ? 4 : 10,
+        soloBlocksWon: 0,
+        lastStepBlockHit: false,
+        illicitMod: null,
+        enabled: true,
+        gridX: slot.gridX,
+        gridY: slot.gridY,
+        temperatureC: fac.ambientTempC + 20,
+        healthPct: item.conditionPct,
+        conditionTier: item.conditionTier,
+        ageSteps: item.ageSteps,
+        failureCount: 0,
+        isUsedPurchase: true,
+        purchasePriceUsd: item.listPriceUsd,
+        status: item.conditionPct <= 20 ? 'NEEDS_REPAIR' : 'MINING',
+        lastStepCoins: 0,
+        lastStepUsd: 0,
+        totalMinedCoins: 0,
+        totalEarnedUsd: 0,
+        createdStep: prev.stepCount,
+      };
+      showBanner(`Purchased ${item.title} (${formatUsd(item.listPriceUsd)}).`);
+      return {
+        ...prev,
+        cash: prev.cash - item.listPriceUsd,
+        currentCycleStats: {
+          ...prev.currentCycleStats,
+          otherSpendUsd: prev.currentCycleStats.otherSpendUsd + item.listPriceUsd,
+        },
+        stats: {
+          ...prev.stats,
+          rigPurchasesCount: prev.stats.rigPurchasesCount + 1,
+          usedRigPurchasesCount: prev.stats.usedRigPurchasesCount + 1,
+          totalHardwareSpendUsd: prev.stats.totalHardwareSpendUsd + item.listPriceUsd,
+        },
+        transactions: [
+          makeTx(
+            prev.stepCount,
+            'HARDWARE',
+            -item.listPriceUsd,
+            `Used market purchase: ${item.title} (${assignedCoin})`
+          ),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
+        usedMarketListings: (prev.usedMarketListings ?? []).filter((l) => l.id !== listingId),
+        rigs: [...prev.rigs, newRig],
+      };
+    });
+    return {
+      ok: true,
+      summary: `Acquired ${listing.title} for ${formatUsd(listing.listPriceUsd)} (${listing.conditionPct}% condition, mining ${assignedCoin}).`,
+    };
+  };
+
+  const handleRefreshUsedMarket = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const fee =
+      state.devUnlockAll || state.unlockedResearch.includes('res_secondary_broker') ? 0 : 75;
+    if (state.cash < fee) {
+      return { ok: false, summary: `Broker refresh fee requires ${formatUsd(fee)}.` };
+    }
+    soundFx.playClick();
+    setState((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        cash: prev.cash - fee,
+        usedMarketListings: generateUsedMarketListings(prev),
+        usedMarketRefreshStep: prev.stepCount + 10,
+        transactions:
+          fee > 0
+            ? [
+                makeTx(prev.stepCount, 'HARDWARE', -fee, 'Used equipment broker search fee'),
+                ...(prev.transactions ?? []),
+              ].slice(0, 200)
+            : prev.transactions,
+      };
+    });
+    return {
+      ok: true,
+      summary:
+        fee > 0
+          ? `Refreshed used marketplace inventory (-${formatUsd(fee)} broker fee).`
+          : 'Refreshed used marketplace inventory.',
+    };
+  };
+
   const handleAddCoolingUnit = (type: RoomCoolingType): boolean => {
     const spec = ROOM_COOLING_UNITS.find((u) => u.id === type);
     if (!spec || !state) return false;
     const facIndex = FACILITY_TIERS.findIndex((f) => f.id === state.facilityId);
-    const unlocked = state.devUnlockAll || facIndex >= spec.unlockFacilityIndex;
-    if (!unlocked || state.cash < spec.cost) return false;
+    const unlockedFac = state.devUnlockAll || facIndex >= spec.unlockFacilityIndex;
+    const unlockedRes =
+      state.devUnlockAll ||
+      !spec.researchRequired ||
+      state.unlockedResearch.includes(spec.researchRequired);
+    if (!unlockedFac || !unlockedRes || state.cash < spec.cost) return false;
 
     setState((prev) => {
       if (!prev || prev.cash < spec.cost) return prev;
@@ -985,6 +1402,14 @@ const AUTO_STEP_SECONDS = 30;
           ...prev.currentCycleStats,
           otherSpendUsd: prev.currentCycleStats.otherSpendUsd + spec.cost,
         },
+        stats: {
+          ...prev.stats,
+          totalCoolingSpendUsd: prev.stats.totalCoolingSpendUsd + spec.cost,
+        },
+        transactions: [
+          makeTx(prev.stepCount, 'FACILITY', -spec.cost, `Installed ${spec.name}`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
       };
     });
     return true;
@@ -1016,6 +1441,10 @@ const AUTO_STEP_SECONDS = 30;
       return {
         ...prev,
         cash: prev.cash + refund,
+        transactions: [
+          makeTx(prev.stepCount, 'SALE', refund, `Sold ${spec?.name ?? 'cooling unit'}`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
         coolingUnits: (prev.coolingUnits ?? []).filter((u) => u.id !== coolingId),
       };
     });
@@ -1068,6 +1497,22 @@ const AUTO_STEP_SECONDS = 30;
           ...prev.currentCycleStats,
           otherSpendUsd: prev.currentCycleStats.otherSpendUsd + cost,
         },
+        stats: {
+          ...prev.stats,
+          totalFacilitySpendUsd: prev.stats.totalFacilitySpendUsd + cost,
+        },
+        transactions:
+          cost > 0
+            ? [
+                makeTx(
+                  prev.stepCount,
+                  'FACILITY',
+                  -cost,
+                  `${action === 'BUY' ? 'Purchased' : 'Leased'} ${fac.name}`
+                ),
+                ...(prev.transactions ?? []),
+              ].slice(0, 200)
+            : prev.transactions,
         news: [
           {
             id: `news_fac_${Date.now()}`,
@@ -1085,6 +1530,109 @@ const AUTO_STEP_SECONDS = 30;
       };
     });
     return true;
+  };
+
+  const handleBuyFacilityUpgrade = (
+    upgradeId: FacilityUpgradeId
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const spec = FACILITY_UPGRADES.find((u) => u.id === upgradeId);
+    if (!spec) return { ok: false, summary: 'Facility upgrade not found.' };
+    const facIdx = FACILITY_TIERS.findIndex((f) => f.id === state.facilityId);
+    if (!state.devUnlockAll && facIdx < spec.unlockFacilityIndex) {
+      return {
+        ok: false,
+        summary: `Locked: requires ${FACILITY_TIERS[spec.unlockFacilityIndex].name} or larger.`,
+      };
+    }
+    if (
+      !state.devUnlockAll &&
+      spec.researchRequired &&
+      !state.unlockedResearch.includes(spec.researchRequired)
+    ) {
+      const node = RESEARCH_NODES.find((n) => n.id === spec.researchRequired);
+      return {
+        ok: false,
+        summary: `Locked: requires R&D "${node?.name ?? spec.researchRequired}".`,
+      };
+    }
+    const curLevel = state.facilityUpgrades?.[upgradeId] ?? 0;
+    if (curLevel >= spec.maxLevel) {
+      return { ok: false, summary: `${spec.name} is already at max Level ${spec.maxLevel}.` };
+    }
+    const cost = getFacilityUpgradeCost(upgradeId, curLevel);
+    if (state.cash < cost) {
+      return { ok: false, summary: `Insufficient cash (need ${formatUsd(cost)}).` };
+    }
+    soundFx.playMilestone();
+    showBanner(`Upgraded ${spec.name} to Lv ${curLevel + 1}.`);
+    setState((prev) => {
+      if (!prev) return prev;
+      const lvl = prev.facilityUpgrades?.[upgradeId] ?? 0;
+      const c = getFacilityUpgradeCost(upgradeId, lvl);
+      if (lvl >= spec.maxLevel || prev.cash < c) return prev;
+      return {
+        ...prev,
+        cash: prev.cash - c,
+        facilityUpgrades: {
+          ...(prev.facilityUpgrades ?? {}),
+          [upgradeId]: lvl + 1,
+        },
+        currentCycleStats: {
+          ...prev.currentCycleStats,
+          otherSpendUsd: prev.currentCycleStats.otherSpendUsd + c,
+        },
+        stats: {
+          ...prev.stats,
+          totalFacilitySpendUsd: prev.stats.totalFacilitySpendUsd + c,
+        },
+        transactions: [
+          makeTx(prev.stepCount, 'FACILITY', -c, `Facility upgrade: ${spec.name} Lv ${lvl + 1}`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
+      };
+    });
+    return { ok: true, summary: `Upgraded ${spec.name} to Lv ${curLevel + 1} (${formatUsd(cost)}).` };
+  };
+
+  const handleSelectPowerContract = (
+    contractId: PowerContractId
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const spec = POWER_CONTRACTS.find((c) => c.id === contractId);
+    if (!spec) return { ok: false, summary: 'Power contract not found.' };
+    const facIdx = FACILITY_TIERS.findIndex((f) => f.id === state.facilityId);
+    if (!state.devUnlockAll && facIdx < spec.unlockFacilityIndex) {
+      return {
+        ok: false,
+        summary: `Locked: requires ${FACILITY_TIERS[spec.unlockFacilityIndex].name} or larger.`,
+      };
+    }
+    if (state.powerContractId === contractId) {
+      return { ok: false, summary: `Already signed to ${spec.name}.` };
+    }
+    soundFx.playClick();
+    showBanner(`Switched utility power contract to ${spec.name}.`);
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            powerContractId: contractId,
+            news: [
+              {
+                id: `news_pwr_${Date.now()}`,
+                step: prev.stepCount,
+                stepLabel: formatStepLabel(prev.stepCount),
+                title: `Power Contract: ${spec.name}`,
+                detail: spec.summary,
+                category: 'FACILITY' as const,
+              },
+              ...prev.news,
+            ].slice(0, 60),
+          }
+        : prev
+    );
+    return { ok: true, summary: `Signed ${spec.name}: ${spec.summary}` };
   };
 
   const handleHireEmployee = (role: EmployeeRole): boolean => {
@@ -1106,9 +1654,9 @@ const AUTO_STEP_SECONDS = 30;
           : '');
 
       const defaultPriority: TaskPriority =
-        role === 'TECHNICIAN'
+        role === 'TECHNICIAN' || role === 'ELECTRICIAN'
           ? 'HARDWARE_CARE'
-          : role === 'SYS_ENGINEER'
+          : role === 'SYS_ENGINEER' || role === 'MANAGER'
           ? 'HASHRATE_TUNING'
           : role === 'RESEARCHER'
           ? 'RESEARCH_OUTPUT'
@@ -1124,6 +1672,10 @@ const AUTO_STEP_SECONDS = 30;
           ...prev.currentCycleStats,
           otherSpendUsd: prev.currentCycleStats.otherSpendUsd + s.hireCost,
         },
+        transactions: [
+          makeTx(prev.stepCount, 'STAFF', -s.hireCost, `Hired ${name} (${s.title})`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
         employees: [
           ...prev.employees,
           {
@@ -1133,12 +1685,66 @@ const AUTO_STEP_SECONDS = 30;
             shift: 'DAY',
             priority: defaultPriority,
             morale: 90,
+            skillLevel: 1,
+            experienceXp: 0,
             hiredStep: prev.stepCount,
           },
         ],
       };
     });
     return true;
+  };
+
+  const handleTrainEmployee = (empIdx: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const emp = state.employees[empIdx];
+    if (!emp) return { ok: false, summary: `Staff #${empIdx + 1} not found.` };
+    const curLvl = emp.skillLevel ?? 1;
+    if (curLvl >= 5) {
+      return { ok: false, summary: `${emp.name} is already at max Skill Level 5.` };
+    }
+    const cost = 450 * curLvl;
+    if (state.cash < cost) {
+      return { ok: false, summary: `Training requires ${formatUsd(cost)}.` };
+    }
+    soundFx.playMilestone();
+    setState((prev) => {
+      if (!prev) return prev;
+      const target = prev.employees[empIdx];
+      if (!target || (target.skillLevel ?? 1) >= 5 || prev.cash < cost) return prev;
+      const nextLvl = Math.min(5, (target.skillLevel ?? 1) + 1);
+      return {
+        ...prev,
+        cash: prev.cash - cost,
+        currentCycleStats: {
+          ...prev.currentCycleStats,
+          otherSpendUsd: prev.currentCycleStats.otherSpendUsd + cost,
+        },
+        transactions: [
+          makeTx(
+            prev.stepCount,
+            'STAFF',
+            -cost,
+            `Trained ${target.name} (${target.role}) to Lv ${nextLvl}`
+          ),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
+        employees: prev.employees.map((e, i) =>
+          i === empIdx
+            ? {
+                ...e,
+                skillLevel: nextLvl,
+                experienceXp: (e.experienceXp ?? 0) + 180,
+                morale: Math.min(100, e.morale + 10),
+              }
+            : e
+        ),
+      };
+    });
+    return {
+      ok: true,
+      summary: `Trained ${emp.name} to Skill Lv ${curLvl + 1} for ${formatUsd(cost)} (+10 morale).`,
+    };
   };
 
   const handleFireEmployee = (employeeId: string) => {
@@ -1198,9 +1804,47 @@ const AUTO_STEP_SECONDS = 30;
           ...prev.currentCycleStats,
           otherSpendUsd: prev.currentCycleStats.otherSpendUsd + n.costCash,
         },
+        stats: {
+          ...prev.stats,
+          totalResearchSpendUsd: prev.stats.totalResearchSpendUsd + n.costCash,
+        },
+        transactions: [
+          makeTx(prev.stepCount, 'RESEARCH', -n.costCash, `Funded R&D: ${n.name}`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
       };
     });
     return true;
+  };
+
+  const handleStartChallenge = (challengeId: ChallengeId): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const spec = CHALLENGES.find((c) => c.id === challengeId);
+    if (!spec) return { ok: false, summary: 'Challenge not found.' };
+    if (state.activeChallengeId === challengeId) {
+      return { ok: false, summary: `Challenge "${spec.title}" is already active.` };
+    }
+    if ((state.completedChallenges ?? []).includes(challengeId)) {
+      return { ok: false, summary: `Challenge "${spec.title}" already completed.` };
+    }
+    soundFx.playMilestone();
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            activeChallengeId: challengeId,
+            failedChallenges: (prev.failedChallenges ?? []).filter((id) => id !== challengeId),
+            stats: {
+              ...prev.stats,
+              usedOnlyEligible:
+                challengeId === 'challenge_used_only'
+                  ? prev.stats.rigPurchasesCount - prev.stats.usedRigPurchasesCount === 0
+                  : prev.stats.usedOnlyEligible,
+            },
+          }
+        : prev
+    );
+    return { ok: true, summary: `Activated challenge: ${spec.title} — ${spec.description}` };
   };
 
   const handleLaunchCampaign = (templateId: string, targetCoin: CoinSymbol): boolean => {
@@ -1242,6 +1886,10 @@ const AUTO_STEP_SECONDS = 30;
           ...prev.currentCycleStats,
           otherSpendUsd: prev.currentCycleStats.otherSpendUsd + c.cost,
         },
+        transactions: [
+          makeTx(prev.stepCount, 'EVENT', -c.cost, `PR Campaign: ${c.name} (${targetCoin})`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
         campaignCooldowns: {
           ...prev.campaignCooldowns,
           [c.id]: prev.stepCount + Math.round(c.cooldownSteps * cdMult),
@@ -1266,7 +1914,9 @@ const AUTO_STEP_SECONDS = 30;
             step: prev.stepCount,
             stepLabel: formatStepLabel(prev.stepCount),
             title: `${c.name} Hits ${targetCoin} Markets`,
-            detail: `${c.direction === 'HYPE' ? 'Bullish coverage' : 'Critical rumors'} circulating across crypto media.`,
+            detail: `${
+              c.direction === 'HYPE' ? 'Bullish coverage' : 'Critical rumors'
+            } circulating across crypto media.`,
             category: 'PR' as const,
           },
           ...prev.news,
@@ -1277,10 +1927,21 @@ const AUTO_STEP_SECONDS = 30;
   };
 
   // Contracts Handlers
-  const handleAcceptContract = (contractId: string): boolean => {
-    if (!state || state.activeContract) return false;
+  const handleAcceptContract = (contractId: string): { ok: boolean; reason?: string } => {
+    if (!state) return { ok: false, reason: 'No active game.' };
+    if (state.activeContract) {
+      return { ok: false, reason: 'Finish or abandon your current contract first.' };
+    }
     const target = state.availableContracts.find((c) => c.id === contractId);
-    if (!target) return false;
+    if (!target) return { ok: false, reason: 'Contract not found.' };
+    if (!state.devUnlockAll && state.mediaCredibility < (target.minReputation ?? 0)) {
+      return {
+        ok: false,
+        reason: `Requires ${target.minReputation} Media Credibility (current: ${Math.round(
+          state.mediaCredibility
+        )}).`,
+      };
+    }
     soundFx.playMilestone();
     setState((prev) =>
       prev && !prev.activeContract
@@ -1291,7 +1952,7 @@ const AUTO_STEP_SECONDS = 30;
           }
         : prev
     );
-    return true;
+    return { ok: true };
   };
 
   const handleAbandonContract = (): boolean => {
@@ -1355,6 +2016,10 @@ const AUTO_STEP_SECONDS = 30;
               ...prev.currentCycleStats,
               otherSpendUsd: prev.currentCycleStats.otherSpendUsd + cost,
             },
+            transactions: [
+              makeTx(prev.stepCount, 'EVENT', -cost, `Shadow botnet lease (${coin})`),
+              ...(prev.transactions ?? []),
+            ].slice(0, 200),
             underground: {
               ...prev.underground,
               botnetCoin: coin,
@@ -1398,6 +2063,10 @@ const AUTO_STEP_SECONDS = 30;
           ...prev.currentCycleStats,
           otherSpendUsd: prev.currentCycleStats.otherSpendUsd + cost,
         },
+        transactions: [
+          makeTx(prev.stepCount, 'EVENT', -cost, `Dark-pool wash spike (${coin})`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
         underground: {
           ...prev.underground,
           washCooldownStep: prev.stepCount + 12,
@@ -1443,6 +2112,10 @@ const AUTO_STEP_SECONDS = 30;
               ...prev.currentCycleStats,
               otherSpendUsd: prev.currentCycleStats.otherSpendUsd + cost,
             },
+            transactions: [
+              makeTx(prev.stepCount, 'EVENT', -cost, `DDoS sabotage vs ${rival.name}`),
+              ...(prev.transactions ?? []),
+            ].slice(0, 200),
             rivals: prev.rivals.map((rv) =>
               rv.id === rivalId
                 ? {
@@ -1483,6 +2156,10 @@ const AUTO_STEP_SECONDS = 30;
               ...prev.underground,
               launderCooldownStep: prev.stepCount + 10,
             },
+            transactions: [
+              makeTx(prev.stepCount, 'EVENT', -cost, 'Mixer scrubbing (-24 Heat)'),
+              ...(prev.transactions ?? []),
+            ].slice(0, 200),
             stats: {
               ...prev.stats,
               totalFinesAndBribesUsd: prev.stats.totalFinesAndBribesUsd + cost,
@@ -1510,6 +2187,10 @@ const AUTO_STEP_SECONDS = 30;
               ...prev.underground,
               bribeProtectionSteps: 12,
             },
+            transactions: [
+              makeTx(prev.stepCount, 'EVENT', -cost, 'Inspector hush bribe (12st shield)'),
+              ...(prev.transactions ?? []),
+            ].slice(0, 200),
             stats: {
               ...prev.stats,
               covertOpsCount: prev.stats.covertOpsCount + 1,
@@ -1533,9 +2214,9 @@ const AUTO_STEP_SECONDS = 30;
     }
 
     if (item.kind === 'SMUGGLED_RIG' && item.presetConfig) {
-      const fac = getFacility(state.facilityId);
-      if (state.rigs.length >= fac.maxRigs) {
-        return { ok: false, summary: `Facility full (${fac.maxRigs} max rigs).` };
+      const maxRigs = getEffectiveFacilityMaxRigs(state);
+      if (state.rigs.length >= maxRigs) {
+        return { ok: false, summary: `Facility full (${maxRigs} max rigs).` };
       }
       soundFx.playAlert();
       setState((prev) => {
@@ -1557,6 +2238,10 @@ const AUTO_STEP_SECONDS = 30;
           gridY: slot.gridY,
           temperatureC: f.ambientTempC + 24,
           healthPct: 96,
+          conditionTier: 'USED',
+          ageSteps: 20,
+          failureCount: 0,
+          purchasePriceUsd: item.costUsd,
           status: 'MINING',
           lastStepCoins: 0,
           lastStepUsd: 0,
@@ -1575,7 +2260,16 @@ const AUTO_STEP_SECONDS = 30;
               (b) => b.id !== listingId
             ),
           },
-          stats: { ...prev.stats, covertOpsCount: prev.stats.covertOpsCount + 1 },
+          transactions: [
+            makeTx(prev.stepCount, 'HARDWARE', -item.costUsd, `Black market: ${item.title}`),
+            ...(prev.transactions ?? []),
+          ].slice(0, 200),
+          stats: {
+            ...prev.stats,
+            covertOpsCount: prev.stats.covertOpsCount + 1,
+            rigPurchasesCount: prev.stats.rigPurchasesCount + 1,
+            usedOnlyEligible: false,
+          },
         };
       });
       return {
@@ -1605,13 +2299,24 @@ const AUTO_STEP_SECONDS = 30;
                   (b) => b.id !== listingId
                 ),
               },
+              transactions: [
+                makeTx(
+                  prev.stepCount,
+                  'HARDWARE',
+                  -item.costUsd,
+                  `Flashed ${item.title} onto ${targetRig.name}`
+                ),
+                ...(prev.transactions ?? []),
+              ].slice(0, 200),
               stats: { ...prev.stats, covertOpsCount: prev.stats.covertOpsCount + 1 },
             }
           : prev
       );
       return {
         ok: true,
-        summary: `Flashed ${item.title} onto ${targetRig.name} for ${formatUsd(item.costUsd)} (+${item.heatGain} Heat).`,
+        summary: `Flashed ${item.title} onto ${targetRig.name} for ${formatUsd(item.costUsd)} (+${
+          item.heatGain
+        } Heat).`,
       };
     }
 
@@ -1686,7 +2391,7 @@ const AUTO_STEP_SECONDS = 30;
           }
         : prev
     );
-    showBanner('Dev Override: Deed granted for all 4 facility tiers.');
+    showBanner(`Dev Override: Deed granted for all ${FACILITY_TIERS.length} facility tiers.`);
   };
 
   const handleDevResetRigTemps = () => {
@@ -1773,7 +2478,9 @@ const AUTO_STEP_SECONDS = 30;
       const evt = generateInteractiveEvent(prev, forceRaid ? 'RAID' : undefined);
       return { ...prev, pendingEvent: evt };
     });
-    showBanner(forceRaid ? 'Dev Trigger: Inspector Raid initiated.' : 'Dev Trigger: Interactive Event started.');
+    showBanner(
+      forceRaid ? 'Dev Trigger: Inspector Raid initiated.' : 'Dev Trigger: Interactive Event started.'
+    );
   };
 
   const handleDevSetRegime = (regime: MarketRegime) => {
@@ -1854,19 +2561,39 @@ const AUTO_STEP_SECONDS = 30;
   };
 
   if (showEduLanding && (!state || state.mode === 'TITLE_MENU')) {
-    return <EducationLanding onOpenPortal={() => { soundFx.playClick(); setShowEduLanding(false); }} />;
+    return (
+      <EducationLanding
+        onOpenPortal={() => {
+          soundFx.playClick();
+          setShowEduLanding(false);
+        }}
+      />
+    );
   }
 
   if (!state || state.mode === 'TITLE_MENU') {
-    const savedSummary = savedSnapshot
-      ? `${formatStepLabel(savedSnapshot.stepCount)} · ${formatUsd(savedSnapshot.cash, true)}`
+    const careerSummary = careerSnapshot
+      ? `${formatStepLabel(careerSnapshot.stepCount)} · ${formatUsd(careerSnapshot.cash, true)}`
+      : undefined;
+    const sandboxSummary = sandboxSnapshot
+      ? `${formatStepLabel(sandboxSnapshot.stepCount)} · ${formatUsd(sandboxSnapshot.cash, true)}`
       : undefined;
     return (
       <TitleMenu
-        hasSavedGame={Boolean(savedSnapshot)}
-        savedSummary={savedSummary}
+        hasSavedGame={Boolean(careerSnapshot)}
+        savedSummary={careerSummary}
+        hasSavedSandbox={Boolean(sandboxSnapshot)}
+        sandboxSummary={sandboxSummary}
         onStartNew={handleStartNew}
-        onResume={handleResume}
+        onResume={() => handleResume(false)}
+        onResumeSandbox={() => handleResume(true)}
+        onExportSave={handleExportSave}
+        onImportSave={handleImportSaveJson}
+        onBackupSave={(sandbox) =>
+          handleBackupSave((sandbox ? sandboxSnapshot : careerSnapshot) ?? undefined)
+        }
+        onRestoreBackup={handleRestoreBackup}
+        onResetSave={handleResetSave}
         onReturnToStudy={() => {
           soundFx.playClick();
           setShowEduLanding(true);
@@ -1885,9 +2612,11 @@ const AUTO_STEP_SECONDS = 30;
   const navCommands: { label: string; cmd: string }[] = [
     { label: 'Status', cmd: 'status' },
     { label: 'Rigs', cmd: 'rigs' },
+    { label: 'Used Market', cmd: 'usedmarket' },
+    { label: 'Power', cmd: 'power' },
     { label: 'Market', cmd: 'market' },
     { label: 'Contracts', cmd: 'contracts' },
-    { label: 'Covert Ops', cmd: 'ops' },
+    { label: 'Stats', cmd: 'stats' },
   ];
 
   return (
@@ -1902,10 +2631,10 @@ const AUTO_STEP_SECONDS = 30;
             onClick={() => triggerTerminalCommand('status')}
             className="font-display text-lg font-bold tracking-tight text-green-300 matrix-glow whitespace-nowrap shrink-0"
           >
-            Blockworks Tycoon
+            Blockworks Tycoon{state.isSandbox ? ' [SANDBOX]' : ''}
           </button>
 
-          <nav className="flex items-center gap-6 overflow-x-auto">
+          <nav className="flex items-center gap-5 overflow-x-auto">
             {navCommands.map((item) => (
               <button
                 key={item.cmd}
@@ -2131,6 +2860,11 @@ const AUTO_STEP_SECONDS = 30;
             onUnlockCoin={handleUnlockCoin}
             onDeployRig={handleDeployRig}
             onSalvageRig={handleSalvageRig}
+            onRetireRig={handleRetireRig}
+            onDeployBackupRig={handleDeployBackupRig}
+            onSellBackupRig={handleSellBackupRig}
+            onBuyUsedListing={handleBuyUsedListing}
+            onRefreshUsedMarket={handleRefreshUsedMarket}
             onRenameRig={handleRenameRig}
             onToggleRig={handleToggleRig}
             onChangeRigCoin={handleChangeRigCoin}
@@ -2146,10 +2880,14 @@ const AUTO_STEP_SECONDS = 30;
             onToggleCoolingUnit={handleToggleCoolingUnit}
             onRemoveCoolingUnit={handleRemoveCoolingUnit}
             onSelectFacility={handleSelectFacility}
+            onBuyFacilityUpgrade={handleBuyFacilityUpgrade}
+            onSelectPowerContract={handleSelectPowerContract}
             onHireEmployee={handleHireEmployee}
+            onTrainEmployee={handleTrainEmployee}
             onFireEmployee={handleFireEmployee}
             onUpdateEmployee={handleUpdateEmployee}
             onStartResearch={handleStartResearch}
+            onStartChallenge={handleStartChallenge}
             onLaunchCampaign={handleLaunchCampaign}
             onAcceptContract={handleAcceptContract}
             onAbandonContract={handleAbandonContract}
@@ -2160,6 +2898,9 @@ const AUTO_STEP_SECONDS = 30;
             onLaunderHeat={handleLaunderHeat}
             onBribeInspectors={handleBribeInspectors}
             onBuyBlackMarket={handleBuyBlackMarket}
+            onBackupSave={() => handleBackupSave()}
+            onRestoreBackup={() => handleRestoreBackup(Boolean(state.isSandbox))}
+            onExportSave={() => handleExportSave(Boolean(state.isSandbox))}
             onToggleDevMode={handleToggleDevMode}
             onOpenDevPanel={() => setDevPanelOpen(true)}
             onToggleDevUnlockAll={handleToggleDevUnlockAll}

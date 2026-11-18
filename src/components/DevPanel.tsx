@@ -321,7 +321,7 @@ export const DevPanel: React.FC<DevPanelProps> = ({
                   onClick={onOwnAllFacilities}
                   className="px-3 py-2 rounded-lg bg-[#06180B] hover:bg-green-950 border border-green-500/30 text-xs font-medium text-green-100 transition-colors"
                 >
-                  Own All 4 Facilities
+                  Own All 6 Facilities
                 </button>
                 <button
                   type="button"

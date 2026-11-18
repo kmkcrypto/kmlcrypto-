@@ -1,16 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  CHALLENGES,
   CHASSIS_PARTS,
   COMPUTE_PARTS,
   COOLING_PARTS,
   EMPLOYEE_SPECS,
   FACILITY_TIERS,
+  FACILITY_UPGRADES,
   FIRMWARE_PROFILE_SPECS,
   GPU_PARTS,
   ILLICIT_MOD_SPECS,
   MARKET_REGIME_SPECS,
   OS_PARTS,
   POOL_MODE_SPECS,
+  POWER_CONTRACTS,
   PR_CAMPAIGNS,
   PSU_PARTS,
   RESEARCH_NODES,
@@ -18,34 +21,44 @@ import {
   ROOM_COOLING_UNITS,
   STORAGE_PARTS,
 } from '../data/catalog';
+import { getRivalStrategyLabel } from '../engine/rivals';
 import {
   BILLING_CYCLE_STEPS,
   calculatePartTradeInCost,
   calculateRigBuildCost,
+  calculateRigResaleValue,
   computeFacilityCoolingSummary,
   computeRigTelemetry,
   computeStepCoinOutput,
   getAutoSellMultiplier,
+  getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
   getEmpireAlignment,
   getFacility,
   getFacilityTotals,
+  getFacilityUpgradeCost,
+  getPowerContract,
   getRigRepasteCost,
   getRigRepairCost,
   getSysEngineerBonus,
 } from '../engine/simulation';
+import { getGlobalHardwarePriceMult, getRigGeneration } from '../engine/usedMarket';
 import {
+  ChallengeId,
   CoinSymbol,
   EmployeeRole,
+  FacilityUpgradeId,
   FirmwareProfile,
   GameState,
   MarketRegime,
   PendingEvent,
   PoolMode,
+  PowerContractId,
   RigBuildConfig,
   RoomCoolingType,
   ShiftType,
   TaskPriority,
+  TransactionCategory,
 } from '../types/game';
 import {
   formatCoinAmount,
@@ -55,6 +68,16 @@ import {
   renderAsciiBar,
   renderAsciiSparkline,
 } from '../utils/format';
+import {
+  formatAchievementsReport,
+  formatChallengesReport,
+  formatCoolingCompare,
+  formatMilestonesReport,
+  formatPowerReport,
+  formatRivalsComparison,
+  formatStatsReport,
+  formatTransactionHistory,
+} from './terminal/reports';
 
 export interface LogLine {
   id: string;
@@ -107,7 +130,12 @@ interface TextGameTerminalProps {
   onResolveEvent: (choiceKey: string) => { ok: boolean; summary: string };
   onUnlockCoin: (symbol: CoinSymbol) => boolean;
   onDeployRig: (config: RigBuildConfig) => boolean;
-  onSalvageRig: (rigId: string) => void;
+  onSalvageRig: (rigId: string) => number;
+  onRetireRig: (rigIndex: number) => { ok: boolean; summary: string };
+  onDeployBackupRig: (backupIdx: number) => { ok: boolean; summary: string };
+  onSellBackupRig: (backupIdx: number) => { ok: boolean; summary: string };
+  onBuyUsedListing: (listingId: string, customName?: string) => { ok: boolean; summary: string };
+  onRefreshUsedMarket: () => { ok: boolean; summary: string };
   onRenameRig: (rigId: string, name: string) => void;
   onToggleRig: (rigId: string) => void;
   onChangeRigCoin: (rigId: string, coin: CoinSymbol) => void;
@@ -132,12 +160,16 @@ interface TextGameTerminalProps {
   onToggleCoolingUnit: (coolingId: string) => void;
   onRemoveCoolingUnit: (coolingId: string) => void;
   onSelectFacility: (facilityId: string, action: 'RENT' | 'BUY') => boolean;
+  onBuyFacilityUpgrade: (upgradeId: FacilityUpgradeId) => { ok: boolean; summary: string };
+  onSelectPowerContract: (contractId: PowerContractId) => { ok: boolean; summary: string };
   onHireEmployee: (role: EmployeeRole) => boolean;
+  onTrainEmployee: (empIdx: number) => { ok: boolean; summary: string };
   onFireEmployee: (employeeId: string) => void;
   onUpdateEmployee: (employeeId: string, shift: ShiftType, priority: TaskPriority) => void;
   onStartResearch: (nodeId: string) => boolean;
+  onStartChallenge: (challengeId: ChallengeId) => { ok: boolean; summary: string };
   onLaunchCampaign: (templateId: string, targetCoin: CoinSymbol) => boolean;
-  onAcceptContract: (contractId: string) => boolean;
+  onAcceptContract: (contractId: string) => { ok: boolean; reason?: string };
   onAbandonContract: () => boolean;
   onToggleSiphon: (enable: boolean) => boolean;
   onRentBotnet: (coin: CoinSymbol) => { ok: boolean; reason?: string; cost?: number };
@@ -146,6 +178,9 @@ interface TextGameTerminalProps {
   onLaunderHeat: () => { ok: boolean; reason?: string; cost?: number };
   onBribeInspectors: () => { ok: boolean; reason?: string; cost?: number };
   onBuyBlackMarket: (listingId: string, rigIdx?: number) => { ok: boolean; summary: string };
+  onBackupSave: () => boolean;
+  onRestoreBackup: () => boolean;
+  onExportSave: () => string | null;
   onToggleDevMode: (enabled: boolean) => void;
   onOpenDevPanel: () => void;
   onToggleDevUnlockAll: () => void;
@@ -182,6 +217,8 @@ const TOP_COMMANDS = [
   'build rig',
   'build preset',
   'presets',
+  'usedmarket',
+  'used',
   'overclock',
   'tinker',
   'rigs',
@@ -189,9 +226,13 @@ const TOP_COMMANDS = [
   'rig',
   'repair',
   'repaste',
+  'retire',
+  'backup',
   'salvage',
+  'sell',
   'rename',
   'cool',
+  'power',
   'facilities',
   'facility',
   'market',
@@ -204,11 +245,19 @@ const TOP_COMMANDS = [
   'blackmarket',
   'staff',
   'hire',
+  'train',
   'fire',
   'shift',
   'priority',
   'research',
+  'stats',
+  'history',
+  'tx',
   'ledger',
+  'milestones',
+  'achievements',
+  'challenges',
+  'save',
   'pr',
   'log',
   'dev',
@@ -231,6 +280,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onUnlockCoin,
   onDeployRig,
   onSalvageRig,
+  onRetireRig,
+  onDeployBackupRig,
+  onSellBackupRig,
+  onBuyUsedListing,
+  onRefreshUsedMarket,
   onRenameRig,
   onToggleRig,
   onChangeRigCoin,
@@ -246,10 +300,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onToggleCoolingUnit,
   onRemoveCoolingUnit,
   onSelectFacility,
+  onBuyFacilityUpgrade,
+  onSelectPowerContract,
   onHireEmployee,
+  onTrainEmployee,
   onFireEmployee,
   onUpdateEmployee,
   onStartResearch,
+  onStartChallenge,
   onLaunchCampaign,
   onAcceptContract,
   onAbandonContract,
@@ -260,6 +318,9 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onLaunderHeat,
   onBribeInspectors,
   onBuyBlackMarket,
+  onBackupSave,
+  onRestoreBackup,
+  onExportSave,
   onToggleDevMode,
   onOpenDevPanel,
   onToggleDevUnlockAll,
@@ -315,6 +376,72 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     return { ok: true, reason: '' };
   };
 
+  const getUnlockedChassis = () =>
+    CHASSIS_PARTS.filter((c) => isPartUnlocked(c.researchRequired).ok);
+
+  const getUnlockedComputeFor = (isAsicRack: boolean) =>
+    COMPUTE_PARTS.filter(
+      (c) =>
+        (isAsicRack ? c.kind === 'ASIC' : c.kind !== 'ASIC') &&
+        isPartUnlocked(c.researchRequired).ok
+    );
+
+  const getUnlockedGpus = () =>
+    GPU_PARTS.filter((g) => isPartUnlocked(g.researchRequired).ok);
+
+  const getUnlockedStorage = () =>
+    STORAGE_PARTS.filter((s) => isPartUnlocked(s.researchRequired).ok);
+
+  const getUnlockedPsus = () =>
+    PSU_PARTS.filter((p) => isPartUnlocked(p.researchRequired).ok);
+
+  const getUnlockedCooling = () =>
+    COOLING_PARTS.filter((c) => isPartUnlocked(c.researchRequired).ok);
+
+  const getUnlockedOs = () =>
+    OS_PARTS.filter((o) => isPartUnlocked(o.researchRequired).ok);
+
+  const getUnlockedCoins = () =>
+    (Object.keys(state.coins) as CoinSymbol[]).filter((sym) => state.coins[sym].unlocked);
+
+  const getUnlockedPresets = () =>
+    RIG_PRESETS.filter((p) => {
+      const ch = CHASSIS_PARTS.find((c) => c.id === p.config.chassisId);
+      const comp = COMPUTE_PARTS.find((c) => c.id === p.config.computeId);
+      const stor = STORAGE_PARTS.find((s) => s.id === p.config.storageId);
+      const psu = PSU_PARTS.find((x) => x.id === p.config.psuId);
+      const cool = COOLING_PARTS.find((c) => c.id === p.config.coolingId);
+      const os = OS_PARTS.find((o) => o.id === p.config.osId);
+      const gpusOk = p.config.gpuIds.every((gid) => {
+        const g = GPU_PARTS.find((x) => x.id === gid);
+        return Boolean(g && isPartUnlocked(g.researchRequired).ok);
+      });
+      return Boolean(
+        ch &&
+          comp &&
+          stor &&
+          psu &&
+          cool &&
+          os &&
+          isPartUnlocked(ch.researchRequired).ok &&
+          isPartUnlocked(comp.researchRequired).ok &&
+          gpusOk &&
+          isPartUnlocked(stor.researchRequired).ok &&
+          isPartUnlocked(psu.researchRequired).ok &&
+          isPartUnlocked(cool.researchRequired).ok &&
+          isPartUnlocked(os.researchRequired).ok
+      );
+    });
+
+  const getAccessibleResearch = () =>
+    RESEARCH_NODES.filter((n) => {
+      const done = state.unlockedResearch.includes(n.id);
+      const active = state.activeResearchId === n.id;
+      const preOk =
+        state.devUnlockAll || n.prereqIds.every((p) => state.unlockedResearch.includes(p));
+      return !done && (active || preOk);
+    });
+
   const printPendingEvent = (evt: PendingEvent) => {
     const optLines = evt.options.map(
       (o) => `  [${o.key}] ${o.label}\n      -> ${o.riskNote}`
@@ -336,12 +463,20 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   const printStatus = () => {
     const facility = getFacility(state.facilityId);
     const totals = getFacilityTotals(state);
+    const maxRigs = getEffectiveFacilityMaxRigs(state);
     const effectiveCap = getEffectiveFacilityPowerCapKw(state);
+    const contract = getPowerContract(state.powerContractId);
     const enabledCount = state.rigs.filter((r) => r.enabled).length;
-    const cooling = computeFacilityCoolingSummary(state.coolingUnits ?? [], enabledCount);
-    const slotsPct = Math.min(100, (totals.rigCount / facility.maxRigs) * 100);
-    const powerPct = Math.min(100, (totals.totalPowerKw / effectiveCap) * 100);
-    const noisePct = Math.min(100, (totals.maxNoiseDba / facility.noiseLimitDba) * 100);
+    const cooling = computeFacilityCoolingSummary(
+      state.coolingUnits ?? [],
+      enabledCount,
+      facility,
+      state.facilityUpgrades
+    );
+    const slotsPct = Math.min(100, (totals.rigCount / Math.max(1, maxRigs)) * 100);
+    const powerPct = Math.min(100, (totals.totalPowerKw / Math.max(0.1, effectiveCap)) * 100);
+    const noiseCap = facility.noiseLimitDba + (state.facilityUpgrades?.ventilation_ducts ?? 0) * 3;
+    const noisePct = Math.min(100, (totals.maxNoiseDba / noiseCap) * 100);
     const stepRev = state.rigs.reduce((s, r) => s + r.lastStepUsd, 0);
     const activeRes = state.activeResearchId
       ? RESEARCH_NODES.find((n) => n.id === state.activeResearchId)
@@ -357,13 +492,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     const sysBonus = getSysEngineerBonus(state);
     const rigLines = state.rigs.map((rig, i) => {
-      const t = computeRigTelemetry(
+      computeRigTelemetry(
         rig,
         facility,
         state.unlockedResearch,
         sysBonus,
         state.coolingUnits ?? [],
-        enabledCount
+        enabledCount,
+        state.facilityUpgrades
       );
       const profTag = rig.firmwareProfile === 'BALANCED' ? 'BAL' : rig.firmwareProfile === 'TURBO' ? 'TRB' : 'ECO';
       const poolTag = rig.poolMode === 'PPLNS' ? 'PLN' : rig.poolMode;
@@ -383,9 +519,15 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             const label =
               u.type === 'cool_unit_fan'
                 ? 'FAN'
+                : u.type === 'cool_unit_ind_fan'
+                ? 'IND-FAN'
                 : u.type === 'cool_unit_ac'
                 ? 'AC'
-                : 'CHILLER';
+                : u.type === 'cool_unit_liquid'
+                ? 'LIQ'
+                : u.type === 'cool_unit_chiller'
+                ? 'CHIL'
+                : 'HVAC';
             return `[C${i + 1}:${label}:${u.enabled ? 'ON' : 'OFF'}]`;
           })
           .join(' ')
@@ -395,7 +537,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       ? `${state.activeContract.title} (${Math.min(
           100,
           Math.round((state.activeContract.progress / state.activeContract.targetAmount) * 100)
-        )}%, ${state.activeContract.stepsRemaining}st left)`
+        )}%, ${state.activeContract.stepsRemaining}st)`
       : 'None (run "contracts")';
 
     const covertSummary = [
@@ -410,10 +552,24 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       .filter(Boolean)
       .join(' ');
 
+    const modBanner =
+      (state.activeMarketModifiers ?? []).length > 0
+        ? `| ${padRight(
+            `ACTIVE EVENTS: ${(state.activeMarketModifiers ?? [])
+              .map((m) => `${m.label} (${m.stepsRemaining}st)`)
+              .join(', ')}`,
+            78
+          )} |`
+        : null;
+
+    const challengeSpec = state.activeChallengeId
+      ? CHALLENGES.find((c) => c.id === state.activeChallengeId)
+      : null;
+
     const box = [
       `+================================================================================+`,
       `| ${padRight(
-        `${formatStepLabel(state.stepCount)} | ${facility.name} | Seed: ${state.runSeed}`,
+        `${formatStepLabel(state.stepCount)} | ${facility.name}${state.isSandbox ? ' [SANDBOX]' : ''} | Seed: ${state.runSeed}`,
         78
       )} |`,
       `| ${padRight(
@@ -423,19 +579,23 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       `| ${padRight(
         `Regime: ${regimeLabel} (${state.regimeStepsRemaining}st)  Heat: ${Math.round(
           state.regulatoryScrutiny
-        )}/100  Align: ${alignment}`,
+        )}/100  Rep: ${Math.round(state.mediaCredibility)}  Align: ${alignment}`,
         78
       )} |`,
+      ...(modBanner ? [modBanner] : []),
+      ...(challengeSpec
+        ? [`| ${padRight(`CHALLENGE: ${challengeSpec.title} — ${challengeSpec.description}`, 78)} |`]
+        : []),
       `+--------------------------------------------------------------------------------+`,
       `| SLOTS [${renderAsciiBar(slotsPct, 14)}] ${padRight(
-        `${totals.rigCount}/${facility.maxRigs}`,
+        `${totals.rigCount}/${maxRigs}`,
         6
       )} POWER [${renderAsciiBar(powerPct, 14)}] ${padRight(
         `${totals.totalPowerKw.toFixed(2)}/${effectiveCap}kW`,
         13
       )} |`,
       `| NOISE [${renderAsciiBar(noisePct, 14)}] ${padRight(
-        `${totals.maxNoiseDba}/${facility.noiseLimitDba}dBA`,
+        `${totals.maxNoiseDba}/${noiseCap}dBA`,
         9
       )} COOLING: ${padRight(
         `-${cooling.effectiveCoolingPerRigC.toFixed(1)}°C/rig (bill in ${stepsToBill}st)`,
@@ -444,14 +604,18 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       `+--------------------------------------------------------------------------------+`,
       ...(rigLines.length > 0
         ? rigLines
-        : [`|  No rigs deployed. Run "build rig" or "build preset 1" to assemble one.        |`]),
+        : [`|  No rigs deployed. Run "build rig", "usedmarket", or "build preset 1".        |`]),
       `+--------------------------------------------------------------------------------+`,
       `| COOLING: ${padRight(coolList, 28)} CONTRACT: ${padRight(contractText, 29)} |`,
-      `| OPS: ${padRight(covertSummary || 'Clean baseline', 34)} R&D: ${padRight(
+      `| POWER:   ${padRight(contract.name.slice(0, 28), 28)} R&D: ${padRight(
         activeRes
           ? `${activeRes.name.slice(0, 20)} (${Math.round(state.activeResearchProgress)}/${activeRes.costRp})`
           : 'Idle',
-        33
+        34
+      )} |`,
+      `| OPS:     ${padRight(covertSummary || 'Clean institutional baseline', 28)} VAULT: ${padRight(
+        `${(state.backupRigs ?? []).length} retired rig(s) | "stats"`,
+        32
       )} |`,
       `+================================================================================+`,
     ].join('\n');
@@ -475,9 +639,9 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       case 'COOLING':
         return 'GUIDE [6/8 Cooling]: Drops equilibrium °C so rigs do not throttle above 82°C. Type "1" (Stock Fans, $25) or "2" for extra cooling.';
       case 'OS':
-        return 'GUIDE [7/8 OS]: OS scales fleet hash & power draw. Type "1" (Desktop OS, $0) — unlocked right from Step 1.';
+        return 'GUIDE [7/8 OS]: OS scales fleet hash & power draw. Type "1" (Desktop OS, $0) to continue.';
       case 'COIN':
-        return 'GUIDE [8/8 Coin]: Mined coin auto-sells every step for USD. Pick an unlocked coin like "1" (BTC) — others show unlock costs.';
+        return 'GUIDE [8/8 Coin]: Mined coin auto-sells every step for USD. Pick an unlocked coin like "1" (BTC).';
       case 'CONFIRM':
         return 'GUIDE [Review]: Check Cost & Est Auto-Sell/st above. If there are no warnings, type "deploy" (or click "deploy") to launch Rig #2!';
     }
@@ -543,7 +707,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             `  5. PSU         Watt cap MUST cover total rig load ([FITS]) to deploy.`,
             `  6. Cooling     Cuts rig temperature (°C) & sets fan noise (dBA).`,
             `  7. OS          Firmware kernel tuning hashrate & power multipliers.`,
-            `  8. Coin        Picks target coin. [LOCKED] parts/coins stay visible to plan R&D!`,
+            `  8. Coin        Picks target coin from your unlocked tiers (unlock more in "market").`,
           ].join('\n'),
         },
         {
@@ -600,17 +764,21 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     const { config, step } = wiz;
     const chassis = CHASSIS_PARTS.find((c) => c.id === config.chassisId) ?? CHASSIS_PARTS[0];
     const facility = getFacility(state.facilityId);
+    const maxRigs = getEffectiveFacilityMaxRigs(state);
     const sysBonus = getSysEngineerBonus(state);
+    const hwMult = getGlobalHardwarePriceMult(state);
+    const priceOf = (cost: number) => Math.round(cost * hwMult);
     const guideTip = getWizardTutorialHint(step);
 
     if (step === 'CHASSIS') {
-      const rows = CHASSIS_PARTS.map((c, idx) => {
-        const lock = isPartUnlocked(c.researchRequired);
+      const options = getUnlockedChassis();
+      const presetCount = getUnlockedPresets().length;
+      const rows = options.map((c, idx) => {
         const cap = c.isAsicRack ? 'ASIC Rack' : `${c.maxGpus} GPU slots`;
-        return `  ${idx + 1}. ${padRight(c.name, 30)} ${padLeft(formatUsd(c.cost), 8)}  ${padRight(
+        return `  ${idx + 1}. ${padRight(c.name, 30)} ${padLeft(formatUsd(priceOf(c.cost)), 8)}  ${padRight(
           cap,
           12
-        )}  -${c.coolingBonus}°C  ${lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`}`;
+        )}  -${c.coolingBonus}°C  G${c.generation ?? 1}`;
       });
       append([
         { kind: 'HEAD', text: 'RIG BUILDER STEP 1/8 — SELECT CHASSIS' },
@@ -618,54 +786,32 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         ...(guideTip ? [{ kind: 'OK' as const, text: guideTip }] : []),
         {
           kind: 'TEXT',
-          text: 'Enter chassis number (e.g. "1"), or type "preset 1..4" to quick-load a preset, or "cancel".',
+          text:
+            presetCount > 0
+              ? `Enter chassis number (1..${options.length}), "preset 1..${presetCount}", or "cancel".`
+              : `Enter chassis number (1..${options.length}) or "cancel".`,
         },
       ]);
       return;
     }
 
     if (step === 'COMPUTE') {
-      const compatible = COMPUTE_PARTS.filter((c) =>
-        chassis.isAsicRack ? c.kind === 'ASIC' : c.kind !== 'ASIC'
-      );
-      const incompatible = COMPUTE_PARTS.filter((c) =>
-        chassis.isAsicRack ? c.kind !== 'ASIC' : c.kind === 'ASIC'
-      );
-      const rows = compatible.map((c, idx) => {
-        const lock = isPartUnlocked(c.researchRequired);
+      const options = getUnlockedComputeFor(chassis.isAsicRack);
+      const rows = options.map((c, idx) => {
         const topAlgo = Object.entries(c.hashrates)[0];
         const hashLabel = topAlgo
           ? `${topAlgo[0]} ${formatHashrate(topAlgo[1] ?? 0, topAlgo[0] as never)}`
           : '—';
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 34)} ${padLeft(formatUsd(c.cost), 8)}  ${padLeft(
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 34)} ${padLeft(formatUsd(priceOf(c.cost)), 8)}  ${padLeft(
           `${c.watts}W`,
           6
-        )}  ${padRight(hashLabel, 18)}  ${lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`}`;
-      });
-      const altPreview = incompatible.map((c) => {
-        const lock = isPartUnlocked(c.researchRequired);
-        const topAlgo = Object.entries(c.hashrates)[0];
-        const hashLabel = topAlgo
-          ? `${topAlgo[0]} ${formatHashrate(topAlgo[1] ?? 0, topAlgo[0] as never)}`
-          : '—';
-        const chassisNeed = chassis.isAsicRack ? 'Needs Non-ASIC Chassis' : 'Needs ASIC Chassis (Step 1)';
-        return `   -  ${padRight(c.name, 34)} ${padLeft(formatUsd(c.cost), 8)}  ${padLeft(
-          `${c.watts}W`,
-          6
-        )}  ${padRight(hashLabel, 18)}  [LOCKED: ${lock.ok ? chassisNeed : `${lock.reason} + ${chassisNeed}`}]`;
+        )}  ${padRight(hashLabel, 18)} G${c.generation ?? 1}`;
       });
       append([
         { kind: 'HEAD', text: `RIG BUILDER STEP 2/8 — SELECT COMPUTE (${chassis.name})` },
         {
           kind: 'PRE',
-          text: [
-            ...rows,
-            '',
-            chassis.isAsicRack
-              ? '  OTHER COMPUTE (CPU/FPGA — Not mountable in ASIC Blade Chassis):'
-              : '  ASIC BLADES (Require 42U/Hydro ASIC Chassis in Step 1):',
-            ...altPreview,
-          ].join('\n'),
+          text: rows.length > 0 ? rows.join('\n') : '  (No unlocked compute modules fit this chassis yet.)',
         },
         ...(guideTip ? [{ kind: 'OK' as const, text: guideTip }] : []),
         { kind: 'TEXT', text: 'Enter compatible compute number, "back", or "cancel".' },
@@ -674,15 +820,15 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (step === 'GPU') {
-      const rows = GPU_PARTS.map((g, idx) => {
-        const lock = isPartUnlocked(g.researchRequired);
+      const options = getUnlockedGpus();
+      const rows = options.map((g, idx) => {
         const eth = g.hashrates.ETHASH
           ? `ETH ${g.hashrates.ETHASH}MH`
           : `SCR ${g.hashrates.SCRYPT ?? 0}MH`;
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(g.name, 30)} ${padLeft(formatUsd(g.cost), 8)}  ${padLeft(
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(g.name, 30)} ${padLeft(formatUsd(priceOf(g.cost)), 8)}  ${padLeft(
           `${g.watts}W`,
           5
-        )}  ${padRight(eth, 13)}  ${lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`}`;
+        )}  ${padRight(eth, 13)} G${g.generation ?? 1}`;
       });
       append([
         {
@@ -700,13 +846,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (step === 'STORAGE') {
-      const rows = STORAGE_PARTS.map((s, idx) => {
-        const lock = isPartUnlocked(s.researchRequired);
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(s.name, 33)} ${padLeft(formatUsd(s.cost), 8)}  +${Math.round(
+      const options = getUnlockedStorage();
+      const rows = options.map((s, idx) => {
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(s.name, 33)} ${padLeft(formatUsd(priceOf(s.cost)), 8)}  +${Math.round(
           s.efficiencyBonus * 100
-        )}% eff  ${padRight(s.storageTb >= 1 ? `${s.storageTb}TB` : `${s.ramGb}GB RAM`, 8)}  ${
-          lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`
-        }`;
+        )}% eff  ${padRight(s.storageTb >= 1 ? `${s.storageTb}TB` : `${s.ramGb}GB RAM`, 8)}`;
       });
       append([
         { kind: 'HEAD', text: 'RIG BUILDER STEP 4/8 — SELECT RAM & STORAGE' },
@@ -719,15 +863,13 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (step === 'PSU') {
       const t = computeRigTelemetry(config, facility, state.unlockedResearch, sysBonus);
-      const rows = PSU_PARTS.map((p, idx) => {
-        const lock = isPartUnlocked(p.researchRequired);
+      const options = getUnlockedPsus();
+      const rows = options.map((p, idx) => {
         const fit = t.rawWatts <= p.maxWatts ? 'FITS' : 'UNDERPOWERED';
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(p.name, 31)} ${padLeft(formatUsd(p.cost), 8)}  ${padLeft(
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(p.name, 31)} ${padLeft(formatUsd(priceOf(p.cost)), 8)}  ${padLeft(
           `${p.maxWatts}W`,
           6
-        )}  ${Math.round(p.efficiency * 100)}% eff  [${padRight(fit, 12)}]  ${
-          lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`
-        }`;
+        )}  ${Math.round(p.efficiency * 100)}% eff  [${padRight(fit, 12)}]`;
       });
       append([
         {
@@ -742,12 +884,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (step === 'COOLING') {
-      const rows = COOLING_PARTS.map((c, idx) => {
-        const lock = isPartUnlocked(c.researchRequired);
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 32)} ${padLeft(formatUsd(c.cost), 8)}  -${padLeft(
+      const options = getUnlockedCooling();
+      const rows = options.map((c, idx) => {
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 32)} ${padLeft(formatUsd(priceOf(c.cost)), 8)}  -${padLeft(
           String(c.coolingPowerC),
           3
-        )}°C  ${padLeft(`${c.noiseDba}dBA`, 5)}  ${lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`}`;
+        )}°C  ${padLeft(`${c.noiseDba}dBA`, 5)}`;
       });
       append([
         { kind: 'HEAD', text: 'RIG BUILDER STEP 6/8 — SELECT COOLING SYSTEM' },
@@ -759,13 +901,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (step === 'OS') {
-      const rows = OS_PARTS.map((o, idx) => {
-        const lock = isPartUnlocked(o.researchRequired);
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(o.name, 30)} ${padLeft(formatUsd(o.cost), 8)}  x${o.hashrateMultiplier.toFixed(
+      const options = getUnlockedOs();
+      const rows = options.map((o, idx) => {
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(o.name, 30)} ${padLeft(formatUsd(priceOf(o.cost)), 8)}  x${o.hashrateMultiplier.toFixed(
           2
-        )} hash  x${o.powerMultiplier.toFixed(2)} pwr  ${
-          lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`
-        }`;
+        )} hash  x${o.powerMultiplier.toFixed(2)} pwr`;
       });
       append([
         { kind: 'HEAD', text: 'RIG BUILDER STEP 7/8 — SELECT OS KERNEL' },
@@ -777,10 +917,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (step === 'COIN') {
-      const allCoins = Object.keys(state.coins) as CoinSymbol[];
+      const unlockedCoins = getUnlockedCoins();
       const t = computeRigTelemetry(config, facility, state.unlockedResearch, sysBonus);
       const autoSellMult = getAutoSellMultiplier(state);
-      const rows = allCoins.map((sym, idx) => {
+      const rows = unlockedCoins.map((sym, idx) => {
         const c = state.coins[sym];
         const algoHash = t.baseHashrateByAlgo[c.algorithm];
         const est = computeStepCoinOutput(
@@ -791,16 +931,13 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           config.poolMode ?? 'PPS',
           true
         );
-        const lockLabel = c.unlocked
-          ? '[OK]'
-          : `[LOCKED: Unlock ${formatUsd(c.unlockCostUsd)} via "unlock ${sym}"]`;
         return `  ${idx + 1}. ${padRight(`${sym} (${c.name})`, 18)} ${padRight(
           c.algorithm,
           8
         )}  Hash: ${padRight(formatHashrate(algoHash, c.algorithm), 11)}  Est: ${padRight(
           formatUsd(est.autoSoldUsd) + '/st',
           12
-        )}  ${lockLabel}`;
+        )}`;
       });
       append([
         { kind: 'HEAD', text: 'RIG BUILDER STEP 8/8 — SELECT TARGET COIN (AUTO-SELLS EACH STEP)' },
@@ -808,14 +945,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         ...(guideTip ? [{ kind: 'OK' as const, text: guideTip }] : []),
         {
           kind: 'TEXT',
-          text: 'Enter an unlocked coin number or symbol (e.g. "1" or "BTC"), or "back".',
+          text: 'Enter coin number or symbol (e.g. "1" or "BTC"), or "back".',
         },
       ]);
       return;
     }
 
     // CONFIRM
-    const totalCost = calculateRigBuildCost(config);
+    const totalCost = calculateRigBuildCost(config, state);
     const activeCount = state.rigs.filter((r) => r.enabled).length + 1;
     const t = computeRigTelemetry(
       config,
@@ -823,7 +960,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       state.unlockedResearch,
       sysBonus,
       state.coolingUnits ?? [],
-      activeCount
+      activeCount,
+      state.facilityUpgrades
     );
     const compute = COMPUTE_PARTS.find((c) => c.id === config.computeId)!;
     const storage = STORAGE_PARTS.find((s) => s.id === config.storageId)!;
@@ -843,7 +981,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     const warnings: string[] = [];
     if (state.cash < totalCost) warnings.push(`Insufficient cash (need ${formatUsd(totalCost)})`);
-    if (state.rigs.length >= facility.maxRigs) warnings.push(`Facility full (${facility.maxRigs} max rigs)`);
+    if (state.rigs.length >= maxRigs) warnings.push(`Facility full (${maxRigs} max rigs)`);
     if (t.isUnderpowered) warnings.push(`PSU overloaded (${t.rawWatts}W > ${psu.maxWatts}W)`);
     if (!coin.unlocked) warnings.push(`${coin.symbol} is locked (unlock it for ${formatUsd(coin.unlockCostUsd)})`);
     if (t.effectiveHashrate <= 0) warnings.push(`Zero hashrate for ${config.targetCoin} (${t.targetAlgo})`);
@@ -973,16 +1111,20 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (parts[0] === 'preset') {
+      const unlockedPresets = getUnlockedPresets();
       const idx = parseInt(parts[1] || '1', 10) - 1;
-      const preset = RIG_PRESETS[idx];
+      const preset = unlockedPresets[idx];
       if (!preset) {
-        append([{ kind: 'ERR', text: 'Usage: preset <1..4>' }]);
+        append([{ kind: 'ERR', text: `Usage: preset <1..${unlockedPresets.length}>` }]);
         return;
       }
       const nextWiz: BuildWizardState = {
         step: 'CONFIRM',
         config: {
           ...preset.config,
+          targetCoin: state.coins[preset.config.targetCoin]?.unlocked
+            ? preset.config.targetCoin
+            : 'BTC',
           name: `${preset.label} #${state.rigs.length + 1}`,
           poolMode: 'PPS',
           firmwareProfile: 'BALANCED',
@@ -1006,22 +1148,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (wiz.step === 'CHASSIS') {
+      const options = getUnlockedChassis();
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = CHASSIS_PARTS[idx];
+      const picked = options[idx];
       if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a number from 1 to ${CHASSIS_PARTS.length}.` }]);
+        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
         return;
       }
-      const lock = isPartUnlocked(picked.researchRequired);
-      if (!lock.ok) {
-        append([{ kind: 'ERR', text: `Locked (${lock.reason}). Pick an unlocked chassis.` }]);
-        return;
-      }
-      const firstCompute = COMPUTE_PARTS.find(
-        (c) =>
-          (picked.isAsicRack ? c.kind === 'ASIC' : c.kind !== 'ASIC') &&
-          isPartUnlocked(c.researchRequired).ok
-      );
+      const firstCompute = getUnlockedComputeFor(picked.isAsicRack)[0];
       const nextWiz: BuildWizardState = {
         step: 'COMPUTE',
         config: {
@@ -1037,18 +1171,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (wiz.step === 'COMPUTE') {
-      const options = COMPUTE_PARTS.filter((c) =>
-        chassis.isAsicRack ? c.kind === 'ASIC' : c.kind !== 'ASIC'
-      );
+      const options = getUnlockedComputeFor(chassis.isAsicRack);
       const idx = parseInt(parts[0], 10) - 1;
       const picked = options[idx];
       if (!picked) {
         append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
-        return;
-      }
-      const lock = isPartUnlocked(picked.researchRequired);
-      if (!lock.ok) {
-        append([{ kind: 'ERR', text: `Locked (${lock.reason}).` }]);
         return;
       }
       const nextWiz: BuildWizardState = {
@@ -1073,15 +1200,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         printWizardPrompt(nextWiz);
         return;
       }
+      const options = getUnlockedGpus();
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = GPU_PARTS[idx];
+      const picked = options[idx];
       if (!picked) {
-        append([{ kind: 'ERR', text: 'Enter GPU number (e.g. "1" or "1 x3"), "clear", or "done".' }]);
-        return;
-      }
-      const lock = isPartUnlocked(picked.researchRequired);
-      if (!lock.ok) {
-        append([{ kind: 'ERR', text: `Locked (${lock.reason}).` }]);
+        append([{ kind: 'ERR', text: `Enter GPU number (1..${options.length}), "clear", or "done".` }]);
         return;
       }
       const qtyMatch = parts[1]?.match(/^x?(\d+)$/);
@@ -1104,15 +1227,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (wiz.step === 'STORAGE') {
+      const options = getUnlockedStorage();
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = STORAGE_PARTS[idx];
+      const picked = options[idx];
       if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a number from 1 to ${STORAGE_PARTS.length}.` }]);
-        return;
-      }
-      const lock = isPartUnlocked(picked.researchRequired);
-      if (!lock.ok) {
-        append([{ kind: 'ERR', text: `Locked (${lock.reason}).` }]);
+        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
         return;
       }
       const nextWiz: BuildWizardState = {
@@ -1125,15 +1244,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (wiz.step === 'PSU') {
+      const options = getUnlockedPsus();
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = PSU_PARTS[idx];
+      const picked = options[idx];
       if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a number from 1 to ${PSU_PARTS.length}.` }]);
-        return;
-      }
-      const lock = isPartUnlocked(picked.researchRequired);
-      if (!lock.ok) {
-        append([{ kind: 'ERR', text: `Locked (${lock.reason}).` }]);
+        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
         return;
       }
       const nextWiz: BuildWizardState = {
@@ -1146,15 +1261,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (wiz.step === 'COOLING') {
+      const options = getUnlockedCooling();
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = COOLING_PARTS[idx];
+      const picked = options[idx];
       if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a number from 1 to ${COOLING_PARTS.length}.` }]);
-        return;
-      }
-      const lock = isPartUnlocked(picked.researchRequired);
-      if (!lock.ok) {
-        append([{ kind: 'ERR', text: `Locked (${lock.reason}).` }]);
+        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
         return;
       }
       const nextWiz: BuildWizardState = {
@@ -1167,15 +1278,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (wiz.step === 'OS') {
+      const options = getUnlockedOs();
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = OS_PARTS[idx];
+      const picked = options[idx];
       if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a number from 1 to ${OS_PARTS.length}.` }]);
-        return;
-      }
-      const lock = isPartUnlocked(picked.researchRequired);
-      if (!lock.ok) {
-        append([{ kind: 'ERR', text: `Locked (${lock.reason}).` }]);
+        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
         return;
       }
       const nextWiz: BuildWizardState = {
@@ -1188,23 +1295,17 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (wiz.step === 'COIN') {
-      const allCoins = Object.keys(state.coins) as CoinSymbol[];
+      const unlockedCoins = getUnlockedCoins();
       const asNum = parseInt(parts[0], 10);
       const picked =
-        !isNaN(asNum) && allCoins[asNum - 1]
-          ? allCoins[asNum - 1]
-          : allCoins.find((s) => s.toLowerCase() === parts[0]);
+        !isNaN(asNum) && unlockedCoins[asNum - 1]
+          ? unlockedCoins[asNum - 1]
+          : unlockedCoins.find((s) => s.toLowerCase() === parts[0]);
       if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a coin number (1..${allCoins.length}) or symbol (e.g. BTC).` }]);
-        return;
-      }
-      if (!state.coins[picked].unlocked) {
         append([
           {
             kind: 'ERR',
-            text: `${picked} is locked (unlock it for ${formatUsd(
-              state.coins[picked].unlockCostUsd
-            )} via "unlock ${picked}"). Pick an unlocked coin.`,
+            text: `Enter an unlocked coin number (1..${unlockedCoins.length}) or symbol (e.g. ${unlockedCoins[0] ?? 'BTC'}).`,
           },
         ]);
         return;
@@ -1322,20 +1423,21 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       return;
     }
 
+    const hwMult = getGlobalHardwarePriceMult(state);
     const fmtNet = (oldCost: number, newCost: number) => {
-      const net = calculatePartTradeInCost(oldCost, newCost);
+      const net = calculatePartTradeInCost(oldCost, Math.round(newCost * hwMult));
       return net >= 0 ? `Net +${formatUsd(net)}` : `Refund ${formatUsd(Math.abs(net))}`;
     };
 
     if (tk.slot === 'chassis') {
-      const rows = CHASSIS_PARTS.map((c, idx) => {
-        const lock = isPartUnlocked(c.researchRequired);
+      const options = getUnlockedChassis();
+      const rows = options.map((c, idx) => {
         const cur = c.id === rig.chassisId ? ' *INSTALLED*' : fmtNet(ch.cost, c.cost);
         const cap = c.isAsicRack ? 'ASIC Rack' : `${c.maxGpus} GPUs`;
         return `  ${idx + 1}. ${padRight(c.name, 30)} ${padLeft(formatUsd(c.cost), 7)}  ${padRight(
           cap,
           9
-        )}  -${c.coolingBonus}°C  ${padRight(cur, 13)}  ${lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`}`;
+        )}  -${c.coolingBonus}°C  ${padRight(cur, 13)}`;
       });
       append([
         { kind: 'HEAD', text: `TINKER R${tk.rigIndex + 1} · SWAP CHASSIS (60% trade-in)` },
@@ -1346,11 +1448,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (tk.slot === 'compute') {
-      const compatible = COMPUTE_PARTS.filter((c) =>
-        ch.isAsicRack ? c.kind === 'ASIC' : c.kind !== 'ASIC'
-      );
+      const compatible = getUnlockedComputeFor(ch.isAsicRack);
       const rows = compatible.map((c, idx) => {
-        const lock = isPartUnlocked(c.researchRequired);
         const topAlgo = Object.entries(c.hashrates)[0];
         const hashLabel = topAlgo
           ? `${topAlgo[0]} ${formatHashrate(topAlgo[1] ?? 0, topAlgo[0] as never)}`
@@ -1359,9 +1458,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 33)} ${padLeft(
           formatUsd(c.cost),
           7
-        )}  ${padLeft(`${c.watts}W`, 5)}  ${padRight(hashLabel, 17)}  ${padRight(cur, 13)}  ${
-          lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`
-        }`;
+        )}  ${padLeft(`${c.watts}W`, 5)}  ${padRight(hashLabel, 17)}  ${padRight(cur, 13)}`;
       });
       append([
         { kind: 'HEAD', text: `TINKER R${tk.rigIndex + 1} · SWAP COMPUTE (${ch.name})` },
@@ -1383,18 +1480,18 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
                 )})`;
               })
               .join('\n');
-      const catalogRows = GPU_PARTS.map((g, idx) => {
-        const lock = isPartUnlocked(g.researchRequired);
-        const eth = g.hashrates.ETHASH
-          ? `ETH ${g.hashrates.ETHASH}MH`
-          : `SCR ${g.hashrates.SCRYPT ?? 0}MH`;
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(g.name, 30)} ${padLeft(
-          formatUsd(g.cost),
-          7
-        )}  ${padLeft(`${g.watts}W`, 5)}  ${padRight(eth, 12)}  ${
-          lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`
-        }`;
-      }).join('\n');
+      const unlockedGpus = getUnlockedGpus();
+      const catalogRows = unlockedGpus
+        .map((g, idx) => {
+          const eth = g.hashrates.ETHASH
+            ? `ETH ${g.hashrates.ETHASH}MH`
+            : `SCR ${g.hashrates.SCRYPT ?? 0}MH`;
+          return `  ${padLeft(String(idx + 1), 2)}. ${padRight(g.name, 30)} ${padLeft(
+            formatUsd(g.cost),
+            7
+          )}  ${padLeft(`${g.watts}W`, 5)}  ${padRight(eth, 12)}`;
+        })
+        .join('\n');
       append([
         {
           kind: 'HEAD',
@@ -1410,15 +1507,13 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (tk.slot === 'storage') {
-      const rows = STORAGE_PARTS.map((s, idx) => {
-        const lock = isPartUnlocked(s.researchRequired);
+      const options = getUnlockedStorage();
+      const rows = options.map((s, idx) => {
         const cur = s.id === rig.storageId ? ' *INSTALLED*' : fmtNet(stor.cost, s.cost);
         return `  ${padLeft(String(idx + 1), 2)}. ${padRight(s.name, 33)} ${padLeft(
           formatUsd(s.cost),
           7
-        )}  +${Math.round(s.efficiencyBonus * 100)}% eff  ${padRight(cur, 13)}  ${
-          lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`
-        }`;
+        )}  +${Math.round(s.efficiencyBonus * 100)}% eff  ${padRight(cur, 13)}`;
       });
       append([
         { kind: 'HEAD', text: `TINKER R${tk.rigIndex + 1} · SWAP STORAGE / RAM` },
@@ -1429,16 +1524,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (tk.slot === 'psu') {
-      const rows = PSU_PARTS.map((p, idx) => {
-        const lock = isPartUnlocked(p.researchRequired);
+      const options = getUnlockedPsus();
+      const rows = options.map((p, idx) => {
         const cur = p.id === rig.psuId ? ' *INSTALLED*' : fmtNet(psu.cost, p.cost);
         const fit = t.rawWatts <= p.maxWatts ? 'FITS' : 'OVERLOAD';
         return `  ${padLeft(String(idx + 1), 2)}. ${padRight(p.name, 31)} ${padLeft(
           formatUsd(p.cost),
           7
-        )}  ${padLeft(`${p.maxWatts}W`, 6)}  [${padRight(fit, 8)}]  ${padRight(cur, 13)}  ${
-          lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`
-        }`;
+        )}  ${padLeft(`${p.maxWatts}W`, 6)}  [${padRight(fit, 8)}]  ${padRight(cur, 13)}`;
       });
       append([
         { kind: 'HEAD', text: `TINKER R${tk.rigIndex + 1} · SWAP PSU (Load: ${t.rawWatts}W)` },
@@ -1449,8 +1542,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (tk.slot === 'cooling') {
-      const rows = COOLING_PARTS.map((c, idx) => {
-        const lock = isPartUnlocked(c.researchRequired);
+      const options = getUnlockedCooling();
+      const rows = options.map((c, idx) => {
         const cur = c.id === rig.coolingId ? ' *INSTALLED*' : fmtNet(cool.cost, c.cost);
         return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 32)} ${padLeft(
           formatUsd(c.cost),
@@ -1458,7 +1551,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         )}  -${padLeft(String(c.coolingPowerC), 3)}°C  ${padLeft(
           `${c.noiseDba}dBA`,
           5
-        )}  ${padRight(cur, 13)}  ${lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`}`;
+        )}  ${padRight(cur, 13)}`;
       });
       append([
         { kind: 'HEAD', text: `TINKER R${tk.rigIndex + 1} · SWAP COOLING` },
@@ -1469,8 +1562,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     // OS
-    const rows = OS_PARTS.map((o, idx) => {
-      const lock = isPartUnlocked(o.researchRequired);
+    const osOptions = getUnlockedOs();
+    const rows = osOptions.map((o, idx) => {
       const cur = o.id === rig.osId ? ' *INSTALLED*' : fmtNet(os.cost, o.cost);
       return `  ${padLeft(String(idx + 1), 2)}. ${padRight(o.name, 30)} ${padLeft(
         formatUsd(o.cost),
@@ -1478,7 +1571,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       )}  x${o.hashrateMultiplier.toFixed(2)}h  x${o.powerMultiplier.toFixed(2)}p  ${padRight(
         cur,
         13
-      )}  ${lock.ok ? '[OK]' : `[LOCKED: ${lock.reason}]`}`;
+      )}`;
     });
     append([
       { kind: 'HEAD', text: `TINKER R${tk.rigIndex + 1} · FLASH OS KERNEL` },
@@ -1574,7 +1667,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const rawIdx = parts[0] === 'add' ? parts[1] : parts[0];
       const rawQty = parts[0] === 'add' ? parts[2] : parts[1];
       const gpuIdx = parseInt(rawIdx || '', 10) - 1;
-      const pickedGpu = GPU_PARTS[gpuIdx];
+      const pickedGpu = getUnlockedGpus()[gpuIdx];
       if (!pickedGpu) {
         append([
           {
@@ -1594,15 +1687,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     // Standard single-part slot swap
     const idx = parseInt(parts[0], 10) - 1;
     let pickedPartId: string | null = null;
-    if (tk.slot === 'chassis') pickedPartId = CHASSIS_PARTS[idx]?.id ?? null;
+    if (tk.slot === 'chassis') pickedPartId = getUnlockedChassis()[idx]?.id ?? null;
     else if (tk.slot === 'compute') {
       const ch = CHASSIS_PARTS.find((c) => c.id === rig.chassisId) ?? CHASSIS_PARTS[0];
-      const compat = COMPUTE_PARTS.filter((c) => (ch.isAsicRack ? c.kind === 'ASIC' : c.kind !== 'ASIC'));
-      pickedPartId = compat[idx]?.id ?? null;
-    } else if (tk.slot === 'storage') pickedPartId = STORAGE_PARTS[idx]?.id ?? null;
-    else if (tk.slot === 'psu') pickedPartId = PSU_PARTS[idx]?.id ?? null;
-    else if (tk.slot === 'cooling') pickedPartId = COOLING_PARTS[idx]?.id ?? null;
-    else if (tk.slot === 'os') pickedPartId = OS_PARTS[idx]?.id ?? null;
+      pickedPartId = getUnlockedComputeFor(ch.isAsicRack)[idx]?.id ?? null;
+    } else if (tk.slot === 'storage') pickedPartId = getUnlockedStorage()[idx]?.id ?? null;
+    else if (tk.slot === 'psu') pickedPartId = getUnlockedPsus()[idx]?.id ?? null;
+    else if (tk.slot === 'cooling') pickedPartId = getUnlockedCooling()[idx]?.id ?? null;
+    else if (tk.slot === 'os') pickedPartId = getUnlockedOs()[idx]?.id ?? null;
 
     if (!pickedPartId) {
       append([{ kind: 'ERR', text: 'Enter a valid part #, "back", or "done".' }]);
@@ -1674,48 +1766,42 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (cmd === 'help' || cmd === '?') {
       append([
-        { kind: 'HEAD', text: 'COMMAND REFERENCE MANUAL' },
+        { kind: 'HEAD', text: 'COMMAND REFERENCE MANUAL (EXPANSION 2.0)' },
         {
           kind: 'PRE',
           text: [
-            `  STEPS, EVENTS & STATUS`,
-            `    status | look                     Show facility map, regime, heat & fleet stats`,
+            `  STEPS, EVENTS & PROGRESSION`,
+            `    status | look                     Facility grid, power contract, modifiers & fleet`,
             `    tutorial [next|skip|restart]      Walk through what stats mean & build your first rig`,
-            `    step [n] | next [n]               Advance n steps manually (auto-steps every 30s)`,
+            `    step [n] | next [n]               Advance n steps (auto-steps every 30s)`,
             `    pause | resume | auto             Pause or resume the 30s auto-step timer`,
-            `    event | decide <1|2|3>            View active crisis prompt or lock in choice`,
-            `    log                               Show recent market, raid, contract & system logs`,
-            `  HARDWARE, OVERCLOCK, TINKER & REPAIRS`,
-            `    build rig | presets | build preset <1..4>   Assemble rig (shows all locked & unlocked parts)`,
-            `    tinker [<#>] [<slot> <part#>]     Open workbench to swap rig parts (60% trade-in credit)`,
-            `    overclock [<#|all>] <80..150>     Boost mining speed at steeper heat, power & wear cost`,
-            `    rigs | inspect <#>                Roster or hardware telemetry sheet`,
-            `    rig <#|all> <on|off|oc N|coin X>  Toggle, overclock (80..150), or assign coin`,
-            `    rig <#|all> pool <pps|pplns|solo> Set pool payout strategy (steady vs solo block jackpot)`,
-            `    rig <#|all> profile <eco|balanced|turbo>  Adjust voltage, watts, heat & wear`,
-            `    repair [<#>|all] | repaste [<#>|all]      Restore rig health or refresh thermal paste`,
-            `    rename <#> <name> | salvage <#>   Rename or dismantle rig for 55% refund`,
-            `  COINS, REGIMES, RIVALS & CONTRACTS`,
-            `    market | coins | unlock <COIN>    View market regime, halvings, difficulty & unlock tiers`,
-            `    chart <COIN> [30|90|all]          Render monospace ASCII price chart`,
-            `    contracts | contract accept <1..3> | contract abandon`,
-            `    rivals                            Inspect competing AI syndicates & market share`,
-            `    pr | pr launch <1..5> <COIN>      Legal PR campaigns`,
-            `  UNDERGROUND & BLACK MARKET (ILLEGAL OPS)`,
-            `    ops                               View Heat (0-100), covert toggles & illegal actions`,
-            `    ops siphon <on|off>               Bypass power meters (-65% bills, +25% cap, +Heat)`,
-            `    ops botnet <COIN>                 Rent zero-watt shadow hash burst (+Heat)`,
-            `    ops wash <COIN>                   Dark-pool coin price spike (+Heat, -Credibility)`,
-            `    ops sabotage <1..3>               DDoS & disrupt rival syndicate # (+Heat)`,
-            `    ops launder | ops bribe           Spend cash to scrub Heat or buy audit immunity`,
-            `    blackmarket | blackmarket buy <1..3> [rig#]   Rotating smuggled rigs & illicit BIOS mods`,
-            `  COOLING, FACILITIES, STAFF & R&D`,
-            `    cool [add <fan|ac|chiller>]       Manage room cooling units`,
-            `    facilities | facility <rent|buy> <1..4>`,
-            `    staff | hire <tech|eng|res|pr|analyst> | fire <#> | shift <#> <...> | priority <#> <...>`,
-            `    research | research start <1..${RESEARCH_NODES.length}> | ledger`,
-            `  DEV MODE`,
-            `    dev <on|off|panel|event|raid|regime X|halve COIN|heat N|blackmarket|...>`,
+            `    event | decide <1|2|3>            View active event or lock in choice`,
+            `    stats | history [category]        Lifetime financial analytics & transaction log`,
+            `    milestones | achievements         Track expansion milestones & Steam-style badges`,
+            `    challenges [start <1..5>]         View or activate rule-constrained challenges`,
+            `    save <backup|restore|export>      Create backup, restore, or download save JSON`,
+            `  HARDWARE, USED MARKET & MAINTENANCE`,
+            `    build rig | presets | build preset <#>    Assemble custom rig (unlocked parts only)`,
+            `    usedmarket | used [buy <#>|refresh]       Browse/buy factory, refurb, used & damaged rigs`,
+            `    tinker [<#>] [<slot> <part#>]             Swap rig parts (60% trade-in credit)`,
+            `    overclock [<#|all>] <80..150>             Adjust clock multiplier (power/heat trade-off)`,
+            `    rigs | inspect <#>                        Fleet roster or full rig telemetry & value`,
+            `    rig <#|all> <on|off|oc N|coin X|pool|profile>  Toggle, tune, or change pool/profile`,
+            `    repair [<#>|all] | repaste [<#>|all]      Restore failed/worn rigs or refresh paste`,
+            `    retire <#> | backup [deploy <#>] [sell <#>]  Retire active rig to backup vault`,
+            `    rename <#> <name> | sell <#> | salvage <#>   Rename or sell rig at market resale value`,
+            `  POWER, COOLING, FACILITIES & STAFF`,
+            `    power [contract <1..4> | upgrade <1..6>]  Manage power contracts & electrical grid`,
+            `    cool [compare | add <fan|indfan|ac|liquid|chiller|hvac> | toggle <#> | sell <#>]`,
+            `    facilities | facility <rent|buy> <1..6> | facility upgrade [<1..6>]`,
+            `    staff | hire <tech|elec|mgr|eng|res|pr|analyst> | train <#> | fire <#> | shift | priority`,
+            `    research [done | start <#>] | ledger`,
+            `  MARKET, RIVALS, CONTRACTS & COVERT OPS`,
+            `    market | unlock <COIN> | chart <COIN>     Spot rates, modifiers, halvings & charts`,
+            `    contracts | contract <accept <1..3>|abandon>   Reputation-gated enterprise contracts`,
+            `    rivals [compare]                          Inspect rival syndicates & benchmark rank`,
+            `    pr | pr launch <1..5> <COIN>              Legal PR campaigns`,
+            `    ops | blackmarket                         Underground ops (siphon/botnet/wash/sabotage)`,
           ].join('\n'),
         },
       ]);
@@ -1871,40 +1957,87 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'presets') {
-      const rows = RIG_PRESETS.map((p, i) => {
-        const ch = CHASSIS_PARTS.find((c) => c.id === p.config.chassisId)!;
-        const comp = COMPUTE_PARTS.find((c) => c.id === p.config.computeId)!;
-        const ok =
-          isPartUnlocked(ch.researchRequired).ok &&
-          isPartUnlocked(comp.researchRequired).ok;
-        const cost = calculateRigBuildCost({ ...p.config, name: p.label });
+      const unlockedPresets = getUnlockedPresets();
+      const rows = unlockedPresets.map((p, i) => {
+        const cost = calculateRigBuildCost({ ...p.config, name: p.label }, state);
         return `  ${i + 1}. ${padRight(p.label, 26)} ${padLeft(formatUsd(cost), 9)}  ${padRight(
-          p.config.targetCoin,
+          state.coins[p.config.targetCoin]?.unlocked ? p.config.targetCoin : 'BTC',
           5
-        )}  ${ok ? '[UNLOCKED]' : `[LOCKED: R&D]`}`;
+        )}`;
       });
       append([
         { kind: 'HEAD', text: 'READY-TO-DEPLOY RIG PRESETS' },
-        { kind: 'PRE', text: rows.join('\n') },
-        { kind: 'TEXT', text: 'Run "build preset <1..4>" to deploy immediately.' },
+        { kind: 'PRE', text: rows.length > 0 ? rows.join('\n') : '  (No presets unlocked yet.)' },
+        {
+          kind: 'TEXT',
+          text:
+            unlockedPresets.length > 0
+              ? `Run "build preset <1..${unlockedPresets.length}>" to deploy immediately.`
+              : 'Unlock parts via R&D or run "build rig".',
+        },
+      ]);
+      return;
+    }
+
+    if (cmd === 'usedmarket' || cmd === 'used') {
+      if (arg1 === 'refresh') {
+        const res = onRefreshUsedMarket();
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'buy') {
+        const idx = parseInt(arg2, 10) - 1;
+        const listing = (state.usedMarketListings ?? [])[idx];
+        if (!listing) {
+          append([{ kind: 'ERR', text: 'Usage: usedmarket buy <listing#> [custom name]' }]);
+          return;
+        }
+        const customName = parts.slice(3).join(' ').trim() || undefined;
+        const res = onBuyUsedListing(listing.id, customName);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+
+      const listings = state.usedMarketListings ?? [];
+      const refreshIn = Math.max(0, (state.usedMarketRefreshStep ?? 0) - state.stepCount);
+      const rows =
+        listings.length === 0
+          ? '  (No surplus listings currently available — run "usedmarket refresh".)'
+          : listings
+              .map((l, i) => {
+                const savePct = Math.max(0, Math.round((1 - l.listPriceUsd / Math.max(1, l.retailPriceUsd)) * 100));
+                return `  ${i + 1}. ${padRight(l.title, 34)} ${padLeft(formatUsd(l.listPriceUsd), 8)} (Retail ${formatUsd(
+                  l.retailPriceUsd
+                )}, -${savePct}%)  ${l.conditionPct}% cond · Age ${l.ageSteps}st · ${l.config.targetCoin}`;
+              })
+              .join('\n');
+
+      append([
+        {
+          kind: 'HEAD',
+          text: `USED & REFURBISHED HARDWARE MARKETPLACE (Auto-refreshes in ${refreshIn}st)`,
+        },
+        { kind: 'PRE', text: rows },
+        {
+          kind: 'TEXT',
+          text: 'Run "usedmarket buy <#> [name]" to purchase, or "usedmarket refresh" ($75 broker fee unless Secondary Brokerage R&D unlocked).',
+        },
       ]);
       return;
     }
 
     if (cmd === 'build') {
       if (arg1 === 'preset') {
+        const unlockedPresets = getUnlockedPresets();
         const idx = parseInt(arg2 || '1', 10) - 1;
-        const preset = RIG_PRESETS[idx];
+        const preset = unlockedPresets[idx];
         if (!preset) {
-          append([{ kind: 'ERR', text: 'Usage: build preset <1..4>. Run "presets" to list.' }]);
-          return;
-        }
-        const ch = CHASSIS_PARTS.find((c) => c.id === preset.config.chassisId)!;
-        const comp = COMPUTE_PARTS.find((c) => c.id === preset.config.computeId)!;
-        const chLock = isPartUnlocked(ch.researchRequired);
-        const compLock = isPartUnlocked(comp.researchRequired);
-        if (!chLock.ok || !compLock.ok) {
-          append([{ kind: 'ERR', text: `Preset locked (${!chLock.ok ? chLock.reason : compLock.reason}).` }]);
+          append([
+            {
+              kind: 'ERR',
+              text: `Usage: build preset <1..${unlockedPresets.length}>. Run "presets" to list.`,
+            },
+          ]);
           return;
         }
         const cfg: RigBuildConfig = {
@@ -1919,7 +2052,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         const ok = onDeployRig(cfg);
         append([
           ok
-            ? { kind: 'OK', text: `Built & deployed "${cfg.name}" for ${formatUsd(calculateRigBuildCost(cfg))}.` }
+            ? { kind: 'OK', text: `Built & deployed "${cfg.name}" for ${formatUsd(calculateRigBuildCost(cfg, state))}.` }
             : { kind: 'ERR', text: 'Deploy failed: insufficient cash or facility rig cap reached.' },
         ]);
         if (ok && state.tutorialStep && state.tutorialStep >= 1 && state.tutorialStep <= 4) {
@@ -1962,27 +2095,33 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'rigs' || cmd === 'ls') {
+      const maxRigs = getEffectiveFacilityMaxRigs(state);
       if (state.rigs.length === 0) {
-        append([{ kind: 'TEXT', text: 'No rigs deployed. Run "build rig" to assemble one.' }]);
+        append([
+          {
+            kind: 'TEXT',
+            text: `No active rigs deployed (0/${maxRigs} slots, ${(state.backupRigs ?? []).length} in backup vault). Run "build rig" or "usedmarket".`,
+          },
+        ]);
         return;
       }
-      const sysBonus = getSysEngineerBonus(state);
-      const enabledCount = state.rigs.filter((r) => r.enabled).length;
       const header = `  #  ${padRight('RIG NAME', 21)} ${padRight('STATUS', 11)} ${padRight(
         'COIN/POOL',
         10
-      )} ${padRight('PROFILE', 8)} ${padLeft('HLTH', 5)} ${padLeft('TEMP', 5)} ${padLeft(
+      )} ${padRight('GEN/COND', 10)} ${padLeft('HLTH', 5)} ${padLeft('TEMP', 5)} ${padLeft(
         'STEP USD',
         11
       )}`;
       const rows = state.rigs.map((rig, i) => {
         const modMark = rig.illicitMod ? '*' : '';
+        const gen = getRigGeneration(rig);
+        const condShort = (rig.conditionTier ?? 'NEW').slice(0, 4);
         return `  ${padRight(String(i + 1), 2)} ${padRight(rig.name + modMark, 21)} ${padRight(
           rig.status,
           11
         )} ${padRight(`${rig.targetCoin}/${rig.poolMode}`, 10)} ${padRight(
-          rig.firmwareProfile,
-          8
+          `G${gen}/${condShort}`,
+          10
         )} ${padLeft(`${Math.round(rig.healthPct)}%`, 5)} ${padLeft(
           `${rig.temperatureC}C`,
           5
@@ -1993,14 +2132,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       append([
         {
           kind: 'HEAD',
-          text: `FLEET ROSTER (${state.rigs.length}/${facility.maxRigs}) · Avg Health: ${avgHealth.toFixed(
+          text: `FLEET ROSTER (${state.rigs.length}/${maxRigs}) · Avg Health: ${avgHealth.toFixed(
             0
-          )}%`,
+          )}% · Vault: ${(state.backupRigs ?? []).length}`,
         },
         { kind: 'PRE', text: [header, '-'.repeat(header.length), ...rows].join('\n') },
         {
           kind: 'TEXT',
-          text: 'Commands: "rig <#|all> pool <pps|pplns|solo>", "rig <#|all> profile <eco|balanced|turbo>", "overclock", "tinker <#>", "repair all", "inspect <#>". (* = illicit mod)',
+          text: 'Commands: "inspect <#>", "repair all", "retire <#>", "backup", "sell <#>", "tinker <#>", "overclock". (* = illicit mod)',
         },
       ]);
       if (state.tutorialStep === 1) {
@@ -2024,7 +2163,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         state.unlockedResearch,
         sysBonus,
         state.coolingUnits ?? [],
-        enabledCount
+        enabledCount,
+        state.facilityUpgrades
       );
       const ch = CHASSIS_PARTS.find((c) => c.id === rig.chassisId);
       const comp = COMPUTE_PARTS.find((c) => c.id === rig.computeId);
@@ -2032,15 +2172,18 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const psu = PSU_PARTS.find((p) => p.id === rig.psuId);
       const cool = COOLING_PARTS.find((c) => c.id === rig.coolingId);
       const os = OS_PARTS.find((o) => o.id === rig.osId);
-      const repairCost = getRigRepairCost(rig);
+      const repairCost = getRigRepairCost(rig, state);
       const repasteCost = getRigRepasteCost(rig);
+      const resaleVal = calculateRigResaleValue(rig, state);
+      const gen = getRigGeneration(rig);
       const modSpec = rig.illicitMod ? ILLICIT_MOD_SPECS[rig.illicitMod] : null;
       append([
         { kind: 'HEAD', text: `RIG #${idx + 1} HARDWARE SHEET: ${rig.name}` },
         {
           kind: 'PRE',
           text: [
-            `  Status:   ${rig.status} (${rig.enabled ? 'POWER ON' : 'PAUSED'})   Health: ${rig.healthPct}% (Repair: ${formatUsd(repairCost)})`,
+            `  Status:   ${rig.status} (${rig.enabled ? 'POWER ON' : 'PAUSED'})   Health: ${Math.round(rig.healthPct)}% (Repair: ${formatUsd(repairCost)})`,
+            `  Lifecycle: Gen ${gen} · Tier: ${rig.conditionTier ?? 'NEW'} · Age: ${rig.ageSteps ?? 0}st · Failures: ${rig.failureCount ?? 0} · Resale: ${formatUsd(resaleVal)}`,
             `  Tuning:   Pool ${rig.poolMode} (${POOL_MODE_SPECS[rig.poolMode].feePct}% fee)   Firmware: ${rig.firmwareProfile}   OC: ${rig.overclockPct}%`,
             `  Thermal:  ${rig.temperatureC}°C (Eq: ${t.equilibriumTempC}°C)   Paste: ${rig.pasteStepsRemaining}st left (Repaste: ${formatUsd(repasteCost)})`,
             `  Output:   ${rig.targetCoin} (${t.targetAlgo}) ${formatHashrate(t.effectiveHashrate, t.targetAlgo)}   Wall: ${t.wallWatts}W   Noise: ${t.noiseDba}dBA`,
@@ -2075,6 +2218,50 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             : { kind: 'ERR', text: `Insufficient cash (need ${formatUsd(res.cost)}).` },
         ]);
       }
+      return;
+    }
+
+    if (cmd === 'retire') {
+      const idx = parseInt(arg1, 10) - 1;
+      if (isNaN(idx) || !state.rigs[idx]) {
+        append([{ kind: 'ERR', text: 'Usage: retire <rig#>' }]);
+        return;
+      }
+      const res = onRetireRig(idx);
+      append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+      return;
+    }
+
+    if (cmd === 'backup') {
+      const vault = state.backupRigs ?? [];
+      if (arg1 === 'deploy') {
+        const idx = parseInt(arg2, 10) - 1;
+        const res = onDeployBackupRig(idx);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'sell') {
+        const idx = parseInt(arg2, 10) - 1;
+        const res = onSellBackupRig(idx);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      const rows =
+        vault.length === 0
+          ? '  (Backup Hardware Vault is empty. Use "retire <rig#>" to store spare rigs.)'
+          : vault
+              .map((r, i) => {
+                const resale = calculateRigResaleValue(r, state);
+                return `  ${i + 1}. ${padRight(r.name, 24)} ${padRight(r.targetCoin, 5)} ${Math.round(
+                  r.healthPct
+                )}% hlth · Age ${r.ageSteps ?? 0}st · Resale ${formatUsd(resale)}`;
+              })
+              .join('\n');
+      append([
+        { kind: 'HEAD', text: `BACKUP HARDWARE VAULT (${vault.length} stored)` },
+        { kind: 'PRE', text: rows },
+        { kind: 'TEXT', text: 'Commands: "backup deploy <#>", "backup sell <#>", or "retire <active rig#>".' },
+      ]);
       return;
     }
 
@@ -2179,16 +2366,15 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       return;
     }
 
-    if (cmd === 'salvage') {
+    if (cmd === 'salvage' || cmd === 'sell') {
       const idx = parseInt(arg1, 10) - 1;
       const target = state.rigs[idx];
       if (!target) {
-        append([{ kind: 'ERR', text: 'Usage: salvage <rig#>' }]);
+        append([{ kind: 'ERR', text: `Usage: ${cmd} <rig#>` }]);
         return;
       }
-      const refund = Math.round(calculateRigBuildCost(target) * 0.55);
-      onSalvageRig(target.id);
-      append([{ kind: 'OK', text: `Salvaged ${target.name} for ${formatUsd(refund)}.` }]);
+      const refund = onSalvageRig(target.id);
+      append([{ kind: 'OK', text: `Sold/salvaged ${target.name} for ${formatUsd(refund)} (condition & market adjusted).` }]);
       return;
     }
 
@@ -2443,12 +2629,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         const gArg = arg3 === 'add' ? parts[4] : arg3;
         const qArg = arg3 === 'add' ? parts[5] : parts[4];
         const gIdx = parseInt(gArg || '', 10) - 1;
-        const gpu = GPU_PARTS[gIdx];
+        const gpu = getUnlockedGpus()[gIdx];
         if (!gpu) {
           append([
             {
               kind: 'ERR',
-              text: `GPU #${gArg || '?'} not found. Run "tinker ${rigIdx + 1} gpu" to inspect catalog.`,
+              text: `GPU #${gArg || '?'} not available. Run "tinker ${rigIdx + 1} gpu" to inspect unlocked GPUs.`,
             },
           ]);
           return;
@@ -2462,17 +2648,15 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
       const partNum = parseInt(arg3, 10) - 1;
       let pickedId: string | null = null;
-      if (targetSlot === 'chassis') pickedId = CHASSIS_PARTS[partNum]?.id ?? null;
+      if (targetSlot === 'chassis') pickedId = getUnlockedChassis()[partNum]?.id ?? null;
       else if (targetSlot === 'compute') {
         const ch = CHASSIS_PARTS.find((c) => c.id === rig.chassisId) ?? CHASSIS_PARTS[0];
-        const compat = COMPUTE_PARTS.filter((c) =>
-          ch.isAsicRack ? c.kind === 'ASIC' : c.kind !== 'ASIC'
-        );
+        const compat = getUnlockedComputeFor(ch.isAsicRack);
         pickedId = compat[partNum]?.id ?? null;
-      } else if (targetSlot === 'storage') pickedId = STORAGE_PARTS[partNum]?.id ?? null;
-      else if (targetSlot === 'psu') pickedId = PSU_PARTS[partNum]?.id ?? null;
-      else if (targetSlot === 'cooling') pickedId = COOLING_PARTS[partNum]?.id ?? null;
-      else if (targetSlot === 'os') pickedId = OS_PARTS[partNum]?.id ?? null;
+      } else if (targetSlot === 'storage') pickedId = getUnlockedStorage()[partNum]?.id ?? null;
+      else if (targetSlot === 'psu') pickedId = getUnlockedPsus()[partNum]?.id ?? null;
+      else if (targetSlot === 'cooling') pickedId = getUnlockedCooling()[partNum]?.id ?? null;
+      else if (targetSlot === 'os') pickedId = getUnlockedOs()[partNum]?.id ?? null;
 
       if (!pickedId) {
         append([
@@ -2492,11 +2676,24 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (cmd === 'cool') {
       const units = state.coolingUnits ?? [];
+      if (arg1 === 'compare') {
+        append([
+          { kind: 'HEAD', text: 'COOLING INFRASTRUCTURE EFFICIENCY COMPARISON' },
+          { kind: 'PRE', text: formatCoolingCompare(state) },
+          {
+            kind: 'TEXT',
+            text: 'Install via "cool add <fan|indfan|ac|liquid|chiller|hvac>", toggle via "cool toggle <#>", or sell via "cool sell <#>".',
+          },
+        ]);
+        return;
+      }
       if (!arg1 || arg1 === 'list') {
         const facIdx = FACILITY_TIERS.findIndex((f) => f.id === state.facilityId);
         const coolingSummary = computeFacilityCoolingSummary(
           units,
-          state.rigs.filter((r) => r.enabled).length
+          state.rigs.filter((r) => r.enabled).length,
+          facility,
+          state.facilityUpgrades
         );
         const installed =
           units.length === 0
@@ -2504,44 +2701,74 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             : units
                 .map((u, i) => {
                   const spec = ROOM_COOLING_UNITS.find((s) => s.id === u.type);
-                  return `  #${i + 1} ${padRight(spec?.name ?? u.type, 26)} [${
+                  return `  #${i + 1} ${padRight(spec?.name ?? u.type, 30)} [${
                     u.enabled ? 'ON ' : 'OFF'
-                  }]  -${spec?.coolingPowerC ?? 0}°C cap  ${spec?.watts ?? 0}W`;
+                  }]  -${spec?.coolingPowerC ?? 0}°C  ${spec?.watts ?? 0}W  ${formatUsd(
+                    spec?.maintenancePerCycle ?? 0
+                  )}/cyc`;
                 })
                 .join('\n');
+        const shortKey: Record<RoomCoolingType, string> = {
+          cool_unit_fan: 'fan',
+          cool_unit_ind_fan: 'indfan',
+          cool_unit_ac: 'ac',
+          cool_unit_liquid: 'liquid',
+          cool_unit_chiller: 'chiller',
+          cool_unit_facility_hvac: 'hvac',
+        };
         const shop = ROOM_COOLING_UNITS.map((u) => {
-          const short = u.id === 'cool_unit_fan' ? 'fan' : u.id === 'cool_unit_ac' ? 'ac' : 'chiller';
-          const ok = state.devUnlockAll || facIdx >= u.unlockFacilityIndex;
-          return `  cool add ${padRight(short, 8)} ${padRight(u.name, 26)} ${padLeft(
+          const facOk = state.devUnlockAll || facIdx >= u.unlockFacilityIndex;
+          const resOk =
+            state.devUnlockAll ||
+            !u.researchRequired ||
+            state.unlockedResearch.includes(u.researchRequired);
+          const gate =
+            facOk && resOk
+              ? '[READY]'
+              : !facOk
+              ? `[At ${FACILITY_TIERS[u.unlockFacilityIndex].name}]`
+              : `[R&D: ${RESEARCH_NODES.find((r) => r.id === u.researchRequired)?.name ?? u.researchRequired}]`;
+          return `  cool add ${padRight(shortKey[u.id], 8)} ${padRight(u.name, 30)} ${padLeft(
             formatUsd(u.cost),
             7
-          )}  +${u.coolingPowerC}°C  ${ok ? '[OK]' : `[At ${FACILITY_TIERS[u.unlockFacilityIndex].name}]`}`;
+          )}  +${u.coolingPowerC}°C  ${u.watts}W  ${u.maxRigsSupported}rigs  ${gate}`;
         }).join('\n');
         append([
           {
             kind: 'HEAD',
-            text: `FACILITY COOLING (-${coolingSummary.effectiveCoolingPerRigC.toFixed(1)}°C/rig relief)`,
+            text: `FACILITY COOLING (-${coolingSummary.effectiveCoolingPerRigC.toFixed(1)}°C/rig relief · +${coolingSummary.facilityCoolingBonusC}°C passive)`,
           },
           { kind: 'PRE', text: `INSTALLED:\n${installed}\n\nCATALOG:\n${shop}` },
+          { kind: 'TEXT', text: 'Run "cool compare" for $/°C & capacity comparison, or "cool toggle <#>" / "cool sell <#>".' },
         ]);
         return;
       }
       if (arg1 === 'add') {
         const map: Record<string, RoomCoolingType> = {
           fan: 'cool_unit_fan',
+          indfan: 'cool_unit_ind_fan',
+          industrial: 'cool_unit_ind_fan',
+          drum: 'cool_unit_ind_fan',
           ac: 'cool_unit_ac',
+          liquid: 'cool_unit_liquid',
           chiller: 'cool_unit_chiller',
+          hvac: 'cool_unit_facility_hvac',
+          cryo: 'cool_unit_facility_hvac',
         };
         const type = map[arg2];
         if (!type) {
-          append([{ kind: 'ERR', text: 'Usage: cool add <fan|ac|chiller>' }]);
+          append([{ kind: 'ERR', text: 'Usage: cool add <fan|indfan|ac|liquid|chiller|hvac>' }]);
           return;
         }
         const ok = onAddCoolingUnit(type);
+        const spec = ROOM_COOLING_UNITS.find((u) => u.id === type);
         append([
           ok
-            ? { kind: 'OK', text: `Installed ${ROOM_COOLING_UNITS.find((u) => u.id === type)?.name}.` }
-            : { kind: 'ERR', text: 'Cannot install cooling unit (insufficient cash or facility tier).' },
+            ? { kind: 'OK', text: `Installed ${spec?.name}.` }
+            : {
+                kind: 'ERR',
+                text: `Cannot install ${spec?.name ?? type}: check cash, facility stage, or required R&D.`,
+              },
         ]);
         return;
       }
@@ -2561,7 +2788,40 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         }
         return;
       }
-      append([{ kind: 'ERR', text: 'Usage: cool [list|add <fan|ac|chiller>|toggle <#>|sell <#>]' }]);
+      append([{ kind: 'ERR', text: 'Usage: cool [list|compare|add <fan|indfan|ac|liquid|chiller|hvac>|toggle <#>|sell <#>]' }]);
+      return;
+    }
+
+    if (cmd === 'power') {
+      if (arg1 === 'contract') {
+        const idx = parseInt(arg2, 10) - 1;
+        const spec = POWER_CONTRACTS[idx];
+        if (!spec) {
+          append([{ kind: 'ERR', text: `Usage: power contract <1..${POWER_CONTRACTS.length}>` }]);
+          return;
+        }
+        const res = onSelectPowerContract(spec.id);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'upgrade') {
+        const idx = parseInt(arg2, 10) - 1;
+        const spec =
+          !isNaN(idx) && FACILITY_UPGRADES[idx]
+            ? FACILITY_UPGRADES[idx]
+            : FACILITY_UPGRADES.find((u) => u.id === arg2);
+        if (!spec) {
+          append([{ kind: 'ERR', text: `Usage: power upgrade <1..${FACILITY_UPGRADES.length}>` }]);
+          return;
+        }
+        const res = onBuyFacilityUpgrade(spec.id);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      append([
+        { kind: 'HEAD', text: 'ELECTRICAL GRID, CONTRACTS & INFRASTRUCTURE' },
+        { kind: 'PRE', text: formatPowerReport(state) },
+      ]);
       return;
     }
 
@@ -2569,7 +2829,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const rows = FACILITY_TIERS.map((f, i) => {
         const owned = state.ownedFacilityIds.includes(f.id);
         const cur = state.facilityId === f.id;
-        return `  ${i + 1}. ${padRight(f.name, 26)} ${padLeft(`${f.maxRigs} rigs`, 8)} ${padLeft(
+        return `  ${i + 1}. ${padRight(f.name, 27)} ${padLeft(`${f.maxRigs} rigs`, 8)} ${padLeft(
           `${f.maxPowerKw}kW`,
           6
         )} ${padLeft(`${f.noiseLimitDba}dBA`, 6)} $${f.powerRatePerKwh}/kWh  Rent:${padLeft(
@@ -2580,19 +2840,43 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         }`;
       });
       append([
-        { kind: 'HEAD', text: 'FACILITY TIERS' },
+        { kind: 'HEAD', text: `FACILITY STAGES (1..${FACILITY_TIERS.length}) & UPGRADES` },
         { kind: 'PRE', text: rows.join('\n') },
-        { kind: 'TEXT', text: 'Run "facility rent <1..4>" or "facility buy <1..4>" to relocate.' },
+        {
+          kind: 'TEXT',
+          text: `Run "facility rent <1..${FACILITY_TIERS.length}>", "facility buy <1..${FACILITY_TIERS.length}>", or "facility upgrade [<1..${FACILITY_UPGRADES.length}>]".`,
+        },
       ]);
       return;
     }
 
     if (cmd === 'facility') {
+      if (arg1 === 'upgrade' || arg1 === 'upgrades') {
+        if (!arg2) {
+          append([
+            { kind: 'HEAD', text: 'FACILITY INFRASTRUCTURE UPGRADES' },
+            { kind: 'PRE', text: formatPowerReport(state) },
+          ]);
+          return;
+        }
+        const idx = parseInt(arg2, 10) - 1;
+        const spec =
+          !isNaN(idx) && FACILITY_UPGRADES[idx]
+            ? FACILITY_UPGRADES[idx]
+            : FACILITY_UPGRADES.find((u) => u.id === arg2);
+        if (!spec) {
+          append([{ kind: 'ERR', text: `Usage: facility upgrade <1..${FACILITY_UPGRADES.length}>` }]);
+          return;
+        }
+        const res = onBuyFacilityUpgrade(spec.id);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
       const action = arg1 === 'buy' ? 'BUY' : arg1 === 'rent' ? 'RENT' : null;
       const idx = parseInt(arg2, 10) - 1;
       const target = FACILITY_TIERS[idx];
       if (!action || !target) {
-        append([{ kind: 'ERR', text: 'Usage: facility <rent|buy> <1..4>' }]);
+        append([{ kind: 'ERR', text: `Usage: facility <rent|buy> <1..${FACILITY_TIERS.length}> | facility upgrade [1..${FACILITY_UPGRADES.length}]` }]);
         return;
       }
       const ok = onSelectFacility(target.id, action);
@@ -2634,15 +2918,21 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           c.unlocked ? '[UNLOCKED]' : '[LOCKED]'
         }`;
       });
+      const modLines = (state.activeMarketModifiers ?? []).map(
+        (m) => `  * ${m.label} (${m.stepsRemaining}st left): ${m.summary}`
+      );
       append([
         {
           kind: 'HEAD',
           text: `COIN EXCHANGE · REGIME: ${reg.label.toUpperCase()} (${state.regimeStepsRemaining}st left) — ${reg.summary}`,
         },
+        ...(modLines.length > 0
+          ? [{ kind: 'WARN' as const, text: `ACTIVE MARKET MODIFIERS:\n${modLines.join('\n')}` }]
+          : []),
         { kind: 'PRE', text: [header, '-'.repeat(header.length), ...rows].join('\n') },
         {
           kind: 'TEXT',
-          text: 'Halvings cut coin emission by 50% and trigger supply-shock rallies. Commands: "unlock <COIN>", "chart <COIN>", "pr launch <1..5> <COIN>", "ops wash <COIN>".',
+          text: 'Commands: "unlock <COIN>", "chart <COIN>", "usedmarket", "pr launch <1..5> <COIN>".',
         },
       ]);
       return;
@@ -2727,36 +3017,42 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'contracts') {
+      const progressFmt = (c: NonNullable<GameState['activeContract']>) =>
+        c.type === 'LOW_NOISE_RUN' || c.type === 'MAINTENANCE_SLA'
+          ? `${c.progress}/${c.targetAmount} steps`
+          : c.type === 'EQUIPMENT_SUPPLY' || c.type === 'FACILITY_EXPANSION'
+          ? `${c.progress}/${c.targetAmount}`
+          : `${formatUsd(c.progress)} / ${formatUsd(c.targetAmount)}`;
+
       const activeTxt = state.activeContract
         ? `ACTIVE CONTRACT: ${state.activeContract.title} (${state.activeContract.clientName})\n  ${
             state.activeContract.description
           }\n  Progress: ${Math.min(
             100,
-            Math.round((state.activeContract.progress / state.activeContract.targetAmount) * 100)
-          )}% (${
-            state.activeContract.type === 'LOW_NOISE_RUN'
-              ? `${state.activeContract.progress}/${state.activeContract.targetAmount} steps`
-              : `${formatUsd(state.activeContract.progress)} / ${formatUsd(
-                  state.activeContract.targetAmount
-                )}`
-          }) · ${state.activeContract.stepsRemaining}st left · Reward: ${formatUsd(
+            Math.round((state.activeContract.progress / Math.max(1, state.activeContract.targetAmount)) * 100)
+          )}% (${progressFmt(state.activeContract)}) · ${state.activeContract.stepsRemaining}st left · Reward: ${formatUsd(
             state.activeContract.rewardCash
-          )} + ${state.activeContract.rewardRp} RP`
+          )} + ${state.activeContract.rewardRp} RP (Penalty: ${formatUsd(state.activeContract.penaltyCash ?? 0)})`
         : 'ACTIVE CONTRACT: None (accept one below for bonus cash & RP)';
 
-      const boardRows = state.availableContracts.map(
-        (c, i) =>
-          `  ${i + 1}. ${padRight(c.title, 26)} ${padLeft(formatUsd(c.rewardCash), 9)}  +${padLeft(
-            `${c.rewardRp}RP`,
-            5
-          )}  ${padLeft(`${c.durationSteps}st`, 4)}  ${c.description}`
-      );
+      const boardRows = state.availableContracts.map((c, i) => {
+        const repGate = c.minReputation > 0 ? `[Rep>=${c.minReputation}]` : '[Open]';
+        return `  ${i + 1}. ${padRight(c.title, 26)} ${padLeft(formatUsd(c.rewardCash), 9)}  +${padLeft(
+          `${c.rewardRp}RP`,
+          5
+        )}  ${padLeft(`${c.durationSteps}st`, 4)}  ${padRight(repGate, 10)} ${c.description}`;
+      });
       append([
-        { kind: 'HEAD', text: `ENTERPRISE CLIENT CONTRACTS (Completed: ${state.stats.contractsCompleted})` },
+        {
+          kind: 'HEAD',
+          text: `ENTERPRISE CLIENT CONTRACTS (Rep: ${Math.round(
+            state.mediaCredibility
+          )}/100 · Won: ${state.stats.contractsCompleted} · Failed: ${state.stats.contractsFailed})`,
+        },
         { kind: 'PRE', text: `${activeTxt}\n\nOPEN BOARD:\n${boardRows.join('\n')}` },
         {
           kind: 'TEXT',
-          text: 'Run "contract accept <1..3>" to lock a deal, or "contract abandon" to drop active contract.',
+          text: `Run "contract accept <1..${state.availableContracts.length}>" to lock a deal, or "contract abandon" to drop active contract.`,
         },
       ]);
       return;
@@ -2767,14 +3063,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         const idx = parseInt(arg2, 10) - 1;
         const target = state.availableContracts[idx];
         if (!target) {
-          append([{ kind: 'ERR', text: 'Usage: contract accept <1..3>' }]);
+          append([{ kind: 'ERR', text: `Usage: contract accept <1..${state.availableContracts.length}>` }]);
           return;
         }
-        const ok = onAcceptContract(target.id);
+        const res = onAcceptContract(target.id);
         append([
-          ok
+          res.ok
             ? { kind: 'OK', text: `Accepted contract: ${target.title} (${target.stepsRemaining}st deadline).` }
-            : { kind: 'ERR', text: 'Cannot accept contract while another contract is active.' },
+            : { kind: 'ERR', text: res.reason ?? 'Cannot accept contract.' },
         ]);
         return;
       }
@@ -2787,34 +3083,41 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         ]);
         return;
       }
-      append([{ kind: 'ERR', text: 'Usage: contract <accept <1..3>|abandon>' }]);
+      append([{ kind: 'ERR', text: 'Usage: contract <accept <#>|abandon>' }]);
       return;
     }
 
     if (cmd === 'rivals') {
-      const header = `  #  ${padRight('SYNDICATE', 25)} ${padRight('COIN', 5)} ${padLeft(
-        'HASH IDX',
-        10
-      )} ${padLeft('SHARE', 7)} ${padRight('STATUS / LAST MOVE', 32)}`;
+      if (arg1 === 'compare' || arg1 === 'rank' || arg1 === 'leaderboard') {
+        append([
+          { kind: 'HEAD', text: 'INDUSTRY BENCHMARK & MARKET SHARE COMPARISON' },
+          { kind: 'PRE', text: formatRivalsComparison(state) },
+        ]);
+        return;
+      }
+      const header = `  #  ${padRight('SYNDICATE', 24)} ${padRight('COIN', 5)} ${padRight(
+        'STRATEGY',
+        21
+      )} ${padLeft('HASH IDX', 9)} ${padLeft('SHARE', 7)}  STATUS / MOVE`;
       const rows = state.rivals.map((rv, i) => {
         const st =
           rv.disruptedSteps > 0
             ? `[DISRUPTED ${rv.disruptedSteps}st]`
             : rv.lastActionSummary;
-        return `  ${padRight(String(i + 1), 2)} ${padRight(rv.name, 25)} ${padRight(
+        return `  ${padRight(String(i + 1), 2)} ${padRight(rv.name, 24)} ${padRight(
           rv.specialtyCoin,
           5
-        )} ${padLeft(rv.hashPowerIndex.toLocaleString('en-US'), 10)} ${padLeft(
-          `${rv.marketSharePct.toFixed(1)}%`,
-          7
-        )} ${st}`;
+        )} ${padRight(getRivalStrategyLabel(rv.strategy), 21)} ${padLeft(
+          rv.hashPowerIndex.toLocaleString('en-US'),
+          9
+        )} ${padLeft(`${rv.marketSharePct.toFixed(1)}%`, 7)}  ${st}`;
       });
       append([
         { kind: 'HEAD', text: 'RIVAL MINING SYNDICATES' },
-        { kind: 'PRE', text: [header, '-'.repeat(header.length), ...rows].join('\n') },
+        { kind: 'PRE', text: [header, '-'.repeat(header.length + 14), ...rows].join('\n') },
         {
           kind: 'TEXT',
-          text: 'Rival growth raises global network difficulty. Outscale them legally or disrupt them via "ops sabotage <1..3>".',
+          text: 'Run "rivals compare" for head-to-head ranking vs your operation, or disrupt via "ops sabotage <#>".',
         },
       ]);
       return;
@@ -2978,34 +3281,34 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           : state.employees
               .map(
                 (e, i) =>
-                  `  #${i + 1} ${padRight(e.name, 18)} ${padRight(e.role, 14)} ${padRight(
+                  `  #${i + 1} ${padRight(e.name, 18)} ${padRight(e.role, 14)} Lv${e.skillLevel ?? 1} (${e.experienceXp ?? 0}XP)  ${padRight(
                     e.shift,
-                    12
+                    13
                   )} ${e.priority}`
               )
               .join('\n');
+      const keyMap: Record<EmployeeRole, string> = {
+        TECHNICIAN: 'tech',
+        ELECTRICIAN: 'elec',
+        MANAGER: 'mgr',
+        SYS_ENGINEER: 'eng',
+        RESEARCHER: 'res',
+        PR_STRATEGIST: 'pr',
+        ANALYST: 'analyst',
+      };
       const catalog = EMPLOYEE_SPECS.map((s) => {
-        const key =
-          s.role === 'TECHNICIAN'
-            ? 'tech'
-            : s.role === 'SYS_ENGINEER'
-            ? 'eng'
-            : s.role === 'RESEARCHER'
-            ? 'res'
-            : s.role === 'PR_STRATEGIST'
-            ? 'pr'
-            : 'analyst';
         const ok = state.devUnlockAll || facIdx >= s.unlockFacilityIndex;
-        return `  hire ${padRight(key, 8)} ${padRight(s.title, 22)} Hire:${padLeft(
+        return `  hire ${padRight(keyMap[s.role], 8)} ${padRight(s.title, 22)} Hire:${padLeft(
           formatUsd(s.hireCost),
           7
         )}  Sal:${padLeft(formatUsd(s.cycleSalary), 7)}/cyc  ${
           ok ? '[OK]' : `[At ${FACILITY_TIERS[s.unlockFacilityIndex].name}]`
-        }`;
+        }\n      ${s.summary}`;
       }).join('\n');
       append([
-        { kind: 'HEAD', text: 'STAFF ROSTER & RECRUITMENT' },
+        { kind: 'HEAD', text: 'STAFF ROSTER, TRAINING & RECRUITMENT' },
         { kind: 'PRE', text: `ACTIVE CREW:\n${roster}\n\nRECRUIT:\n${catalog}` },
+        { kind: 'TEXT', text: 'Commands: "hire <tech|elec|mgr|eng|res|pr|analyst>", "train <staff#>", "shift <#> <day|night|24/7>", "priority <#> <thermal|care|hash|research>", "fire <#>".' },
       ]);
       return;
     }
@@ -3014,6 +3317,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const roleMap: Record<string, EmployeeRole> = {
         tech: 'TECHNICIAN',
         technician: 'TECHNICIAN',
+        elec: 'ELECTRICIAN',
+        electrician: 'ELECTRICIAN',
+        mgr: 'MANAGER',
+        manager: 'MANAGER',
         eng: 'SYS_ENGINEER',
         engineer: 'SYS_ENGINEER',
         res: 'RESEARCHER',
@@ -3023,7 +3330,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       };
       const role = roleMap[arg1];
       if (!role) {
-        append([{ kind: 'ERR', text: 'Usage: hire <tech|eng|res|pr|analyst>' }]);
+        append([{ kind: 'ERR', text: 'Usage: hire <tech|elec|mgr|eng|res|pr|analyst>' }]);
         return;
       }
       const ok = onHireEmployee(role);
@@ -3032,6 +3339,17 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           ? { kind: 'OK', text: `Hired ${role}.` }
           : { kind: 'ERR', text: 'Cannot hire (insufficient cash or facility tier locked).' },
       ]);
+      return;
+    }
+
+    if (cmd === 'train') {
+      const idx = parseInt(arg1, 10) - 1;
+      if (isNaN(idx) || !state.employees[idx]) {
+        append([{ kind: 'ERR', text: 'Usage: train <staff#>' }]);
+        return;
+      }
+      const res = onTrainEmployee(idx);
+      append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
       return;
     }
 
@@ -3086,49 +3404,194 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'research') {
+      if (arg1 === 'done' || arg1 === 'completed') {
+        const completed = RESEARCH_NODES.filter((n) => state.unlockedResearch.includes(n.id));
+        const doneRows =
+          completed.length === 0
+            ? '  (No technologies completed yet.)'
+            : completed
+                .map((n, i) => `  ${i + 1}. [${padRight(n.category, 10)}] ${padRight(n.name, 34)} ${n.effectSummary}`)
+                .join('\n');
+        append([
+          { kind: 'HEAD', text: `COMPLETED R&D (${completed.length}/${RESEARCH_NODES.length})` },
+          { kind: 'PRE', text: doneRows },
+        ]);
+        return;
+      }
+
+      const accessible = getAccessibleResearch();
       if (arg1 === 'start' && arg2) {
         const idx = parseInt(arg2, 10) - 1;
         const node =
-          !isNaN(idx) && RESEARCH_NODES[idx]
-            ? RESEARCH_NODES[idx]
-            : RESEARCH_NODES.find(
+          !isNaN(idx) && accessible[idx]
+            ? accessible[idx]
+            : accessible.find(
                 (n) => n.id.toLowerCase() === arg2 || n.id.toLowerCase() === `res_${arg2}`
               );
         if (!node) {
-          append([{ kind: 'ERR', text: `Research "${arg2}" not found. Run "research" to list.` }]);
+          append([{ kind: 'ERR', text: `Available research "${arg2}" not found. Run "research" to list.` }]);
           return;
         }
         const ok = onStartResearch(node.id);
         append([
           ok
             ? { kind: 'OK', text: `Started R&D: ${node.name}.` }
-            : { kind: 'ERR', text: 'Cannot start research (busy, prereq locked, or insufficient cash).' },
+            : { kind: 'ERR', text: 'Cannot start research (busy or insufficient cash).' },
         ]);
         return;
       }
 
-      const rows = RESEARCH_NODES.map((n, i) => {
-        const done = state.unlockedResearch.includes(n.id);
+      const rows = accessible.map((n, i) => {
         const active = state.activeResearchId === n.id;
-        const preOk =
-          state.devUnlockAll || n.prereqIds.every((p) => state.unlockedResearch.includes(p));
-        const status = done
-          ? '[DONE]'
-          : active
+        const status = active
           ? `[ACTIVE ${Math.round(state.activeResearchProgress)}/${n.costRp}]`
-          : !preOk
-          ? '[PREREQ]'
           : '[READY]';
-        return `  ${i + 1}. ${padRight(n.name, 30)} ${padLeft(`${n.costRp} RP`, 6)} ${padLeft(
+        return `  ${i + 1}. [${padRight(n.category, 10)}] ${padRight(n.name, 31)} ${padLeft(`${n.costRp} RP`, 6)} ${padLeft(
           formatUsd(n.costCash),
           7
-        )}  ${padRight(status, 15)}  ${n.effectSummary}`;
+        )}  ${padRight(status, 14)} ${n.effectSummary}`;
       });
       append([
-        { kind: 'HEAD', text: `R&D TECH TREE (${state.researchPoints.toFixed(1)} RP available)` },
-        { kind: 'PRE', text: rows.join('\n') },
-        { kind: 'TEXT', text: `Run "research start <1..${RESEARCH_NODES.length}>" to begin a project.` },
+        {
+          kind: 'HEAD',
+          text: `R&D TECH TREE (${state.researchPoints.toFixed(1)} RP · ${state.unlockedResearch.length}/${RESEARCH_NODES.length} completed)`,
+        },
+        {
+          kind: 'PRE',
+          text:
+            rows.length > 0
+              ? rows.join('\n')
+              : '  All currently accessible R&D projects have been completed.',
+        },
+        {
+          kind: 'TEXT',
+          text:
+            accessible.length > 0
+              ? `Run "research start <1..${accessible.length}>" to begin an available project, or "research done" to review completed tech.`
+              : 'Run "research done" to inspect completed technologies.',
+        },
       ]);
+      return;
+    }
+
+    if (cmd === 'stats' || cmd === 'analytics') {
+      append([
+        { kind: 'HEAD', text: 'COMPANY FINANCIAL & OPERATIONAL ANALYTICS' },
+        { kind: 'PRE', text: formatStatsReport(state) },
+      ]);
+      return;
+    }
+
+    if (cmd === 'history' || cmd === 'tx' || cmd === 'transactions') {
+      const catMap: Record<string, TransactionCategory> = {
+        hardware: 'HARDWARE',
+        hw: 'HARDWARE',
+        sale: 'SALE',
+        repair: 'REPAIR',
+        facility: 'FACILITY',
+        power: 'POWER',
+        staff: 'STAFF',
+        contract: 'CONTRACT',
+        research: 'RESEARCH',
+        event: 'EVENT',
+        reward: 'REWARD',
+      };
+      const filterCat = arg1 ? catMap[arg1] : undefined;
+      if (arg1 && !filterCat && arg1 !== 'all') {
+        append([
+          {
+            kind: 'ERR',
+            text: 'Filter options: hardware, sale, repair, facility, power, staff, contract, research, event, reward',
+          },
+        ]);
+        return;
+      }
+      append([
+        {
+          kind: 'HEAD',
+          text: `TRANSACTION HISTORY (${filterCat ?? 'ALL'} · ${(state.transactions ?? []).length} entries)`,
+        },
+        { kind: 'PRE', text: formatTransactionHistory(state, filterCat ?? 'ALL') },
+      ]);
+      return;
+    }
+
+    if (cmd === 'milestones') {
+      append([
+        {
+          kind: 'HEAD',
+          text: `COMPANY MILESTONES (${(state.unlockedMilestones ?? []).length}/${10})`,
+        },
+        { kind: 'PRE', text: formatMilestonesReport(state) },
+      ]);
+      return;
+    }
+
+    if (cmd === 'achievements') {
+      append([
+        {
+          kind: 'HEAD',
+          text: `CAREER ACHIEVEMENTS (${(state.unlockedAchievements ?? []).length}/${9})`,
+        },
+        { kind: 'PRE', text: formatAchievementsReport(state) },
+      ]);
+      return;
+    }
+
+    if (cmd === 'challenges') {
+      if (arg1 === 'start' && arg2) {
+        const idx = parseInt(arg2, 10) - 1;
+        const spec = CHALLENGES[idx] ?? CHALLENGES.find((c) => c.id === arg2);
+        if (!spec) {
+          append([{ kind: 'ERR', text: `Usage: challenges start <1..${CHALLENGES.length}>` }]);
+          return;
+        }
+        const res = onStartChallenge(spec.id);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      append([
+        { kind: 'HEAD', text: 'OPERATIONAL CHALLENGES' },
+        { kind: 'PRE', text: formatChallengesReport(state) },
+        { kind: 'TEXT', text: `Run "challenges start <1..${CHALLENGES.length}>" to activate an optional challenge.` },
+      ]);
+      return;
+    }
+
+    if (cmd === 'save') {
+      if (arg1 === 'backup') {
+        const ok = onBackupSave();
+        append([{ kind: ok ? 'OK' : 'ERR', text: ok ? 'Local save backup updated.' : 'Failed to create backup.' }]);
+        return;
+      }
+      if (arg1 === 'restore') {
+        const ok = onRestoreBackup();
+        append([{ kind: ok ? 'OK' : 'ERR', text: ok ? 'Restored local backup.' : 'No local backup found.' }]);
+        return;
+      }
+      if (arg1 === 'export') {
+        const raw = onExportSave();
+        if (!raw) {
+          append([{ kind: 'ERR', text: 'Nothing to export.' }]);
+          return;
+        }
+        try {
+          const blob = new Blob([raw], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `blockworks-${state.isSandbox ? 'sandbox' : 'career'}-step${state.stepCount}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          append([{ kind: 'OK', text: 'Downloaded JSON save file.' }]);
+        } catch {
+          append([{ kind: 'ERR', text: 'Browser blocked file download; use Main Menu -> Saves to copy JSON.' }]);
+        }
+        return;
+      }
+      append([{ kind: 'ERR', text: 'Usage: save <backup|restore|export>' }]);
       return;
     }
 
@@ -3271,7 +3734,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       }
       if (arg1 === 'facilities') {
         onDevOwnAllFacilities();
-        append([{ kind: 'OK', text: 'Granted ownership of all 4 facilities.' }]);
+        append([{ kind: 'OK', text: `Granted ownership of all ${FACILITY_TIERS.length} facilities.` }]);
         return;
       }
       if (arg1 === 'coins') {
@@ -3359,8 +3822,9 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     : wizard
     ? wizard.step === 'GPU'
       ? [
-          { label: '1', cmd: '1' },
-          { label: '2', cmd: '2' },
+          ...getUnlockedGpus()
+            .slice(0, 3)
+            .map((_, idx) => ({ label: String(idx + 1), cmd: String(idx + 1) })),
           { label: 'done', cmd: 'done' },
           { label: 'clear', cmd: 'clear' },
           { label: 'back', cmd: 'back' },
@@ -3375,14 +3839,34 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           { label: 'back', cmd: 'back' },
           { label: 'cancel', cmd: 'cancel' },
         ]
-      : [
-          { label: '1', cmd: '1' },
-          { label: '2', cmd: '2' },
-          { label: '3', cmd: '3' },
-          ...(wizard.step === 'CHASSIS' ? [{ label: 'preset 1', cmd: 'preset 1' }] : []),
-          { label: 'back', cmd: 'back' },
-          { label: 'cancel', cmd: 'cancel' },
-        ]
+      : (() => {
+          const ch = CHASSIS_PARTS.find((c) => c.id === wizard.config.chassisId) ?? CHASSIS_PARTS[0];
+          const count =
+            wizard.step === 'CHASSIS'
+              ? getUnlockedChassis().length
+              : wizard.step === 'COMPUTE'
+              ? getUnlockedComputeFor(ch.isAsicRack).length
+              : wizard.step === 'STORAGE'
+              ? getUnlockedStorage().length
+              : wizard.step === 'PSU'
+              ? getUnlockedPsus().length
+              : wizard.step === 'COOLING'
+              ? getUnlockedCooling().length
+              : wizard.step === 'OS'
+              ? getUnlockedOs().length
+              : getUnlockedCoins().length;
+          return [
+            ...Array.from({ length: Math.min(3, count) }, (_, i) => ({
+              label: String(i + 1),
+              cmd: String(i + 1),
+            })),
+            ...(wizard.step === 'CHASSIS' && getUnlockedPresets().length > 0
+              ? [{ label: 'preset 1', cmd: 'preset 1' }]
+              : []),
+            { label: 'back', cmd: 'back' },
+            { label: 'cancel', cmd: 'cancel' },
+          ];
+        })()
     : tinker
     ? tinker.slot === 'MENU'
       ? [
@@ -3398,19 +3882,36 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         ]
       : tinker.slot === 'gpu'
       ? [
-          { label: 'add 1', cmd: 'add 1' },
+          ...(getUnlockedGpus().length > 0 ? [{ label: 'add 1', cmd: 'add 1' }] : []),
           { label: 'remove 1', cmd: 'remove 1' },
           { label: 'clear', cmd: 'clear' },
           { label: 'back', cmd: 'back' },
           { label: 'done', cmd: 'done' },
         ]
-      : [
-          { label: '1', cmd: '1' },
-          { label: '2', cmd: '2' },
-          { label: '3', cmd: '3' },
-          { label: 'back', cmd: 'back' },
-          { label: 'done', cmd: 'done' },
-        ]
+      : (() => {
+          const rig = state.rigs[tinker.rigIndex];
+          const ch = CHASSIS_PARTS.find((c) => c.id === rig?.chassisId) ?? CHASSIS_PARTS[0];
+          const count =
+            tinker.slot === 'chassis'
+              ? getUnlockedChassis().length
+              : tinker.slot === 'compute'
+              ? getUnlockedComputeFor(ch.isAsicRack).length
+              : tinker.slot === 'storage'
+              ? getUnlockedStorage().length
+              : tinker.slot === 'psu'
+              ? getUnlockedPsus().length
+              : tinker.slot === 'cooling'
+              ? getUnlockedCooling().length
+              : getUnlockedOs().length;
+          return [
+            ...Array.from({ length: Math.min(3, count) }, (_, i) => ({
+              label: String(i + 1),
+              cmd: String(i + 1),
+            })),
+            { label: 'back', cmd: 'back' },
+            { label: 'done', cmd: 'done' },
+          ];
+        })()
     : [
         ...(state.tutorialStep && state.tutorialStep > 0
           ? [
@@ -3433,10 +3934,16 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       ];
 
   const facility = getFacility(state.facilityId);
+  const maxRigs = getEffectiveFacilityMaxRigs(state);
   const totals = getFacilityTotals(state);
   const effectiveCap = getEffectiveFacilityPowerCapKw(state);
   const enabledCount = state.rigs.filter((r) => r.enabled).length;
-  const coolingSummary = computeFacilityCoolingSummary(state.coolingUnits ?? [], enabledCount);
+  const coolingSummary = computeFacilityCoolingSummary(
+    state.coolingUnits ?? [],
+    enabledCount,
+    facility,
+    state.facilityUpgrades
+  );
   const heat = Math.round(state.regulatoryScrutiny);
 
   return (
@@ -3455,7 +3962,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           <span className="text-green-400 font-semibold matrix-glow">{facility.name}</span>
           <span className="text-green-700">·</span>
           <span className="tabular-nums text-green-200/90">
-            Rigs {totals.rigCount}/{facility.maxRigs}
+            Rigs {totals.rigCount}/{maxRigs}
           </span>
           <span className="text-green-700">·</span>
           <span

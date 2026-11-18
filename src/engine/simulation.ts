@@ -4,31 +4,34 @@ import {
   COOLING_PARTS,
   EMPLOYEE_SPECS,
   FACILITY_TIERS,
+  FACILITY_UPGRADES,
   FIRMWARE_PROFILE_SPECS,
   GPU_PARTS,
   ILLICIT_MOD_SPECS,
   MARKET_REGIME_SPECS,
   OS_PARTS,
   POOL_MODE_SPECS,
+  POWER_CONTRACTS,
   PSU_PARTS,
   RESEARCH_NODES,
   RIG_PRESETS,
-  RIVAL_TEMPLATES,
   ROOM_COOLING_UNITS,
   STORAGE_PARTS,
 } from '../data/catalog';
 import { createInitialCoins } from '../data/history';
 import {
+  ActiveMarketModifier,
   BlackMarketListing,
+  ChallengeId,
   CoinMarketState,
   CoinSymbol,
-  ContractSpec,
   DifficultyLevel,
   EmpireAlignment,
   FacilityTier,
-  FirmwareProfile,
+  FacilityUpgradeId,
   GameState,
   IllicitModId,
+  MarketModifierType,
   MarketRegime,
   MiningAlgorithm,
   MiningRig,
@@ -37,16 +40,50 @@ import {
   PendingEventCategory,
   PlacedCoolingUnit,
   PoolMode,
+  PowerContractId,
+  PowerContractSpec,
   RigBuildConfig,
-  RivalSyndicate,
+  SandboxConfig,
+  TransactionCategory,
+  TransactionEntry,
 } from '../types/game';
 import { formatStepLabel, formatUsd } from '../utils/format';
 import { createSeededRng, generateRandomSeed } from '../utils/rng';
+import { generateContractBoard } from './contracts';
+import { computeCompanyValuation, evaluateProgression } from './milestones';
+import { createInitialRivals, getPlayerRivalComparison, stepRivalSyndicates } from './rivals';
+import { buildDefaultStats } from './saveSystem';
+import {
+  calculateBaseRigPartsCost,
+  calculateRigResaleValue,
+  generateUsedMarketListings,
+  getGlobalHardwarePriceMult,
+  getRigGeneration,
+} from './usedMarket';
+
+export {
+  calculateRigResaleValue,
+  computeCompanyValuation,
+  createInitialRivals,
+  generateContractBoard,
+  generateUsedMarketListings,
+  getPlayerRivalComparison,
+};
 
 export const BILLING_CYCLE_STEPS = 30;
 
 export function getFacility(facilityId: string): FacilityTier {
   return FACILITY_TIERS.find((f) => f.id === facilityId) ?? FACILITY_TIERS[0];
+}
+
+export function getPowerContract(contractId?: PowerContractId): PowerContractSpec {
+  return POWER_CONTRACTS.find((c) => c.id === contractId) ?? POWER_CONTRACTS[1];
+}
+
+export function getFacilityUpgradeCost(upgradeId: FacilityUpgradeId, currentLevel: number): number {
+  const spec = FACILITY_UPGRADES.find((u) => u.id === upgradeId);
+  if (!spec) return 0;
+  return Math.round(spec.baseCost * Math.pow(spec.costScale, currentLevel));
 }
 
 export function getPartBundle(config: RigBuildConfig) {
@@ -62,10 +99,13 @@ export function getPartBundle(config: RigBuildConfig) {
   return { chassis, compute, gpus, storage, psu, cooling, os };
 }
 
-export function calculateRigBuildCost(config: RigBuildConfig): number {
-  const { chassis, compute, gpus, storage, psu, cooling, os } = getPartBundle(config);
-  const gpuCost = gpus.reduce((sum, g) => sum + g.cost, 0);
-  return chassis.cost + compute.cost + gpuCost + storage.cost + psu.cost + cooling.cost + os.cost;
+export function calculateRigBuildCost(
+  config: RigBuildConfig,
+  state?: Pick<GameState, 'activeMarketModifiers'>
+): number {
+  const base = calculateBaseRigPartsCost(config);
+  const mult = state ? getGlobalHardwarePriceMult(state) : 1.0;
+  return Math.round(base * mult);
 }
 
 export function calculatePartTradeInCost(oldCost: number, newCost: number): number {
@@ -73,15 +113,52 @@ export function calculatePartTradeInCost(oldCost: number, newCost: number): numb
   return newCost - tradeInCredit;
 }
 
-export function getRigRepairCost(rig: MiningRig): number {
+export function getTechnicianBonuses(state: Pick<GameState, 'employees' | 'unlockedResearch'>) {
+  const techs = state.employees.filter((e) => e.role === 'TECHNICIAN');
+  const totalSkill = techs.reduce((s, e) => s + (e.skillLevel ?? 1), 0);
+  const repairDiscount = Math.min(0.5, totalSkill * 0.12);
+  const wearReduction = Math.min(0.45, totalSkill * 0.1) + (state.unlockedResearch.includes('res_auto_maint') ? 0.22 : 0);
+  const repairPerStep = techs.reduce((s, e) => s + 0.24 * (1 + ((e.skillLevel ?? 1) - 1) * 0.25), 0);
+  const hasThermalTech = techs.some((t) => t.priority === 'THERMAL_SAFETY');
+  return { count: techs.length, totalSkill, repairDiscount, wearReduction: Math.min(0.65, wearReduction), repairPerStep, hasThermalTech };
+}
+
+export function getElectricianBonuses(state: Pick<GameState, 'employees'>) {
+  const elecs = state.employees.filter((e) => e.role === 'ELECTRICIAN');
+  const totalSkill = elecs.reduce((s, e) => s + (e.skillLevel ?? 1), 0);
+  const capBonusPct = Math.min(0.28, totalSkill * 0.05);
+  const powerWasteReduction = Math.min(0.2, totalSkill * 0.04);
+  const electricalMaintDiscount = Math.min(0.4, totalSkill * 0.09);
+  return { count: elecs.length, totalSkill, capBonusPct, powerWasteReduction, electricalMaintDiscount };
+}
+
+export function getManagerBonuses(state: Pick<GameState, 'employees'>) {
+  const mgrs = state.employees.filter((e) => e.role === 'MANAGER');
+  const totalSkill = mgrs.reduce((s, e) => s + (e.skillLevel ?? 1), 0);
+  const adminOverheadDiscount = Math.min(0.35, totalSkill * 0.08);
+  const opsEfficiencyBonus = Math.min(0.18, totalSkill * 0.03);
+  return { count: mgrs.length, totalSkill, adminOverheadDiscount, opsEfficiencyBonus };
+}
+
+export function getRigRepairCost(
+  rig: MiningRig,
+  state?: Pick<GameState, 'employees' | 'unlockedResearch' | 'activeMarketModifiers'>
+): number {
   const missing = Math.max(0, 100 - rig.healthPct);
-  if (missing < 0.5) return 0;
-  const buildCost = calculateRigBuildCost(rig);
-  return Math.max(15, Math.round((missing / 100) * buildCost * 0.35));
+  if (missing < 0.5 && rig.status !== 'FAILED') return 0;
+  const effectiveMissing = Math.max(missing, rig.status === 'FAILED' ? 28 : 0);
+  const buildCost = calculateBaseRigPartsCost(rig);
+  const techDiscount = state ? getTechnicianBonuses(state).repairDiscount : 0;
+  const hwMult = state ? getGlobalHardwarePriceMult(state) : 1.0;
+  const faultPenalty = rig.status === 'FAILED' ? 1.35 : 1.0;
+  return Math.max(
+    15,
+    Math.round((effectiveMissing / 100) * buildCost * 0.36 * (1 - techDiscount) * hwMult * faultPenalty)
+  );
 }
 
 export function getRigRepasteCost(rig: MiningRig): number {
-  const buildCost = calculateRigBuildCost(rig);
+  const buildCost = calculateBaseRigPartsCost(rig);
   return Math.max(12, Math.round(Math.min(180, buildCost * 0.04)));
 }
 
@@ -115,31 +192,52 @@ export interface ComputedRigTelemetry {
 
 export function computeFacilityCoolingSummary(
   coolingUnits: PlacedCoolingUnit[] = [],
-  activeRigCount = 1
+  activeRigCount = 1,
+  facility?: FacilityTier,
+  facilityUpgrades?: Partial<Record<FacilityUpgradeId, number>>
 ): {
   totalCoolingPoints: number;
   effectiveCoolingPerRigC: number;
   totalCoolingWatts: number;
   maxCoolingNoiseDba: number;
+  cycleCoolingMaintUsd: number;
+  facilityCoolingBonusC: number;
 } {
   let totalCoolingPoints = 0;
   let totalCoolingWatts = 0;
   let maxCoolingNoiseDba = 0;
+  let cycleCoolingMaintUsd = 0;
+  let totalSupportedRigs = 0;
+
   for (const unit of coolingUnits) {
     if (!unit.enabled) continue;
     const spec = ROOM_COOLING_UNITS.find((u) => u.id === unit.type);
     if (!spec) continue;
     totalCoolingPoints += spec.coolingPowerC;
     totalCoolingWatts += spec.watts;
+    cycleCoolingMaintUsd += spec.maintenancePerCycle;
+    totalSupportedRigs += spec.maxRigsSupported;
     if (spec.noiseDba > maxCoolingNoiseDba) maxCoolingNoiseDba = spec.noiseDba;
   }
-  const divisor = Math.max(1, Math.sqrt(Math.max(1, activeRigCount)));
-  const effectiveCoolingPerRigC = Math.min(34, totalCoolingPoints / divisor);
+
+  const ventLvl = facilityUpgrades?.ventilation_ducts ?? 0;
+  const indCoolLvl = facilityUpgrades?.industrial_cooling_loop ?? 0;
+  const facilityCoolingBonusC =
+    (facility?.coolingBonusC ?? 0) + ventLvl * 5 + indCoolLvl * 10;
+
+  const rigsCount = Math.max(1, activeRigCount);
+  const saturationRatio = totalSupportedRigs > 0 ? Math.min(1, totalSupportedRigs / rigsCount) : 0;
+  const divisor = Math.max(1, Math.sqrt(rigsCount));
+  const unitCoolingPerRig = (totalCoolingPoints / divisor) * (0.45 + 0.55 * saturationRatio);
+  const effectiveCoolingPerRigC = Math.min(58, unitCoolingPerRig + facilityCoolingBonusC * 0.65);
+
   return {
     totalCoolingPoints,
     effectiveCoolingPerRigC,
     totalCoolingWatts,
     maxCoolingNoiseDba,
+    cycleCoolingMaintUsd,
+    facilityCoolingBonusC,
   };
 }
 
@@ -147,9 +245,16 @@ export function computeSpatialCoolingBonus(
   _gridX: number | undefined,
   _gridY: number | undefined,
   coolingUnits: PlacedCoolingUnit[] = [],
-  activeRigCount = 1
+  activeRigCount = 1,
+  facility?: FacilityTier,
+  facilityUpgrades?: Partial<Record<FacilityUpgradeId, number>>
 ): number {
-  return computeFacilityCoolingSummary(coolingUnits, activeRigCount).effectiveCoolingPerRigC;
+  return computeFacilityCoolingSummary(
+    coolingUnits,
+    activeRigCount,
+    facility,
+    facilityUpgrades
+  ).effectiveCoolingPerRigC;
 }
 
 export function findOpenGridSlot(
@@ -183,16 +288,23 @@ export function computeRigTelemetry(
     healthPct?: number;
     pasteStepsRemaining?: number;
     illicitMod?: IllicitModId | null;
+    conditionTier?: MiningRig['conditionTier'];
+    ageSteps?: number;
+    status?: MiningRig['status'];
   },
   facility: FacilityTier,
   unlockedResearch: string[],
   sysEngineerBonus: number,
   coolingUnits: PlacedCoolingUnit[] = [],
-  activeRigCount = 1
+  activeRigCount = 1,
+  facilityUpgrades?: Partial<Record<FacilityUpgradeId, number>>,
+  electricianPowerSave = 0
 ): ComputedRigTelemetry {
   const { chassis, compute, gpus, storage, psu, cooling, os } = getPartBundle(rig);
   const ocRatio = Math.max(0.8, Math.min(1.5, rig.overclockPct / 100));
   const undervoltMult = unlockedResearch.includes('res_undervolt') ? 0.88 : 1.0;
+  const distLvl = facilityUpgrades?.power_distribution ?? 0;
+  const distSaveMult = Math.max(0.75, 1 - distLvl * 0.06 - electricianPowerSave);
 
   const fw = FIRMWARE_PROFILE_SPECS[rig.firmwareProfile ?? 'BALANCED'];
   const illicit = rig.illicitMod ? ILLICIT_MOD_SPECS[rig.illicitMod] : null;
@@ -209,6 +321,7 @@ export function computeRigTelemetry(
       cooling.watts) *
       os.powerMultiplier *
       undervoltMult *
+      distSaveMult *
       fw.powerMult *
       (illicit?.powerMult ?? 1)
   );
@@ -218,6 +331,7 @@ export function computeRigTelemetry(
   const isImmersion = cooling.id === 'cool_immersion' || cooling.id === 'cool_cryo_phase';
   const gpuNoise =
     gpus.length > 0 ? Math.max(...gpus.map((g) => g.noiseDba)) + gpus.length * 1.8 : 0;
+  const ventBaffle = (facilityUpgrades?.ventilation_ducts ?? 0) * 3;
   const rawNoise =
     30 +
     compute.noiseDba * 0.65 +
@@ -227,9 +341,10 @@ export function computeRigTelemetry(
     chassis.noiseModifier +
     (ocRatio - 1) * 18 +
     (rig.firmwareProfile === 'TURBO' ? 4 : rig.firmwareProfile === 'ECO' ? -4 : 0) +
-    (illicit?.noiseDeltaDba ?? 0);
+    (illicit?.noiseDeltaDba ?? 0) -
+    ventBaffle;
   const noiseDba = Math.round(
-    isImmersion ? Math.min(48, rawNoise * 0.55) : Math.max(26, rawNoise)
+    isImmersion ? Math.min(48, Math.max(24, rawNoise * 0.55)) : Math.max(24, rawNoise)
   );
 
   const wearHeat = healthPct < 75 ? Math.round((75 - healthPct) * 0.16) : 0;
@@ -245,7 +360,9 @@ export function computeRigTelemetry(
     rig.gridX,
     rig.gridY,
     coolingUnits,
-    activeRigCount
+    activeRigCount,
+    facility,
+    facilityUpgrades
   );
   const equilibriumTempC = Math.round(
     Math.max(
@@ -293,11 +410,14 @@ export function computeRigTelemetry(
   }
 
   let healthFactor = 1.0;
-  if (healthPct <= 20) {
+  if (rig.status === 'FAILED' || healthPct <= 20) {
     healthFactor = 0;
   } else if (healthPct < 75) {
     healthFactor = Math.max(0.5, 1 - (75 - healthPct) * 0.009);
   }
+
+  const condTierFactor =
+    rig.conditionTier === 'DAMAGED' ? 0.92 : rig.conditionTier === 'USED' ? 0.97 : 1.0;
 
   const totalMult =
     os.hashrateMultiplier *
@@ -308,6 +428,7 @@ export function computeRigTelemetry(
     (1 + sysEngineerBonus) *
     thermalFactor *
     healthFactor *
+    condTierFactor *
     (isUnderpowered ? 0 : 1);
 
   return {
@@ -327,8 +448,9 @@ export function getAutoSellMultiplier(
 ): number {
   const analysts = state.employees.filter((e) => e.role === 'ANALYST');
   const quantBonus = state.unlockedResearch.includes('res_quant_desk') ? 0.06 : 0;
-  const analystBonus = Math.min(0.09, analysts.length * 0.03);
-  return 1 + quantBonus + analystBonus;
+  const analystBonus = Math.min(0.12, analysts.reduce((s, a) => s + 0.03 * (1 + ((a.skillLevel ?? 1) - 1) * 0.15), 0));
+  const mgrBonus = getManagerBonuses(state).opsEfficiencyBonus * 0.35;
+  return 1 + quantBonus + analystBonus + mgrBonus;
 }
 
 export function computeStepCoinOutput(
@@ -385,190 +507,156 @@ export function computeStepCoinOutput(
   return { minedCoins, autoSoldUsd, soloBlockHit };
 }
 
-export function getSysEngineerBonus(state: GameState): number {
+export function getSysEngineerBonus(state: Pick<GameState, 'employees'>): number {
   const engineers = state.employees.filter((e) => e.role === 'SYS_ENGINEER');
   const raw = engineers.reduce((sum, e) => {
     const shiftMult = e.shift === 'ROTATION_24_7' ? 1.25 : 1.0;
     const prioMult = e.priority === 'HASHRATE_TUNING' ? 1.3 : 1.0;
-    return sum + 0.06 * shiftMult * prioMult;
+    const skillMult = 1 + ((e.skillLevel ?? 1) - 1) * 0.2;
+    return sum + 0.06 * shiftMult * prioMult * skillMult;
   }, 0);
-  return Math.min(0.35, raw);
+  return Math.min(0.38, raw);
 }
 
-export function getEffectiveFacilityPowerCapKw(state: Pick<GameState, 'facilityId' | 'underground'>): number {
+export function getEffectiveFacilityMaxRigs(
+  state: Pick<GameState, 'facilityId' | 'facilityUpgrades'>
+): number {
   const facility = getFacility(state.facilityId);
-  return state.underground?.powerSiphonActive
-    ? Number((facility.maxPowerKw * 1.25).toFixed(2))
-    : facility.maxPowerKw;
+  const bayLvl = state.facilityUpgrades?.bay_expansion ?? 0;
+  return Math.max(facility.maxRigs, Math.round(facility.maxRigs * (1 + bayLvl * 0.2)));
+}
+
+export function getEffectiveFacilityPowerCapKw(
+  state: Pick<
+    GameState,
+    'facilityId' | 'facilityUpgrades' | 'powerContractId' | 'underground' | 'employees' | 'unlockedResearch'
+  >
+): number {
+  const facility = getFacility(state.facilityId);
+  const circuitLvl = state.facilityUpgrades?.additional_circuits ?? 0;
+  const contract = getPowerContract(state.powerContractId);
+  const elecBonus = getElectricianBonuses(state).capBonusPct;
+  const pfBonus = state.unlockedResearch?.includes('res_power_factor') ? 0.08 : 0;
+  const siphonMult = state.underground?.powerSiphonActive ? 1.25 : 1.0;
+
+  const cap =
+    facility.maxPowerKw *
+    (1 + circuitLvl * 0.22 + elecBonus + pfBonus) *
+    contract.capacityMultiplier *
+    siphonMult;
+  return Number(cap.toFixed(2));
+}
+
+export function getEffectiveElectricityRate(
+  state: Pick<
+    GameState,
+    'facilityId' | 'powerContractId' | 'unlockedResearch' | 'activeMarketModifiers' | 'underground' | 'sandboxConfig'
+  >
+): number {
+  const facility = getFacility(state.facilityId);
+  const contract = getPowerContract(state.powerContractId);
+  const ppaMult = state.unlockedResearch?.includes('res_hydro_ppa') ? 0.72 : 1.0;
+  const siphonMult = state.underground?.powerSiphonActive ? 0.35 : 1.0;
+  const evtMult = (state.activeMarketModifiers ?? []).reduce((m, x) => m * x.powerRateMult, 1.0);
+  const sandboxMult = state.sandboxConfig?.operatingCostMult ?? 1.0;
+  return facility.powerRatePerKwh * contract.rateMultiplier * ppaMult * siphonMult * evtMult * sandboxMult;
 }
 
 export function getFacilityTotals(state: GameState): {
   totalPowerKw: number;
   maxNoiseDba: number;
   rigCount: number;
+  maxRigs: number;
   stepPowerCostUsd: number;
   cyclePayrollUsd: number;
   cycleRentUsd: number;
+  cycleMaintenanceUsd: number;
+  cycleFixedContractFee: number;
 } {
   const facility = getFacility(state.facilityId);
   const sysBonus = getSysEngineerBonus(state);
-  const ppaMult = state.unlockedResearch.includes('res_hydro_ppa') ? 0.72 : 1.0;
-  const siphonMult = state.underground?.powerSiphonActive ? 0.35 : 1.0;
+  const elecBonus = getElectricianBonuses(state);
+  const mgrBonus = getManagerBonuses(state);
+  const effectiveRate = getEffectiveElectricityRate(state);
+  const sandboxMult = state.sandboxConfig?.operatingCostMult ?? 1.0;
 
   let totalWatts = 0;
   let peakNoise = 28;
   const enabledCount = state.rigs.filter((r) => r.enabled).length;
+
   for (const rig of state.rigs) {
-    if (!rig.enabled) continue;
+    if (!rig.enabled || rig.status === 'FAILED') continue;
     const t = computeRigTelemetry(
       rig,
       facility,
       state.unlockedResearch,
       sysBonus,
       state.coolingUnits ?? [],
-      enabledCount
+      enabledCount,
+      state.facilityUpgrades,
+      elecBonus.powerWasteReduction
     );
     totalWatts += t.wallWatts;
     if (t.noiseDba > peakNoise) {
       peakNoise = t.noiseDba + Math.min(8, enabledCount * 0.7);
     }
   }
-  for (const unit of state.coolingUnits ?? []) {
-    if (!unit.enabled) continue;
-    const spec = ROOM_COOLING_UNITS.find((u) => u.id === unit.type);
-    if (!spec) continue;
-    totalWatts += spec.watts;
-    if (spec.noiseDba > peakNoise) {
-      peakNoise = spec.noiseDba;
-    }
+
+  const coolingSummary = computeFacilityCoolingSummary(
+    state.coolingUnits ?? [],
+    enabledCount,
+    facility,
+    state.facilityUpgrades
+  );
+  totalWatts += coolingSummary.totalCoolingWatts;
+  if (coolingSummary.maxCoolingNoiseDba > peakNoise) {
+    peakNoise = coolingSummary.maxCoolingNoiseDba;
   }
 
   const totalPowerKw = totalWatts / 1000;
-  const stepPowerCostUsd =
-    totalPowerKw * 24 * facility.powerRatePerKwh * ppaMult * siphonMult;
-  const cyclePayrollUsd = state.employees.reduce((sum, e) => {
-    const spec = EMPLOYEE_SPECS.find((s) => s.role === e.role);
-    const base = spec?.cycleSalary ?? 1500;
-    const shiftMult = e.shift === 'ROTATION_24_7' ? 1.35 : 1.0;
-    return sum + base * shiftMult;
-  }, 0);
+  const stepPowerCostUsd = totalPowerKw * 24 * effectiveRate;
+
+  const cyclePayrollUsd = Math.round(
+    state.employees.reduce((sum, e) => {
+      const spec = EMPLOYEE_SPECS.find((s) => s.role === e.role);
+      const base = spec?.cycleSalary ?? 1500;
+      const skillMult = 1 + ((e.skillLevel ?? 1) - 1) * 0.14;
+      const shiftMult = e.shift === 'ROTATION_24_7' ? 1.35 : 1.0;
+      return sum + base * skillMult * shiftMult;
+    }, 0) * sandboxMult
+  );
+
   const isOwned = state.ownedFacilityIds.includes(state.facilityId);
-  const cycleRentUsd = isOwned ? 0 : facility.cycleRent;
+  const adminDisc = 1 - mgrBonus.adminOverheadDiscount;
+  const cycleRentUsd = isOwned ? 0 : Math.round(facility.cycleRent * adminDisc * sandboxMult);
+
+  let upgradeUpkeep = 0;
+  for (const upg of FACILITY_UPGRADES) {
+    const lvl = state.facilityUpgrades?.[upg.id] ?? 0;
+    upgradeUpkeep += lvl * upg.cycleUpkeepPerLevel;
+  }
+  const elecMaintDisc = 1 - elecBonus.electricalMaintDiscount;
+  const cycleMaintenanceUsd = Math.round(
+    (facility.maintenanceCostPerCycle * adminDisc +
+      coolingSummary.cycleCoolingMaintUsd +
+      upgradeUpkeep * elecMaintDisc) *
+      sandboxMult
+  );
+
+  const contract = getPowerContract(state.powerContractId);
+  const cycleFixedContractFee = Math.round(contract.cycleFixedFee * sandboxMult);
 
   return {
     totalPowerKw,
     maxNoiseDba: Math.round(peakNoise),
     rigCount: state.rigs.length,
+    maxRigs: getEffectiveFacilityMaxRigs(state),
     stepPowerCostUsd,
     cyclePayrollUsd,
     cycleRentUsd,
+    cycleMaintenanceUsd,
+    cycleFixedContractFee,
   };
-}
-
-export function createInitialRivals(runSeed = 'DEFAULT'): RivalSyndicate[] {
-  const rng = createSeededRng(`${runSeed}-rivals`);
-  const coins: CoinSymbol[] = ['BTC', 'LTC', 'DOGE', 'XMR', 'ETH', 'XCH'];
-  return RIVAL_TEMPLATES.map((tpl, idx) => ({
-    id: tpl.id,
-    name: tpl.name,
-    archetype: tpl.archetype,
-    specialtyCoin: coins[(idx * 2 + Math.floor(rng() * 3)) % coins.length],
-    hashPowerIndex: Math.round(tpl.baseHash * (0.85 + rng() * 0.35)),
-    baseGrowthRate: Number((tpl.baseGrowth + (rng() - 0.5) * 0.012).toFixed(4)),
-    marketSharePct: 28 - idx * 4,
-    aggressiveness: Number(Math.min(0.95, Math.max(0.25, tpl.aggressiveness + (rng() - 0.5) * 0.2)).toFixed(2)),
-    hostility: Math.round(15 + rng() * 25),
-    disruptedSteps: 0,
-    lastActionSummary: 'Expanding baseline rack capacity',
-  }));
-}
-
-export function generateContractBoard(
-  state: Pick<GameState, 'stepCount' | 'rigs' | 'coins' | 'facilityId' | 'runSeed'>,
-  count = 3
-): ContractSpec[] {
-  const rng = createSeededRng(`${state.runSeed}-contracts-${state.stepCount}-${Math.random()}`);
-  const unlockedCoins = (Object.keys(state.coins) as CoinSymbol[]).filter(
-    (s) => state.coins[s].unlocked
-  );
-  const baseStepRev = Math.max(
-    24,
-    state.rigs.reduce((s, r) => s + r.lastStepUsd, 0)
-  );
-  const clients = [
-    'Helios Clearing House',
-    'Kestrel Cloud Arbitrage',
-    'Meridian Validator Group',
-    'Vanguard Custody Node',
-    'Civic Grid Authority',
-    'Boreal Liquidity Pool',
-  ];
-
-  const list: ContractSpec[] = [];
-  for (let i = 0; i < count; i++) {
-    const roll = rng();
-    const clientName = clients[Math.floor(rng() * clients.length)];
-    const duration = 8 + Math.floor(rng() * 8); // 8-15 steps
-    const coin = unlockedCoins[Math.floor(rng() * unlockedCoins.length)] ?? 'BTC';
-
-    if (roll < 0.45) {
-      const targetAmount = Math.round(baseStepRev * duration * (1.1 + rng() * 0.35));
-      const rewardCash = Math.round(targetAmount * (0.38 + rng() * 0.16));
-      const rewardRp = Math.round(6 + duration * 1.4);
-      list.push({
-        id: `ctr_${state.stepCount}_${i}_${Math.random().toString(36).slice(2, 5)}`,
-        title: `${coin} Yield Sprint`,
-        clientName,
-        type: 'COIN_REVENUE',
-        targetCoin: coin,
-        targetAmount,
-        progress: 0,
-        durationSteps: duration,
-        stepsRemaining: duration,
-        rewardCash,
-        rewardRp,
-        penaltyCredibility: 5,
-        description: `Generate ${formatUsd(targetAmount)} in ${coin} mining payouts within ${duration} steps.`,
-      });
-    } else if (roll < 0.8) {
-      const targetAmount = Math.round(baseStepRev * duration * (1.2 + rng() * 0.3));
-      const rewardCash = Math.round(targetAmount * (0.34 + rng() * 0.14));
-      const rewardRp = Math.round(10 + duration * 1.6);
-      list.push({
-        id: `ctr_${state.stepCount}_${i}_${Math.random().toString(36).slice(2, 5)}`,
-        title: 'Dedicated Fleet Throughput',
-        clientName,
-        type: 'POOL_HASH',
-        targetAmount,
-        progress: 0,
-        durationSteps: duration,
-        stepsRemaining: duration,
-        rewardCash,
-        rewardRp,
-        penaltyCredibility: 4,
-        description: `Deliver ${formatUsd(targetAmount)} total fleet hash output over ${duration} steps.`,
-      });
-    } else {
-      const quietSteps = 6 + Math.floor(rng() * 5);
-      const rewardCash = Math.round(baseStepRev * quietSteps * 0.6 + 260);
-      const rewardRp = Math.round(8 + quietSteps * 1.5);
-      list.push({
-        id: `ctr_${state.stepCount}_${i}_${Math.random().toString(36).slice(2, 5)}`,
-        title: 'Whisper-Quiet Compliance',
-        clientName,
-        type: 'LOW_NOISE_RUN',
-        targetAmount: quietSteps,
-        progress: 0,
-        durationSteps: quietSteps + 3,
-        stepsRemaining: quietSteps + 3,
-        rewardCash,
-        rewardRp,
-        penaltyCredibility: 4,
-        description: `Hold peak noise at least 4 dBA under limit for ${quietSteps} steps.`,
-      });
-    }
-  }
-  return list;
 }
 
 export function generateBlackMarketListings(
@@ -638,12 +726,17 @@ export function generateBlackMarketListings(
 export function createNewGameState(
   difficulty: DifficultyLevel,
   devMode = false,
-  customSeed?: string
+  customSeed?: string,
+  sandboxConfig?: SandboxConfig,
+  initialChallengeId: ChallengeId | null = null
 ): GameState {
   const runSeed = customSeed?.trim() || generateRandomSeed();
   const rng = createSeededRng(`${runSeed}-init`);
+  const isSandbox = difficulty === 'SANDBOX' || Boolean(sandboxConfig);
 
-  const startingCash = devMode
+  const startingCash = isSandbox && sandboxConfig
+    ? sandboxConfig.startingCash
+    : devMode
     ? 2_500_000
     : difficulty === 'BOOTSTRAP'
     ? 750
@@ -651,9 +744,13 @@ export function createNewGameState(
     ? 1450
     : 35000;
 
-  const starterRig: MiningRig = {
-    id: 'rig_starter_1',
-    name: 'Bedroom Desk Tower #1',
+  const startingFacilityId =
+    isSandbox && sandboxConfig ? sandboxConfig.startingFacilityId : 'fac_bedroom';
+  const startFac = getFacility(startingFacilityId);
+
+  const makeStarterRig = (idx: number): MiningRig => ({
+    id: `rig_starter_${idx + 1}`,
+    name: idx === 0 ? 'Bedroom Desk Tower #1' : `Sandbox Starter Rig #${idx + 1}`,
     chassisId: 'chassis_bedroom_tower',
     computeId: 'cpu_core2_duo',
     gpuIds: [],
@@ -670,47 +767,72 @@ export function createNewGameState(
     lastStepBlockHit: false,
     illicitMod: null,
     enabled: true,
-    gridX: 2,
-    gridY: 2,
-    temperatureC: 54,
+    gridX: 1 + (idx % 4),
+    gridY: 1 + Math.floor(idx / 4),
+    temperatureC: startFac.ambientTempC + 28,
     healthPct: 100,
+    conditionTier: 'NEW',
+    ageSteps: 0,
+    failureCount: 0,
+    purchasePriceUsd: 355,
     status: 'MINING',
     lastStepCoins: 0,
     lastStepUsd: 0,
     totalMinedCoins: 0,
     totalEarnedUsd: 0,
     createdStep: 0,
-  };
+  });
+
+  const rigCount = isSandbox && sandboxConfig ? sandboxConfig.startingRigs : 1;
+  const starterRigs = Array.from({ length: rigCount }, (_, idx) => makeStarterRig(idx));
 
   const coins = createInitialCoins(runSeed);
-  if (devMode) {
+  if (devMode || sandboxConfig?.unlockAllCoins) {
     (Object.keys(coins) as CoinSymbol[]).forEach((sym) => {
       coins[sym] = { ...coins[sym], unlocked: true };
     });
   }
 
   const startRegimes: MarketRegime[] = ['ACCUMULATION', 'BULL_RUN', 'ACCUMULATION'];
-  const marketRegime = startRegimes[Math.floor(rng() * startRegimes.length)];
+  const marketRegime =
+    isSandbox && sandboxConfig
+      ? sandboxConfig.marketRegime
+      : startRegimes[Math.floor(rng() * startRegimes.length)];
   const regSpec = MARKET_REGIME_SPECS[marketRegime];
   const regimeStepsRemaining = Math.round(
     regSpec.minSteps + rng() * (regSpec.maxSteps - regSpec.minSteps)
   );
 
+  const unlockedResearch =
+    isSandbox && sandboxConfig?.unlockAllResearch
+      ? RESEARCH_NODES.map((n) => n.id)
+      : [];
+
+  const ownedFacilityIds = Array.from(new Set(['fac_bedroom', startingFacilityId]));
+
   const baseState: GameState = {
     mode: 'PLAYING',
     difficulty,
+    isSandbox,
+    sandboxConfig,
     runSeed,
     stepCount: 0,
     soundEnabled: true,
     cash: startingCash,
-    researchPoints: devMode ? 1000 : difficulty === 'TYCOON_SANDBOX' ? 80 : 12,
-    unlockedResearch: [],
+    researchPoints: devMode ? 1000 : isSandbox ? 250 : difficulty === 'TYCOON_SANDBOX' ? 80 : 12,
+    unlockedResearch,
     activeResearchId: null,
     activeResearchProgress: 0,
-    facilityId: 'fac_bedroom',
-    ownedFacilityIds: ['fac_bedroom'],
-    rigs: [starterRig],
+    facilityId: startingFacilityId,
+    ownedFacilityIds,
+    facilityUpgrades: {},
+    powerContractId: 'contract_standard',
+    rigs: starterRigs,
+    backupRigs: [],
     coolingUnits: [],
+    usedMarketListings: [],
+    usedMarketRefreshStep: 8,
+    activeMarketModifiers: [],
     coins,
     marketRegime,
     regimeStepsRemaining,
@@ -735,37 +857,48 @@ export function createNewGameState(
     },
     pendingEvent: null,
     ledger: [],
+    transactions: [],
     currentCycleStats: {
       miningRevenueUsd: 0,
+      electricitySpendUsd: 0,
+      maintenanceSpendUsd: 0,
       otherSpendUsd: 0,
     },
+    unlockedMilestones: [],
+    unlockedAchievements: [],
+    activeChallengeId: initialChallengeId,
+    completedChallenges: [],
+    failedChallenges: [],
     news: [
       {
         id: 'news_init',
         step: 0,
         stepLabel: 'Step 0',
-        title: devMode ? `Dev Sandbox Online (${runSeed})` : `Terminal Online (${runSeed})`,
-        detail: devMode
+        title: isSandbox
+          ? `Sandbox Mode Online (${runSeed})`
+          : devMode
+          ? `Dev Sandbox Online (${runSeed})`
+          : `Terminal Online (${runSeed})`,
+        detail: isSandbox
+          ? 'Sandbox mode active: isolated save slot. Experiment freely with facilities, contracts, power, and fleets.'
+          : devMode
           ? 'Dev Mode active: all coins, parts, and dev event triggers unlocked.'
-          : 'Mined coins auto-sell every step. Explore pools ("rig 1 pool solo"), firmware ("rig 1 profile turbo"), "contracts", "rivals", or covert "ops" & "blackmarket".',
+          : 'Mined coins auto-sell every step. Explore "power", "facilities", "usedmarket", "staff", "contracts", "rivals", and "stats".',
         category: 'MILESTONE',
       },
     ],
     competitorTechScore: 10,
     noiseFinesTotal: 0,
-    stats: {
-      soloBlocksHit: 0,
-      contractsCompleted: 0,
-      covertOpsCount: 0,
-      raidsSurvived: 0,
-      totalFinesAndBribesUsd: 0,
-    },
-    tutorialStep: devMode ? 0 : 1,
+    stats: buildDefaultStats({
+      usedOnlyEligible: initialChallengeId === 'challenge_used_only' ? true : true,
+    }),
+    tutorialStep: devMode || isSandbox ? 0 : 1,
     devMode,
     devUnlockAll: devMode,
   };
 
-  baseState.availableContracts = generateContractBoard(baseState, 3);
+  baseState.availableContracts = generateContractBoard(baseState, 4);
+  baseState.usedMarketListings = generateUsedMarketListings(baseState);
   baseState.underground.blackMarketListings = generateBlackMarketListings(baseState);
   return baseState;
 }
@@ -783,6 +916,116 @@ function pickNextMarketRegime(current: MarketRegime): { regime: MarketRegime; du
   const spec = MARKET_REGIME_SPECS[next];
   const duration = Math.round(spec.minSteps + Math.random() * (spec.maxSteps - spec.minSteps));
   return { regime: next, duration };
+}
+
+function createEconomicMarketModifier(step: number): ActiveMarketModifier {
+  const catalog: Omit<ActiveMarketModifier, 'id'>[] = [
+    {
+      type: 'HARDWARE_SHORTAGE',
+      label: 'Global Silicon Shortage',
+      stepsRemaining: 14,
+      hardwarePriceMult: 1.28,
+      powerRateMult: 1.0,
+      resaleValueMult: 1.18,
+      rivalGrowthMult: 0.9,
+      coinPriceDriftDelta: 0.002,
+      summary: 'New rig & part prices +28%, used resale values +18% for 14 steps.',
+    },
+    {
+      type: 'HARDWARE_CRASH',
+      label: 'Warehouse Hardware Liquidation',
+      stepsRemaining: 12,
+      hardwarePriceMult: 0.76,
+      powerRateMult: 1.0,
+      resaleValueMult: 0.85,
+      rivalGrowthMult: 1.15,
+      coinPriceDriftDelta: 0,
+      summary: 'Surplus silicon floods distributors: new hardware -24% cost for 12 steps.',
+    },
+    {
+      type: 'POWER_SPIKE',
+      label: 'Utility Grid Rate Surge',
+      stepsRemaining: 12,
+      hardwarePriceMult: 1.0,
+      powerRateMult: 1.32,
+      resaleValueMult: 1.0,
+      rivalGrowthMult: 0.92,
+      coinPriceDriftDelta: 0,
+      summary: 'Regional electricity spot tariffs spiked +32% for 12 steps.',
+    },
+    {
+      type: 'POWER_REBATE',
+      label: 'Hydro Surplus Tariff Rebate',
+      stepsRemaining: 14,
+      hardwarePriceMult: 1.0,
+      powerRateMult: 0.74,
+      resaleValueMult: 1.0,
+      rivalGrowthMult: 1.1,
+      coinPriceDriftDelta: 0,
+      summary: 'Wholesale power surplus cuts electricity tariffs by 26% for 14 steps.',
+    },
+    {
+      type: 'MINING_BOOM',
+      label: 'Institutional Mining Boom',
+      stepsRemaining: 12,
+      hardwarePriceMult: 1.14,
+      powerRateMult: 1.0,
+      resaleValueMult: 1.15,
+      rivalGrowthMult: 1.22,
+      coinPriceDriftDelta: 0.012,
+      summary: 'Strong coin inflows lift prices and hardware resale (+15%) for 12 steps.',
+    },
+    {
+      type: 'MINING_CRASH',
+      label: 'Liquidity Capitulation Wave',
+      stepsRemaining: 10,
+      hardwarePriceMult: 0.9,
+      powerRateMult: 1.0,
+      resaleValueMult: 0.8,
+      rivalGrowthMult: 0.75,
+      coinPriceDriftDelta: -0.014,
+      summary: 'Market selloff depresses coin drift and used rig resale (-20%) for 10 steps.',
+    },
+    {
+      type: 'HIGH_COMPETITION',
+      label: 'Hashrate Arms Race',
+      stepsRemaining: 14,
+      hardwarePriceMult: 1.08,
+      powerRateMult: 1.0,
+      resaleValueMult: 1.05,
+      rivalGrowthMult: 1.4,
+      coinPriceDriftDelta: 0,
+      summary: 'Rival syndicates aggressively expand capacity (+40% rival growth) for 14 steps.',
+    },
+    {
+      type: 'HARDWARE_RELEASE',
+      label: 'New Silicon Batch Launch',
+      stepsRemaining: 12,
+      hardwarePriceMult: 0.88,
+      powerRateMult: 0.96,
+      resaleValueMult: 0.9,
+      rivalGrowthMult: 1.12,
+      coinPriceDriftDelta: 0.003,
+      summary: 'Next-gen fabrication lowers new hardware cost (-12%) for 12 steps.',
+    },
+    {
+      type: 'EQUIPMENT_DEMAND',
+      label: 'Unexpected Enterprise Rig Demand',
+      stepsRemaining: 12,
+      hardwarePriceMult: 1.12,
+      powerRateMult: 1.0,
+      resaleValueMult: 1.3,
+      rivalGrowthMult: 1.0,
+      coinPriceDriftDelta: 0,
+      summary: 'Cloud brokers are buying up rigs: resale & salvage value +30% for 12 steps.',
+    },
+  ];
+
+  const picked = catalog[Math.floor(Math.random() * catalog.length)];
+  return {
+    ...picked,
+    id: `mod_${step}_${picked.type}`,
+  };
 }
 
 export function generateInteractiveEvent(
@@ -807,7 +1050,7 @@ export function generateInteractiveEvent(
     ) {
       category = 'RAID';
     } else {
-      const pool: PendingEventCategory[] = ['MARKET', 'GRID', 'HARDWARE', 'RIVAL'];
+      const pool: PendingEventCategory[] = ['MARKET', 'GRID', 'HARDWARE', 'RIVAL', 'OPERATIONS'];
       category = pool[Math.floor(Math.random() * pool.length)];
     }
   }
@@ -841,7 +1084,7 @@ export function generateInteractiveEvent(
         {
           key: '3',
           label: 'Stonewall & face civil fine',
-          riskNote: `70% chance of ${formatUsd(fineCost)} seizure, -10 credibility`,
+          riskNote: `70% chance of ${formatUsd(fineCost)} seizure, -10 reputation`,
           resolutionId: 'raid_resist',
         },
       ],
@@ -849,13 +1092,18 @@ export function generateInteractiveEvent(
   }
 
   if (category === 'GRID') {
-    const tariffUsd = Math.max(120, Math.round(stepRev * 3.5));
+    const contract = getPowerContract(state.powerContractId);
+    const upsLvl = state.facilityUpgrades?.backup_power ?? 0;
+    const protection = Math.min(0.95, contract.brownoutProtectionPct / 100 + upsLvl * 0.35);
+    const rawTariff = Math.max(120, Math.round(stepRev * 3.5));
+    const tariffUsd = Math.max(40, Math.round(rawTariff * (1 - protection)));
     return {
       id: `evt_grid_${step}`,
       category: 'GRID',
       title: 'Regional Grid Peak Tariff & Brownout',
-      description:
-        'A severe power crunch just hit your substation. Spot kWh rates are spiking unless you shed load immediately.',
+      description: `A severe power crunch hit your substation. Backup protection cut surcharge exposure by ${Math.round(
+        protection * 100
+      )}%.`,
       triggeredStep: step,
       options: [
         {
@@ -881,8 +1129,41 @@ export function generateInteractiveEvent(
     };
   }
 
+  if (category === 'OPERATIONS') {
+    const investCost = Math.max(240, Math.round(stepRev * 4.2));
+    return {
+      id: `evt_ops_${step}`,
+      category: 'OPERATIONS',
+      title: 'Strategic Operations Dilemma',
+      description:
+        'A regional data-center liquidator offers surplus parts, while your engineers request urgent R&D funding.',
+      triggeredStep: step,
+      options: [
+        {
+          key: '1',
+          label: `Fund engineering telemetry sprint (${formatUsd(investCost)})`,
+          costUsd: investCost,
+          riskNote: '+24 Research Points & +4 Reputation',
+          resolutionId: 'ops_rd_sprint',
+        },
+        {
+          key: '2',
+          label: 'Overhaul maintenance routines conservatively',
+          riskNote: 'Restores +12% fleet condition & -6°C cool-down, pauses OC to 100%',
+          resolutionId: 'ops_maint_pass',
+        },
+        {
+          key: '3',
+          label: 'Broker used hardware lot for quick margin',
+          riskNote: `+${formatUsd(Math.round(investCost * 0.75))} cash, -2 Reputation`,
+          resolutionId: 'ops_flip_lot',
+        },
+      ],
+    };
+  }
+
   if (category === 'HARDWARE' && targetRig) {
-    const patchCost = Math.max(90, Math.round(getRigRepairCost(targetRig) + 120));
+    const patchCost = Math.max(90, Math.round(getRigRepairCost(targetRig, state) + 120));
     return {
       id: `evt_hw_${step}`,
       category: 'HARDWARE',
@@ -895,19 +1176,19 @@ export function generateInteractiveEvent(
           key: '1',
           label: `Emergency recap & repaste (${formatUsd(patchCost)})`,
           costUsd: patchCost,
-          riskNote: 'Restores 100% health + fresh thermal paste',
+          riskNote: 'Restores 100% condition + fresh thermal paste',
           resolutionId: 'hw_fix',
         },
         {
           key: '2',
           label: 'Run diagnostic firmware dump',
-          riskNote: '-18% rig health, +12 Research Points',
+          riskNote: '-18% rig condition, +12 Research Points',
           resolutionId: 'hw_research',
         },
         {
           key: '3',
           label: 'Push TURBO through the storm',
-          riskNote: 'Sets TURBO + 2x step bonus cash now, +14°C & -22% health',
+          riskNote: 'Sets TURBO + 2x step bonus cash now, +14°C & -22% condition',
           resolutionId: 'hw_push',
         },
       ],
@@ -930,7 +1211,7 @@ export function generateInteractiveEvent(
           key: '1',
           label: `Sponsor pool counter-bounty (${formatUsd(counterCost)})`,
           costUsd: counterCost,
-          riskNote: '+8 Credibility, +15 RP, lifts coin sentiment',
+          riskNote: '+8 Reputation, +15 RP, lifts coin sentiment',
           resolutionId: 'rival_counter',
         },
         {
@@ -970,7 +1251,7 @@ export function generateInteractiveEvent(
       {
         key: '2',
         label: 'Coordinate dark-pool wash spike (Illegal)',
-        riskNote: `+28% ${hotCoin} price spike, +18 Heat, -6 Credibility`,
+        riskNote: `+28% ${hotCoin} price spike, +18 Heat, -6 Reputation`,
         resolutionId: 'mkt_wash',
       },
       {
@@ -1018,17 +1299,30 @@ export function resolvePendingEvent(
   }
 
   const stepLabel = formatStepLabel(state.stepCount);
+  const spend = choice.costUsd ?? 0;
   let next: GameState = {
     ...state,
     pendingEvent: null,
-    cash: state.cash - (choice.costUsd ?? 0),
+    cash: state.cash - spend,
     currentCycleStats: {
       ...state.currentCycleStats,
-      otherSpendUsd: state.currentCycleStats.otherSpendUsd + (choice.costUsd ?? 0),
+      otherSpendUsd: state.currentCycleStats.otherSpendUsd + spend,
     },
     stats: { ...state.stats },
     underground: { ...state.underground },
+    transactions: [...(state.transactions ?? [])],
   };
+
+  if (spend > 0) {
+    next.transactions.unshift({
+      id: `tx_evt_${Date.now()}`,
+      step: state.stepCount,
+      stepLabel,
+      category: 'EVENT',
+      amountUsd: -spend,
+      description: `${evt.title}: ${choice.label}`,
+    });
+  }
 
   let summary = '';
   let milestoneHit = false;
@@ -1040,8 +1334,8 @@ export function resolvePendingEvent(
     next.underground.bribeProtectionSteps = 10;
     next.stats.covertOpsCount += 1;
     next.stats.raidsSurvived += 1;
-    next.stats.totalFinesAndBribesUsd += choice.costUsd ?? 0;
-    summary = `Inspectors looked the other way (-28 Heat, 10-step audit shield).`;
+    next.stats.totalFinesAndBribesUsd += spend;
+    summary = 'Inspectors looked the other way (-28 Heat, 10-step audit shield).';
     milestoneHit = true;
   } else if (res === 'raid_scrub') {
     next.underground.powerSiphonActive = false;
@@ -1065,25 +1359,61 @@ export function resolvePendingEvent(
       next.stats.totalFinesAndBribesUsd += fine;
       next.regulatoryScrutiny = Math.max(10, next.regulatoryScrutiny - 30);
       next.mediaCredibility = Math.max(5, next.mediaCredibility - 10);
-      summary = `Inspectors levied ${formatUsd(fine)} fine (-30 Heat, -10 Credibility).`;
+      next.transactions.unshift({
+        id: `tx_fine_${Date.now()}`,
+        step: state.stepCount,
+        stepLabel,
+        category: 'EVENT',
+        amountUsd: -fine,
+        description: 'Regulatory audit civil penalty',
+      });
+      summary = `Inspectors levied ${formatUsd(fine)} fine (-30 Heat, -10 Reputation).`;
       alertHit = true;
     } else {
       next.regulatoryScrutiny = Math.max(5, next.regulatoryScrutiny - 18);
-      summary = `Your lawyers blocked the warrant! (-18 Heat).`;
+      summary = 'Your lawyers blocked the warrant! (-18 Heat).';
       milestoneHit = true;
     }
     next.stats.raidsSurvived += 1;
   } else if (res === 'grid_pay') {
-    summary = `Paid ${formatUsd(choice.costUsd ?? 0)} peak tariff. Fleet remains at full output.`;
+    summary = `Paid ${formatUsd(spend)} peak tariff. Fleet remains at full output.`;
   } else if (res === 'grid_eco') {
     next.rigs = next.rigs.map((r) => ({ ...r, firmwareProfile: 'ECO' as const }));
-    summary = `All rigs switched to ECO firmware (-20% draw, -28% heat).`;
+    summary = 'All rigs switched to ECO firmware (-20% draw, -28% heat).';
   } else if (res === 'grid_siphon') {
     next.underground.powerSiphonActive = true;
     next.regulatoryScrutiny = Math.min(100, next.regulatoryScrutiny + 18);
     next.stats.covertOpsCount += 1;
-    summary = `Meter siphon wired! Electricity bills -65%, breaker cap +25% (+18 Heat).`;
+    summary = 'Meter siphon wired! Electricity bills -65%, breaker cap +25% (+18 Heat).';
     alertHit = true;
+  } else if (res === 'ops_rd_sprint') {
+    next.researchPoints += 24;
+    next.mediaCredibility = Math.min(100, next.mediaCredibility + 4);
+    summary = 'Funded R&D telemetry sprint (+24.0 RP, +4 Reputation).';
+    milestoneHit = true;
+  } else if (res === 'ops_maint_pass') {
+    next.rigs = next.rigs.map((r) => ({
+      ...r,
+      healthPct: Math.min(100, Number((r.healthPct + 12).toFixed(1))),
+      temperatureC: Math.max(20, r.temperatureC - 6),
+      overclockPct: Math.min(100, r.overclockPct),
+      status: r.status === 'FAILED' ? 'MINING' : r.status,
+    }));
+    summary = 'Performed fleet maintenance sweep (+12% condition, -6°C, OC capped to 100%).';
+  } else if (res === 'ops_flip_lot') {
+    const stepRev = Math.max(40, state.rigs.reduce((s, r) => s + r.lastStepUsd, 0));
+    const gain = Math.round(Math.max(240, stepRev * 4.2) * 0.75);
+    next.cash += gain;
+    next.mediaCredibility = Math.max(5, next.mediaCredibility - 2);
+    next.transactions.unshift({
+      id: `tx_lot_${Date.now()}`,
+      step: state.stepCount,
+      stepLabel,
+      category: 'SALE',
+      amountUsd: gain,
+      description: 'Surplus hardware brokerage profit',
+    });
+    summary = `Flipped surplus hardware lot for +${formatUsd(gain)} (-2 Reputation).`;
   } else if (res === 'hw_fix') {
     next.rigs = next.rigs.map((r) =>
       r.id === evt.targetRigId
@@ -1095,7 +1425,8 @@ export function resolvePendingEvent(
           }
         : r
     );
-    summary = `Replaced VRM caps and repasted target rig (100% health).`;
+    next.stats.repairsCompleted += 1;
+    summary = 'Replaced VRM caps and repasted target rig (100% condition).';
     milestoneHit = true;
   } else if (res === 'hw_research') {
     next.rigs = next.rigs.map((r) =>
@@ -1107,7 +1438,7 @@ export function resolvePendingEvent(
         : r
     );
     next.researchPoints += 12;
-    summary = `Captured silicon telemetry logs (+12.0 RP, -18% rig health).`;
+    summary = 'Captured silicon telemetry logs (+12.0 RP, -18% rig condition).';
   } else if (res === 'hw_push') {
     const bonus = Math.max(80, Math.round(state.rigs.reduce((s, r) => s + r.lastStepUsd, 0) * 2));
     next.cash += bonus;
@@ -1121,6 +1452,14 @@ export function resolvePendingEvent(
           }
         : r
     );
+    next.transactions.unshift({
+      id: `tx_push_${Date.now()}`,
+      step: state.stepCount,
+      stepLabel,
+      category: 'EVENT',
+      amountUsd: bonus,
+      description: 'TURBO surge event bonus payout',
+    });
     summary = `Pushed TURBO! Captured +${formatUsd(bonus)} surge payout at heavy thermal/wear cost.`;
   } else if (res === 'rival_counter') {
     next.mediaCredibility = Math.min(100, next.mediaCredibility + 8);
@@ -1132,25 +1471,34 @@ export function resolvePendingEvent(
         [evt.targetCoin]: { ...c, sentiment: Math.min(100, c.sentiment + 18) },
       };
     }
-    summary = `Counter-bounty boosted Credibility (+8) and R&D (+15 RP).`;
+    summary = 'Counter-bounty boosted Reputation (+8) and R&D (+15 RP).';
     milestoneHit = true;
   } else if (res === 'rival_ddos') {
     next.rivals = next.rivals.map((rv) =>
       rv.id === evt.targetRivalId
-        ? { ...rv, disruptedSteps: 10, hostility: Math.min(100, rv.hostility + 20), lastActionSummary: 'Under heavy DDoS disruption' }
+        ? {
+            ...rv,
+            disruptedSteps: 10,
+            hostility: Math.min(100, rv.hostility + 20),
+            lastActionSummary: 'Under heavy DDoS disruption',
+          }
         : rv
     );
     next.regulatoryScrutiny = Math.min(100, next.regulatoryScrutiny + 16);
     next.stats.covertOpsCount += 1;
-    summary = `Syndicate knocked offline for 10 steps (+16 Heat).`;
+    summary = 'Syndicate knocked offline for 10 steps (+16 Heat).';
     alertHit = true;
   } else if (res === 'rival_ignore') {
     next.rivals = next.rivals.map((rv) =>
       rv.id === evt.targetRivalId
-        ? { ...rv, hashPowerIndex: Math.round(rv.hashPowerIndex * 1.08), lastActionSummary: 'Captured extra pool share' }
+        ? {
+            ...rv,
+            hashPowerIndex: Math.round(rv.hashPowerIndex * 1.08),
+            lastActionSummary: 'Captured extra pool share',
+          }
         : rv
     );
-    summary = `Rival expanded hash share uncontested.`;
+    summary = 'Rival expanded hash share uncontested.';
   } else if (res === 'mkt_pump' && evt.targetCoin) {
     const c = next.coins[evt.targetCoin];
     const nextPrice = c.priceUsd * 1.22;
@@ -1182,7 +1530,7 @@ export function resolvePendingEvent(
     next.regulatoryScrutiny = Math.min(100, next.regulatoryScrutiny + 18);
     next.mediaCredibility = Math.max(5, next.mediaCredibility - 6);
     next.stats.covertOpsCount += 1;
-    summary = `Illicit wash volume spiked ${evt.targetCoin} +28% (+18 Heat, -6 Credibility).`;
+    summary = `Illicit wash volume spiked ${evt.targetCoin} +28% (+18 Heat, -6 Reputation).`;
     alertHit = true;
   } else {
     if (evt.targetCoin) {
@@ -1200,7 +1548,7 @@ export function resolvePendingEvent(
       };
     }
     next.researchPoints += 6;
-    summary = `Observed market clearing safely (+6.0 RP quant data).`;
+    summary = 'Observed market clearing safely (+6.0 RP quant data).';
   }
 
   next.news = [
@@ -1214,6 +1562,7 @@ export function resolvePendingEvent(
     },
     ...next.news,
   ].slice(0, 60);
+  next.transactions = next.transactions.slice(0, 200);
 
   return { nextState: next, ok: true, summary, milestoneHit, alertHit };
 }
@@ -1246,12 +1595,16 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   const nextStep = prev.stepCount + 1;
   const stepLabel = formatStepLabel(nextStep);
   const facility = getFacility(prev.facilityId);
+  const facIdx = Math.max(0, FACILITY_TIERS.findIndex((f) => f.id === prev.facilityId));
+  const nextStats = buildDefaultStats(prev.stats);
 
   let milestoneHit = false;
   let alertHit = false;
   let soloBlocksHit = 0;
 
   const newNews: NewsItem[] = [...prev.news];
+  const newTransactions: TransactionEntry[] = [...(prev.transactions ?? [])];
+
   const pushNews = (title: string, detail: string, category: NewsItem['category']) => {
     newNews.unshift({
       id: `news_${nextStep}_${Math.random().toString(36).slice(2, 7)}`,
@@ -1262,8 +1615,19 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       category,
     });
   };
+  const pushTx = (category: TransactionCategory, amountUsd: number, description: string) => {
+    if (Math.abs(amountUsd) < 0.01) return;
+    newTransactions.unshift({
+      id: `tx_${nextStep}_${Math.random().toString(36).slice(2, 7)}`,
+      step: nextStep,
+      stepLabel,
+      category,
+      amountUsd,
+      description,
+    });
+  };
 
-  // 1. Advance Market Regime
+  // 1. Advance Market Regime & Economic Modifiers
   let nextRegime = prev.marketRegime;
   let nextRegimeRem = prev.regimeStepsRemaining - 1;
   if (nextRegimeRem <= 0) {
@@ -1274,6 +1638,19 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     pushNews(`Market Cycle Shift: ${spec.label}`, spec.summary, 'MARKET');
   }
   const regimeSpec = MARKET_REGIME_SPECS[nextRegime];
+
+  let nextModifiers = (prev.activeMarketModifiers ?? [])
+    .map((m) => ({ ...m, stepsRemaining: m.stepsRemaining - 1 }))
+    .filter((m) => m.stepsRemaining > 0);
+
+  if (nextStep >= 8 && nextStep % 14 === 0 && nextModifiers.length < 2 && Math.random() < 0.65) {
+    const newMod = createEconomicMarketModifier(nextStep);
+    nextModifiers = [...nextModifiers, newMod];
+    pushNews(`Economic Shift: ${newMod.label}`, newMod.summary, 'MARKET');
+  }
+
+  const modCoinDrift = nextModifiers.reduce((s, m) => s + m.coinPriceDriftDelta, 0);
+  const modRivalGrowth = nextModifiers.reduce((s, m) => s * m.rivalGrowthMult, 1.0);
 
   // 2. Process active PR campaigns
   const nextCampaigns = [];
@@ -1295,32 +1672,28 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     }
   }
 
-  // 3. Rival syndicates progression & hash growth
+  // 3. Employee progression & bonuses
+  const techBonus = getTechnicianBonuses(prev);
+  const elecBonus = getElectricianBonuses(prev);
+  const mgrBonus = getManagerBonuses(prev);
+  const researchers = prev.employees.filter((e) => e.role === 'RESEARCHER');
+  const nextEmployees = prev.employees.map((e) => {
+    const xpGain = e.shift === 'ROTATION_24_7' ? 14 : 10;
+    const totalXp = (e.experienceXp ?? 0) + xpGain;
+    const nextSkill = Math.min(5, 1 + Math.floor(totalXp / 180));
+    return {
+      ...e,
+      experienceXp: totalXp,
+      skillLevel: nextSkill,
+    };
+  });
+
+  // 4. Advance dynamic market prices, network difficulty & halvings
   const activeRivalFactor = prev.rivals.reduce(
     (sum, rv) => sum + (rv.disruptedSteps > 0 ? rv.hashPowerIndex * 0.45 : rv.hashPowerIndex),
     0
   );
-  const nextRivals = prev.rivals.map((rv) => {
-    if (rv.disruptedSteps > 0) {
-      return {
-        ...rv,
-        disruptedSteps: rv.disruptedSteps - 1,
-        hashPowerIndex: Math.max(20, Math.round(rv.hashPowerIndex * 0.992)),
-      };
-    }
-    const growth = rv.baseGrowthRate - 1;
-    const nextHash = Math.round(rv.hashPowerIndex * (1 + growth * (0.4 + Math.random() * 0.5)));
-    return {
-      ...rv,
-      hashPowerIndex: Math.min(999_999, nextHash),
-      lastActionSummary:
-        nextStep % 9 === 0 && Math.random() < rv.aggressiveness * 0.35
-          ? `Deployed new ${rv.specialtyCoin} cluster`
-          : rv.lastActionSummary,
-    };
-  });
 
-  // 4. Update dynamic market prices, network difficulty & coin halvings
   const nextCoins: Record<CoinSymbol, CoinMarketState> = { ...prev.coins };
   (Object.keys(nextCoins) as CoinSymbol[]).forEach((sym) => {
     const coin = nextCoins[sym];
@@ -1337,7 +1710,6 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     );
     const sentimentDrift = (nextSentiment / 100) * 0.006;
 
-    // Halving check
     let nextHalvingRem = coin.stepsUntilHalving - 1;
     let nextHalvingCount = coin.halvingCount;
     let nextBlockScale = coin.blockRewardScale;
@@ -1358,12 +1730,19 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     }
 
     const diffStepScale =
-      1 + 0.0022 * (1 + Math.min(1.2, activeRivalFactor / 6000));
+      1 + 0.0022 * (1 + Math.min(1.2, activeRivalFactor / 7500));
     const nextDiff = Number(Math.min(12, coin.networkDifficulty * diffStepScale).toFixed(3));
 
     const multiplier = Math.max(
       0.55,
-      1 + pull + randWave + regimeSpec.stepDrift + prBoost + sentimentDrift + halvingSupplyShock
+      1 +
+        pull +
+        randWave +
+        regimeSpec.stepDrift +
+        modCoinDrift +
+        prBoost +
+        sentimentDrift +
+        halvingSupplyShock
     );
     const nextPrice = Math.max(0.001, coin.priceUsd * multiplier);
 
@@ -1383,17 +1762,14 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     };
   });
 
-  // 5. Employee automation & RP generation
-  const technicians = prev.employees.filter((e) => e.role === 'TECHNICIAN');
-  const researchers = prev.employees.filter((e) => e.role === 'RESEARCHER');
-  const hasThermalTech = technicians.some((t) => t.priority === 'THERMAL_SAFETY');
-
+  // 5. RP generation & active research progress
   const stepRp =
     0.75 +
     researchers.reduce((sum, r) => {
       const mult = r.shift === 'ROTATION_24_7' ? 1.35 : 1.0;
       const prio = r.priority === 'RESEARCH_OUTPUT' ? 1.35 : 1.0;
-      return sum + 4.5 * mult * prio;
+      const skill = 1 + ((r.skillLevel ?? 1) - 1) * 0.22;
+      return sum + 4.5 * mult * prio * skill;
     }, 0);
 
   let nextRp = prev.researchPoints + stepRp;
@@ -1417,50 +1793,59 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     }
   }
 
-  // 6. Fleet power, breaker cap (with siphon headroom) & noise check
+  // 6. Fleet power, breaker cap & noise check
   const sysBonus = getSysEngineerBonus(prev);
   let totalWallWatts = 0;
   let peakNoiseDba = 28;
-  const enabledRigsCount = prev.rigs.filter((r) => r.enabled).length;
+  const enabledRigsCount = prev.rigs.filter((r) => r.enabled && r.status !== 'FAILED').length;
 
   for (const r of prev.rigs) {
-    if (!r.enabled) continue;
+    if (!r.enabled || r.status === 'FAILED') continue;
     const t = computeRigTelemetry(
       r,
       facility,
       nextUnlocked,
       sysBonus,
       prev.coolingUnits ?? [],
-      enabledRigsCount
+      enabledRigsCount,
+      prev.facilityUpgrades,
+      elecBonus.powerWasteReduction
     );
     totalWallWatts += t.wallWatts;
     if (t.noiseDba > peakNoiseDba) {
       peakNoiseDba = t.noiseDba + Math.min(8, enabledRigsCount * 0.7);
     }
   }
-  for (const u of prev.coolingUnits ?? []) {
-    if (!u.enabled) continue;
-    const spec = ROOM_COOLING_UNITS.find((s) => s.id === u.type);
-    if (spec) {
-      totalWallWatts += spec.watts;
-      if (spec.noiseDba > peakNoiseDba) peakNoiseDba = spec.noiseDba;
-    }
+
+  const coolingSummary = computeFacilityCoolingSummary(
+    prev.coolingUnits ?? [],
+    enabledRigsCount,
+    facility,
+    prev.facilityUpgrades
+  );
+  totalWallWatts += coolingSummary.totalCoolingWatts;
+  if (coolingSummary.maxCoolingNoiseDba > peakNoiseDba) {
+    peakNoiseDba = coolingSummary.maxCoolingNoiseDba;
   }
 
+  const totalPowerKw = totalWallWatts / 1000;
+  nextStats.maxPowerKwObserved = Math.max(nextStats.maxPowerKwObserved, Number(totalPowerKw.toFixed(2)));
   const effectivePowerCap = getEffectiveFacilityPowerCapKw(prev);
-  const breakerOverloaded = totalWallWatts / 1000 > effectivePowerCap;
+  const breakerOverloaded = totalPowerKw > effectivePowerCap;
   const noiseExceeded = peakNoiseDba > facility.noiseLimitDba;
 
   let nextCash = prev.cash;
   let stepMiningUsd = 0;
   let stepNoiseFine = 0;
   let stepFleetEffectiveHash = 0;
+  let anyFailureOrOverheatThisStep = breakerOverloaded;
   const stepCoinUsdEarned: Partial<Record<CoinSymbol, number>> = {};
 
   if (noiseExceeded && enabledRigsCount > 0 && nextStep % 5 === 0) {
     stepNoiseFine = Math.round((peakNoiseDba - facility.noiseLimitDba) * 4.5);
     nextCash -= stepNoiseFine;
     alertHit = true;
+    pushTx('EVENT', -stepNoiseFine, `Noise ordinance fine (${Math.round(peakNoiseDba)} dBA)`);
     pushNews(
       'Noise Ordinance Fine',
       `Facility noise (${Math.round(peakNoiseDba)} dBA) exceeded ${facility.noiseLimitDba} dBA limit. Fined $${stepNoiseFine}.`,
@@ -1473,11 +1858,26 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     employees: prev.employees,
   });
 
-  // 7. Step each mining rig + automatic coin selling + wear/solo variance
+  // 7. Step each mining rig + condition wear, failures, auto-maintenance, and payouts
   const nextRigs: MiningRig[] = prev.rigs.map((rig) => {
+    const baseAge = (rig.ageSteps ?? 0) + 1;
+
+    if (rig.status === 'FAILED') {
+      anyFailureOrOverheatThisStep = true;
+      return {
+        ...rig,
+        ageSteps: baseAge,
+        temperatureC: Math.max(facility.ambientTempC, rig.temperatureC - 6),
+        lastStepCoins: 0,
+        lastStepUsd: 0,
+        lastStepBlockHit: false,
+      };
+    }
+
     if (!rig.enabled) {
       return {
         ...rig,
+        ageSteps: baseAge,
         temperatureC: Math.max(facility.ambientTempC, rig.temperatureC - 6),
         status: rig.healthPct <= 20 ? 'NEEDS_REPAIR' : 'PAUSED',
         lastStepCoins: 0,
@@ -1487,8 +1887,10 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     }
 
     if (rig.healthPct <= 20) {
+      anyFailureOrOverheatThisStep = true;
       return {
         ...rig,
+        ageSteps: baseAge,
         temperatureC: Math.max(facility.ambientTempC, rig.temperatureC - 4),
         status: 'NEEDS_REPAIR',
         lastStepCoins: 0,
@@ -1501,6 +1903,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     if (!coin.unlocked) {
       return {
         ...rig,
+        ageSteps: baseAge,
         status: 'COIN_LOCKED',
         lastStepCoins: 0,
         lastStepUsd: 0,
@@ -1514,11 +1917,13 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       nextUnlocked,
       sysBonus,
       prev.coolingUnits ?? [],
-      enabledRigsCount
+      enabledRigsCount,
+      prev.facilityUpgrades,
+      elecBonus.powerWasteReduction
     );
 
     let nextTemp = Math.round(rig.temperatureC * 0.4 + telemetry.equilibriumTempC * 0.6);
-    if (hasThermalTech && nextTemp > 84) {
+    if (techBonus.hasThermalTech && nextTemp > 84) {
       nextTemp = Math.max(79, nextTemp - 5);
     }
 
@@ -1528,9 +1933,11 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     if (telemetry.isUnderpowered || breakerOverloaded) {
       status = 'UNDERPOWERED';
       efficiencyFactor = 0;
+      anyFailureOrOverheatThisStep = true;
     } else if (nextTemp >= 96) {
       status = 'OVERHEATED';
       efficiencyFactor = 0;
+      anyFailureOrOverheatThisStep = true;
       if (rig.status !== 'OVERHEATED') {
         alertHit = true;
         pushNews(
@@ -1550,12 +1957,23 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       nextUnlocked,
       sysBonus,
       prev.coolingUnits ?? [],
-      enabledRigsCount
+      enabledRigsCount,
+      prev.facilityUpgrades,
+      elecBonus.powerWasteReduction
     );
-    stepFleetEffectiveHash += finalTelemetry.effectiveHashrate;
+
+    // Subtle generational competitiveness scaling: older hardware still mines profitably on matched tiers,
+    // while Gen 3/4 out-scales global difficulty growth cleanly.
+    const gen = getRigGeneration(rig);
+    const genFactor =
+      prev.competitorTechScore > 45 && gen === 1
+        ? 0.92
+        : 1.0;
+    const weightedHash = finalTelemetry.effectiveHashrate * genFactor;
+    stepFleetEffectiveHash += weightedHash;
 
     const { minedCoins, autoSoldUsd, soloBlockHit } = computeStepCoinOutput(
-      finalTelemetry.effectiveHashrate,
+      weightedHash,
       coin,
       efficiencyFactor,
       autoSellMult,
@@ -1576,6 +1994,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     if (minedCoins > 0 && autoSoldUsd > 0) {
       nextCash += autoSoldUsd;
       stepMiningUsd += autoSoldUsd;
+      nextStats.totalRevenueUsd += autoSoldUsd;
       stepCoinUsdEarned[rig.targetCoin] =
         (stepCoinUsdEarned[rig.targetCoin] ?? 0) + autoSoldUsd;
       nextCoins[rig.targetCoin] = {
@@ -1588,19 +2007,63 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     const fwWearMult = FIRMWARE_PROFILE_SPECS[rig.firmwareProfile].wearMult;
     const modWearMult = rig.illicitMod ? ILLICIT_MOD_SPECS[rig.illicitMod].wearMult : 1;
     const ocWearMult = rig.overclockPct > 100 ? 1 + (rig.overclockPct - 100) / 80 : 1;
-    const baseWear = nextTemp > 86 ? 0.95 : nextTemp > 76 ? 0.35 : 0.16;
-    const repair = technicians.length > 0 ? 0.32 * technicians.length : 0;
+    const distWearRelief = Math.max(0.65, 1 - (prev.facilityUpgrades?.power_distribution ?? 0) * 0.1);
+    const condTierWear =
+      rig.conditionTier === 'DAMAGED' ? 1.35 : rig.conditionTier === 'USED' ? 1.15 : 1.0;
+    const baseWear = nextTemp > 86 ? 0.95 : nextTemp > 76 ? 0.36 : 0.17;
+    const totalWear =
+      baseWear *
+      fwWearMult *
+      modWearMult *
+      ocWearMult *
+      distWearRelief *
+      condTierWear *
+      (1 - techBonus.wearReduction);
+
     const nextHealth = Math.max(
       20,
-      Math.min(100, rig.healthPct - baseWear * fwWearMult * modWearMult * ocWearMult + repair)
+      Math.min(100, rig.healthPct - totalWear + techBonus.repairPerStep)
     );
-    const finalStatus: MiningRig['status'] = nextHealth <= 20 ? 'NEEDS_REPAIR' : status;
+
+    // Spontaneous hardware failure risk when condition < 65% or running very hot
+    const { os } = getPartBundle(rig);
+    const telemetrySafety = nextUnlocked.includes('res_predictive_telemetry') ? 0.65 : 1.0;
+    const stabOffset = Math.max(0.45, 1 - os.stabilityBonus);
+    let failChance = 0;
+    if (nextHealth < 62) {
+      failChance = ((62 - nextHealth) / 100) * 0.08 * telemetrySafety * stabOffset;
+    }
+    if (nextTemp > 88) {
+      failChance += 0.03 * telemetrySafety;
+    }
+
+    let finalStatus: MiningRig['status'] = nextHealth <= 20 ? 'NEEDS_REPAIR' : status;
+    let nextFailures = rig.failureCount ?? 0;
+    if (failChance > 0 && Math.random() < failChance) {
+      finalStatus = 'FAILED';
+      nextFailures += 1;
+      nextStats.equipmentFailuresCount += 1;
+      anyFailureOrOverheatThisStep = true;
+      alertHit = true;
+      pushNews(
+        `Equipment Failure: ${rig.name}`,
+        `Component fault at ${nextHealth.toFixed(0)}% condition. Run "repair" or "retire" to inspect.`,
+        'ALERT'
+      );
+    }
+
+    const nextPaste =
+      nextUnlocked.includes('res_auto_maint') && rig.pasteStepsRemaining <= 2
+        ? 12
+        : Math.max(0, rig.pasteStepsRemaining - 1);
 
     return {
       ...rig,
+      ageSteps: baseAge,
       temperatureC: nextTemp,
       healthPct: Number(nextHealth.toFixed(1)),
-      pasteStepsRemaining: Math.max(0, rig.pasteStepsRemaining - 1),
+      pasteStepsRemaining: nextPaste,
+      failureCount: nextFailures,
       status: finalStatus,
       soloBlocksWon: rig.soloBlocksWon + (soloBlockHit ? 1 : 0),
       lastStepBlockHit: soloBlockHit,
@@ -1611,7 +2074,19 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     };
   });
 
-  // 8. Underground active ops (botnet hash injection + power siphon heat + black market refresh)
+  // Track pristine condition streak for challenge
+  const activeAvgHealth =
+    nextRigs.filter((r) => r.enabled).length > 0
+      ? nextRigs.filter((r) => r.enabled).reduce((s, r) => s + r.healthPct, 0) /
+        nextRigs.filter((r) => r.enabled).length
+      : 0;
+  if (nextRigs.filter((r) => r.enabled).length >= 3 && activeAvgHealth >= 90) {
+    nextStats.pristineHealthStreak = (nextStats.pristineHealthStreak ?? 0) + 1;
+  } else {
+    nextStats.pristineHealthStreak = 0;
+  }
+
+  // 8. Underground active ops
   const nextUnderground = { ...prev.underground };
   let stepScrutinyDelta = nextUnderground.bribeProtectionSteps > 0 ? -0.35 : -0.15;
 
@@ -1632,6 +2107,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     if (botnetRes.autoSoldUsd > 0) {
       nextCash += botnetRes.autoSoldUsd;
       stepMiningUsd += botnetRes.autoSoldUsd;
+      nextStats.totalRevenueUsd += botnetRes.autoSoldUsd;
       stepCoinUsdEarned[bCoin.symbol] =
         (stepCoinUsdEarned[bCoin.symbol] ?? 0) + botnetRes.autoSoldUsd;
       nextCoins[bCoin.symbol] = {
@@ -1663,21 +2139,42 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     nextUnderground.blackMarketRefreshStep = nextStep + 15;
   }
 
+  // Used Equipment Market Refresh every 10 steps
+  let nextUsedListings = prev.usedMarketListings ?? [];
+  let nextUsedRefresh = prev.usedMarketRefreshStep ?? nextStep + 10;
+  if (nextStep >= nextUsedRefresh || nextUsedListings.length === 0) {
+    nextUsedListings = generateUsedMarketListings({
+      stepCount: nextStep,
+      unlockedResearch: nextUnlocked,
+      coins: nextCoins,
+      runSeed: prev.runSeed,
+      activeMarketModifiers: nextModifiers,
+      devUnlockAll: prev.devUnlockAll,
+    });
+    nextUsedRefresh = nextStep + 10;
+  }
+
   const nextScrutiny = Math.max(0, Math.min(100, prev.regulatoryScrutiny + stepScrutinyDelta));
   const nextCredibility = Math.min(100, prev.mediaCredibility + 0.08);
 
-  // 9. Update rival market share relative to player
-  const playerPowerScore = Math.max(12, Math.round(20 + stepFleetEffectiveHash * 0.25 + nextRigs.length * 14));
-  const totalEcosystem = playerPowerScore + nextRivals.reduce((s, r) => s + r.hashPowerIndex, 0);
-  const calibratedRivals = nextRivals.map((rv) => ({
-    ...rv,
-    marketSharePct: Number(((rv.hashPowerIndex / Math.max(1, totalEcosystem)) * 100).toFixed(1)),
-  }));
+  // 9. Update rival companies & market share
+  const playerPowerScore = Math.max(
+    12,
+    Math.round(20 + stepFleetEffectiveHash * 0.25 + nextRigs.length * 14)
+  );
+  nextStats.peakFleetHashScore = Math.max(nextStats.peakFleetHashScore, playerPowerScore);
+  const calibratedRivals = stepRivalSyndicates(
+    prev.rivals,
+    nextStep,
+    nextRegime,
+    playerPowerScore,
+    modRivalGrowth
+  );
 
-  // 10. Active Contract tracking
+  // 10. Active Contract tracking (including expanded contract types)
   let nextActiveContract = prev.activeContract ? { ...prev.activeContract } : null;
   let nextAvailableContracts = prev.availableContracts;
-  let nextStats = { ...prev.stats, soloBlocksHit: prev.stats.soloBlocksHit + soloBlocksHit };
+  nextStats.soloBlocksHit += soloBlocksHit;
   let finalCredibility = nextCredibility;
   let finalRp = nextRp;
 
@@ -1691,17 +2188,32 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       if (peakNoiseDba <= facility.noiseLimitDba - 4 && enabledRigsCount > 0) {
         nextActiveContract.progress += 1;
       }
+    } else if (nextActiveContract.type === 'MAINTENANCE_SLA') {
+      const targetCond = nextActiveContract.targetConditionPct ?? 85;
+      if (enabledRigsCount > 0 && activeAvgHealth >= targetCond) {
+        nextActiveContract.progress += 1;
+      }
+    } else if (nextActiveContract.type === 'RESEARCH_PARTNERSHIP') {
+      nextActiveContract.progress += stepRp;
+    } else if (nextActiveContract.type === 'FACILITY_EXPANSION') {
+      if (facIdx >= (nextActiveContract.targetFacilityIndex ?? 1)) {
+        nextActiveContract.progress = nextActiveContract.targetAmount;
+      }
+    } else if (nextActiveContract.type === 'EQUIPMENT_SUPPLY') {
+      nextActiveContract.progress = Math.max(nextActiveContract.progress, enabledRigsCount);
     }
 
     if (nextActiveContract.progress >= nextActiveContract.targetAmount) {
       nextCash += nextActiveContract.rewardCash;
       finalRp += nextActiveContract.rewardRp;
-      finalCredibility = Math.min(100, finalCredibility + 4);
+      finalCredibility = Math.min(100, finalCredibility + 5);
       nextStats.contractsCompleted += 1;
+      nextStats.totalContractIncomeUsd += nextActiveContract.rewardCash;
       milestoneHit = true;
+      pushTx('CONTRACT', nextActiveContract.rewardCash, `Contract complete: ${nextActiveContract.title}`);
       pushNews(
         `Contract Completed: ${nextActiveContract.title}`,
-        `Paid +${formatUsd(nextActiveContract.rewardCash)} and +${nextActiveContract.rewardRp} RP!`,
+        `Paid +${formatUsd(nextActiveContract.rewardCash)} and +${nextActiveContract.rewardRp} RP! (+5 Reputation)`,
         'CONTRACT'
       );
       nextActiveContract = null;
@@ -1710,10 +2222,18 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
         5,
         finalCredibility - nextActiveContract.penaltyCredibility
       );
+      const fine = Math.min(Math.max(0, nextCash), nextActiveContract.penaltyCash ?? 0);
+      if (fine > 0) {
+        nextCash -= fine;
+        pushTx('CONTRACT', -fine, `Missed contract penalty: ${nextActiveContract.title}`);
+      }
+      nextStats.contractsFailed += 1;
       alertHit = true;
       pushNews(
         `Contract Missed: ${nextActiveContract.title}`,
-        `Deadline expired (-${nextActiveContract.penaltyCredibility} Credibility).`,
+        `Deadline expired (-${nextActiveContract.penaltyCredibility} Reputation${
+          fine > 0 ? `, -${formatUsd(fine)} penalty` : ''
+        }).`,
         'ALERT'
       );
       nextActiveContract = null;
@@ -1728,20 +2248,30 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
         coins: nextCoins,
         facilityId: prev.facilityId,
         runSeed: prev.runSeed,
+        mediaCredibility: finalCredibility,
+        unlockedResearch: nextUnlocked,
       },
-      3
+      4
     );
   }
 
-  // 11. Cycle settlement every 30 steps
-  const ppaMult = nextUnlocked.includes('res_hydro_ppa') ? 0.72 : 1.0;
-  const siphonMult = nextUnderground.powerSiphonActive ? 0.35 : 1.0;
-  const stepElecCost =
-    (totalWallWatts / 1000) * 24 * facility.powerRatePerKwh * ppaMult * siphonMult;
+  // 11. Continuous electricity accounting & 30-step Cycle settlement
+  const effectiveRate = getEffectiveElectricityRate({
+    facilityId: prev.facilityId,
+    powerContractId: prev.powerContractId,
+    unlockedResearch: nextUnlocked,
+    activeMarketModifiers: nextModifiers,
+    underground: nextUnderground,
+    sandboxConfig: prev.sandboxConfig,
+  });
+  const stepElecCost = totalPowerKw * 24 * effectiveRate;
+  nextStats.totalElectricityCostUsd += stepElecCost;
 
   let nextCycleStats = {
-    ...prev.currentCycleStats,
-    miningRevenueUsd: prev.currentCycleStats.miningRevenueUsd + stepMiningUsd,
+    miningRevenueUsd: (prev.currentCycleStats?.miningRevenueUsd ?? 0) + stepMiningUsd,
+    electricitySpendUsd: (prev.currentCycleStats?.electricitySpendUsd ?? 0) + stepElecCost,
+    maintenanceSpendUsd: prev.currentCycleStats?.maintenanceSpendUsd ?? 0,
+    otherSpendUsd: prev.currentCycleStats?.otherSpendUsd ?? 0,
   };
   const nextLedger = [...prev.ledger];
   let billsSettledUsd = 0;
@@ -1751,20 +2281,33 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     const startStep = nextStep - BILLING_CYCLE_STEPS + 1;
     const cycleLabel = `C${cycleNumber} (${startStep}-${nextStep})`;
 
-    const cycleElec = stepElecCost * BILLING_CYCLE_STEPS;
-    const isOwned = prev.ownedFacilityIds.includes(prev.facilityId);
-    const cycleRent = isOwned ? 0 : facility.cycleRent;
-    const cyclePayroll = prev.employees.reduce((sum, e) => {
-      const spec = EMPLOYEE_SPECS.find((s) => s.role === e.role);
-      const base = spec?.cycleSalary ?? 1500;
-      return sum + base * (e.shift === 'ROTATION_24_7' ? 1.35 : 1.0);
-    }, 0);
+    const totalsNow = getFacilityTotals({
+      ...prev,
+      unlockedResearch: nextUnlocked,
+      activeMarketModifiers: nextModifiers,
+      rigs: nextRigs,
+      employees: nextEmployees,
+    });
 
-    billsSettledUsd = cycleElec + cycleRent + cyclePayroll;
+    const cycleElec = nextCycleStats.electricitySpendUsd + totalsNow.cycleFixedContractFee;
+    const cycleRent = totalsNow.cycleRentUsd;
+    const cyclePayroll = totalsNow.cyclePayrollUsd;
+    const cycleMaint = totalsNow.cycleMaintenanceUsd;
+
+    billsSettledUsd = cycleElec + cycleRent + cyclePayroll + cycleMaint;
     nextCash -= billsSettledUsd;
+    nextStats.totalPayrollCostUsd += cyclePayroll;
+    nextStats.totalMaintenanceCostUsd += cycleMaint;
+
+    pushTx('POWER', -cycleElec, `Cycle ${cycleNumber} electricity & contract demand`);
+    if (cycleRent > 0) pushTx('FACILITY', -cycleRent, `Cycle ${cycleNumber} facility rent`);
+    if (cyclePayroll > 0) pushTx('STAFF', -cyclePayroll, `Cycle ${cycleNumber} employee payroll`);
+    if (cycleMaint > 0) pushTx('REPAIR', -cycleMaint, `Cycle ${cycleNumber} facility/cooling upkeep`);
 
     const netCashflow =
-      nextCycleStats.miningRevenueUsd - billsSettledUsd - nextCycleStats.otherSpendUsd;
+      nextCycleStats.miningRevenueUsd -
+      billsSettledUsd -
+      nextCycleStats.otherSpendUsd;
 
     nextLedger.unshift({
       cycleNumber,
@@ -1773,6 +2316,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       electricityCostUsd: cycleElec,
       rentCostUsd: cycleRent,
       payrollCostUsd: cyclePayroll,
+      maintenanceCostUsd: cycleMaint + nextCycleStats.maintenanceSpendUsd,
       otherSpendUsd: nextCycleStats.otherSpendUsd,
       netCashflowUsd: netCashflow,
     });
@@ -1781,13 +2325,15 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       alertHit = true;
       pushNews(
         `Cycle ${cycleNumber} Bills Alert`,
-        `Bills of $${Math.round(billsSettledUsd)} pushed cash negative ($${Math.round(nextCash)}).`,
+        `Bills of ${formatUsd(billsSettledUsd)} pushed cash negative (${formatUsd(nextCash)}).`,
         'ALERT'
       );
     }
 
     nextCycleStats = {
       miningRevenueUsd: 0,
+      electricitySpendUsd: 0,
+      maintenanceSpendUsd: 0,
       otherSpendUsd: 0,
     };
   }
@@ -1801,6 +2347,10 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     activeResearchId: nextActiveResearchId,
     activeResearchProgress: nextActiveProgress,
     rigs: nextRigs,
+    employees: nextEmployees,
+    usedMarketListings: nextUsedListings,
+    usedMarketRefreshStep: nextUsedRefresh,
+    activeMarketModifiers: nextModifiers,
     coins: nextCoins,
     marketRegime: nextRegime,
     regimeStepsRemaining: nextRegimeRem,
@@ -1812,6 +2362,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     activeContract: nextActiveContract,
     underground: nextUnderground,
     ledger: nextLedger.slice(0, 48),
+    transactions: newTransactions.slice(0, 200),
     currentCycleStats: nextCycleStats,
     news: newNews.slice(0, 60),
     competitorTechScore: Math.min(100, prev.competitorTechScore + 0.08),
@@ -1819,7 +2370,14 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     stats: nextStats,
   };
 
-  // 12. Interactive Decision Event Roll (pauses batch step when triggered)
+  // 12. Evaluate milestones, achievements, and challenges
+  const prog = evaluateProgression(nextState, playerPowerScore, {
+    hadZeroFaultCycle: nextStep % BILLING_CYCLE_STEPS === 0 && !anyFailureOrOverheatThisStep,
+  });
+  nextState = prog.nextState;
+  if (prog.milestoneHit) milestoneHit = true;
+
+  // 13. Interactive Decision Event Roll
   let eventTriggered: PendingEvent | null = null;
   const raidChance =
     nextScrutiny >= 75 && nextUnderground.bribeProtectionSteps === 0
