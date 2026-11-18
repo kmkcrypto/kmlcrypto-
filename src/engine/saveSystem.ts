@@ -10,7 +10,11 @@ import {
 } from '../types/game';
 import { generateRandomSeed } from '../utils/rng';
 import { createInitialRivals } from './rivals';
-import { generateUsedMarketListings } from './usedMarket';
+import {
+  computeAverageRigHealth,
+  ensureRigComponentHealth,
+  generateUsedMarketListings,
+} from './usedMarket';
 
 export const CAREER_STORAGE_KEY = 'blockworks_tycoon_save_v2';
 export const CAREER_BACKUP_KEY = 'blockworks_tycoon_backup_v2';
@@ -47,6 +51,8 @@ export function buildDefaultStats(prev?: Partial<EmpireStats>): EmpireStats {
 }
 
 function migrateRig(r: MiningRig, idx: number): MiningRig {
+  const componentHealth = ensureRigComponentHealth(r);
+  const avgHealth = r.componentHealth ? computeAverageRigHealth(componentHealth) : (typeof r.healthPct === 'number' ? r.healthPct : 100);
   return {
     ...r,
     gridX: typeof r.gridX === 'number' ? r.gridX : 1 + (idx % 4),
@@ -60,6 +66,8 @@ function migrateRig(r: MiningRig, idx: number): MiningRig {
     lastStepCoins: typeof r.lastStepCoins === 'number' ? r.lastStepCoins : 0,
     lastStepUsd: typeof r.lastStepUsd === 'number' ? r.lastStepUsd : 0,
     totalEarnedUsd: typeof r.totalEarnedUsd === 'number' ? r.totalEarnedUsd : 0,
+    healthPct: avgHealth,
+    componentHealth,
     conditionTier: r.conditionTier ?? 'NEW',
     ageSteps: typeof r.ageSteps === 'number' ? r.ageSteps : 0,
     failureCount: typeof r.failureCount === 'number' ? r.failureCount : 0,
@@ -283,7 +291,7 @@ export function validateAndParseImportedSave(jsonText: string): {
     if (!hydrated) {
       return {
         ok: false,
-        error: 'Validation failed: file is missing valid Blockworks Tycoon cash, coins, or rig records.',
+        error: 'Validation failed: file is missing valid HASHRATE cash, coins, or rig records.',
       };
     }
     return { ok: true, state: { ...hydrated, mode: 'PLAYING' } };

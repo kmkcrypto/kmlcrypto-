@@ -158,6 +158,23 @@ export interface RigBuildConfig {
   firmwareProfile?: FirmwareProfile;
 }
 
+export type RepairComponentSlot =
+  | 'chassis'
+  | 'compute'
+  | 'gpu'
+  | 'storage'
+  | 'psu'
+  | 'cooling';
+
+export interface RigComponentHealth {
+  chassis: number;
+  compute: number;
+  gpus: number[];
+  storage: number;
+  psu: number;
+  cooling: number;
+}
+
 export interface MiningRig extends RigBuildConfig {
   id: string;
   enabled: boolean;
@@ -165,6 +182,7 @@ export interface MiningRig extends RigBuildConfig {
   gridY: number;
   temperatureC: number;
   healthPct: number;
+  componentHealth?: RigComponentHealth;
   conditionTier: HardwareConditionTier;
   ageSteps: number;
   failureCount: number;

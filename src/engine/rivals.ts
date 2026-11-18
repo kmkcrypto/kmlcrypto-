@@ -157,7 +157,7 @@ export function getPlayerRivalComparison(state: GameState, playerPowerScore: num
   const entries = [
     {
       id: 'player',
-      name: 'Blockworks Ops (YOU)',
+      name: 'HASHRATE Ops (YOU)',
       isPlayer: true,
       hashPowerIndex: playerPowerScore,
       marketSharePct: playerSharePct,

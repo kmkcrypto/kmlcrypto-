@@ -30,7 +30,9 @@ import {
   computeFacilityCoolingSummary,
   computeRigTelemetry,
   computeStepCoinOutput,
+  ensureRigComponentHealth,
   getAutoSellMultiplier,
+  getComponentRepairCost,
   getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
   getEmpireAlignment,
@@ -54,6 +56,7 @@ import {
   PendingEvent,
   PoolMode,
   PowerContractId,
+  RepairComponentSlot,
   RigBuildConfig,
   RoomCoolingType,
   ShiftType,
@@ -155,6 +158,11 @@ interface TextGameTerminalProps {
   onSetRigPool: (rigIndexOrAll: number | 'ALL', pool: PoolMode) => boolean;
   onSetRigProfile: (rigIndexOrAll: number | 'ALL', profile: FirmwareProfile) => boolean;
   onRepairRigs: (rigIndexOrAll: number | 'ALL') => { ok: boolean; count: number; cost: number };
+  onRepairComponent: (
+    rigIndex: number,
+    slot: RepairComponentSlot,
+    gpuSlotIndex?: number
+  ) => { ok: boolean; summary: string };
   onRepasteRigs: (rigIndexOrAll: number | 'ALL') => { ok: boolean; count: number; cost: number };
   onAddCoolingUnit: (type: RoomCoolingType) => boolean;
   onToggleCoolingUnit: (coolingId: string) => void;
@@ -295,6 +303,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onSetRigPool,
   onSetRigProfile,
   onRepairRigs,
+  onRepairComponent,
   onRepasteRigs,
   onAddCoolingUnit,
   onToggleCoolingUnit,
@@ -1021,7 +1030,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     append([
       {
         kind: 'HEAD',
-        text: `BLOCKWORKS TYCOON // MATRIX TERMINAL (SEED: ${state.runSeed})`,
+        text: `HASHRATE // MATRIX TERMINAL (SEED: ${state.runSeed})`,
       },
       {
         kind: 'TEXT',
@@ -1397,22 +1406,30 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     const os = OS_PARTS.find((o) => o.id === rig.osId) ?? OS_PARTS[0];
 
     if (tk.slot === 'MENU') {
+      const compHealth = ensureRigComponentHealth(rig);
+      const gpuHealthSummary =
+        rig.gpuIds.length === 0
+          ? '—'
+          : `${Math.round(
+              compHealth.gpus.reduce((s, h) => s + h, 0) / compHealth.gpus.length
+            )}% avg`;
       const sheet = [
-        `  1. chassis  -> ${padRight(ch.name, 33)} (${formatUsd(ch.cost)})`,
-        `  2. compute  -> ${padRight(comp.name, 33)} (${formatUsd(comp.cost)})`,
-        `  3. gpu      -> ${padRight(`${rig.gpuIds.length}/${ch.maxGpus} GPUs installed`, 33)}`,
-        `  4. storage  -> ${padRight(stor.name, 33)} (${formatUsd(stor.cost)})`,
-        `  5. psu      -> ${padRight(`${psu.name} (${t.rawWatts}/${psu.maxWatts}W)`, 33)}`,
-        `  6. cooling  -> ${padRight(`${cool.name} (Eq ${t.equilibriumTempC}°C)`, 33)}`,
-        `  7. os       -> ${padRight(os.name, 33)} (${formatUsd(os.cost)})`,
+        `  1. chassis  -> ${padRight(ch.name, 31)} ${padLeft(`${Math.round(compHealth.chassis)}%`, 4)} (${formatUsd(ch.cost)})`,
+        `  2. compute  -> ${padRight(comp.name, 31)} ${padLeft(`${Math.round(compHealth.compute)}%`, 4)} (${formatUsd(comp.cost)})`,
+        `  3. gpu      -> ${padRight(`${rig.gpuIds.length}/${ch.maxGpus} GPUs installed`, 31)} ${padLeft(gpuHealthSummary, 4)}`,
+        `  4. storage  -> ${padRight(stor.name, 31)} ${padLeft(`${Math.round(compHealth.storage)}%`, 4)} (${formatUsd(stor.cost)})`,
+        `  5. psu      -> ${padRight(`${psu.name} (${t.rawWatts}/${psu.maxWatts}W)`, 31)} ${padLeft(`${Math.round(compHealth.psu)}%`, 4)}`,
+        `  6. cooling  -> ${padRight(`${cool.name} (Eq ${t.equilibriumTempC}°C)`, 31)} ${padLeft(`${Math.round(compHealth.cooling)}%`, 4)}`,
+        `  7. os       -> ${padRight(os.name, 31)}  SW  (${formatUsd(os.cost)})`,
       ].join('\n');
       append([
         {
           kind: 'HEAD',
-          text: `WORKBENCH // TINKERING [R${tk.rigIndex + 1}] ${rig.name} · ${formatHashrate(
-            t.effectiveHashrate,
-            t.targetAlgo
-          )} · ${t.wallWatts}W · Eq ${t.equilibriumTempC}°C`,
+          text: `WORKBENCH // TINKERING [R${tk.rigIndex + 1}] ${rig.name} · Avg Health ${Math.round(
+            rig.healthPct
+          )}% · ${formatHashrate(t.effectiveHashrate, t.targetAlgo)} · ${t.wallWatts}W · Eq ${
+            t.equilibriumTempC
+          }°C`,
         },
         { kind: 'PRE', text: sheet },
         {
@@ -1469,15 +1486,18 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (tk.slot === 'gpu') {
+      const compHealth = ensureRigComponentHealth(rig);
       const installed =
         rig.gpuIds.length === 0
           ? '  (no GPUs installed)'
           : rig.gpuIds
               .map((gid, sIdx) => {
                 const g = GPU_PARTS.find((x) => x.id === gid);
-                return `  [Slot ${sIdx + 1}] ${g?.name ?? gid} (Trade-in value: ${formatUsd(
-                  Math.round((g?.cost ?? 0) * 0.6)
-                )})`;
+                const gHealth = Math.round(compHealth.gpus[sIdx] ?? rig.healthPct);
+                return `  [Slot ${sIdx + 1}] ${padRight(g?.name ?? gid, 26)} ${padLeft(
+                  `${gHealth}% hlth`,
+                  9
+                )}  (Trade-in: ${formatUsd(Math.round((g?.cost ?? 0) * 0.6))})`;
               })
               .join('\n');
       const unlockedGpus = getUnlockedGpus();
@@ -1720,7 +1740,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       ? `build(${wizard.step.toLowerCase()})>`
       : tinker
       ? `tinker(R${tinker.rigIndex + 1}${tinker.slot === 'MENU' ? '' : `:${tinker.slot}`})>`
-      : 'miner@blockworks:~$';
+      : 'miner@hashrate:~$';
     append([{ kind: 'CMD', text: `${promptPrefix} ${trimmed}` }]);
 
     if (wizard) {
@@ -1787,7 +1807,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             `    overclock [<#|all>] <80..150>             Adjust clock multiplier (power/heat trade-off)`,
             `    rigs | inspect <#>                        Fleet roster or full rig telemetry & value`,
             `    rig <#|all> <on|off|oc N|coin X|pool|profile>  Toggle, tune, or change pool/profile`,
-            `    repair [<#>|all] | repaste [<#>|all]      Restore failed/worn rigs or refresh paste`,
+            `    repair [<#>|all] [<part> [slot#]] | repaste [<#>|all]  Repair full rig or 1 part (e.g. "repair 1 gpu")`,
             `    retire <#> | backup [deploy <#>] [sell <#>]  Retire active rig to backup vault`,
             `    rename <#> <name> | sell <#> | salvage <#>   Rename or sell rig at market resale value`,
             `  POWER, COOLING, FACILITIES & STAFF`,
@@ -2172,35 +2192,197 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const psu = PSU_PARTS.find((p) => p.id === rig.psuId);
       const cool = COOLING_PARTS.find((c) => c.id === rig.coolingId);
       const os = OS_PARTS.find((o) => o.id === rig.osId);
+      const compHealth = ensureRigComponentHealth(rig);
       const repairCost = getRigRepairCost(rig, state);
       const repasteCost = getRigRepasteCost(rig);
       const resaleVal = calculateRigResaleValue(rig, state);
       const gen = getRigGeneration(rig);
       const modSpec = rig.illicitMod ? ILLICIT_MOD_SPECS[rig.illicitMod] : null;
+
+      const formatCompRow = (
+        slotTag: string,
+        label: string,
+        hp: number,
+        costUsd: number
+      ): string => {
+        const rounded = Math.round(hp);
+        const bar = renderAsciiBar(rounded, 10);
+        const warn = rounded <= 20 ? ' CRIT!' : rounded <= 45 ? ' WORN ' : '      ';
+        const price = costUsd > 0 ? formatUsd(costUsd) : 'OK';
+        return `    ${padRight(slotTag, 9)} ${padRight(label, 25)} ${bar} ${padLeft(
+          `${rounded}%`,
+          4
+        )}${warn} Repair: ${padLeft(price, 7)}`;
+      };
+
+      const componentLines: string[] = [
+        formatCompRow(
+          'chassis',
+          ch?.name ?? 'Chassis',
+          compHealth.chassis,
+          getComponentRepairCost(rig, 'chassis', undefined, state)
+        ),
+        formatCompRow(
+          'compute',
+          comp?.name ?? 'Compute',
+          compHealth.compute,
+          getComponentRepairCost(rig, 'compute', undefined, state)
+        ),
+      ];
+      if (rig.gpuIds.length === 0) {
+        componentLines.push(`    ${padRight('gpu', 9)} (No discrete GPUs installed)`);
+      } else {
+        rig.gpuIds.forEach((gid, gIdx) => {
+          const gpuPart = GPU_PARTS.find((g) => g.id === gid);
+          const tag = rig.gpuIds.length === 1 ? 'gpu' : `gpu ${gIdx + 1}`;
+          componentLines.push(
+            formatCompRow(
+              tag,
+              gpuPart?.name ?? gid,
+              compHealth.gpus[gIdx] ?? rig.healthPct,
+              getComponentRepairCost(rig, 'gpu', gIdx, state)
+            )
+          );
+        });
+      }
+      componentLines.push(
+        formatCompRow(
+          'storage',
+          stor?.name ?? 'Storage',
+          compHealth.storage,
+          getComponentRepairCost(rig, 'storage', undefined, state)
+        ),
+        formatCompRow(
+          'psu',
+          psu?.name ?? 'PSU',
+          compHealth.psu,
+          getComponentRepairCost(rig, 'psu', undefined, state)
+        ),
+        formatCompRow(
+          'cooling',
+          cool?.name ?? 'Cooling',
+          compHealth.cooling,
+          getComponentRepairCost(rig, 'cooling', undefined, state)
+        )
+      );
+
       append([
         { kind: 'HEAD', text: `RIG #${idx + 1} HARDWARE SHEET: ${rig.name}` },
         {
           kind: 'PRE',
           text: [
-            `  Status:   ${rig.status} (${rig.enabled ? 'POWER ON' : 'PAUSED'})   Health: ${Math.round(rig.healthPct)}% (Repair: ${formatUsd(repairCost)})`,
-            `  Lifecycle: Gen ${gen} · Tier: ${rig.conditionTier ?? 'NEW'} · Age: ${rig.ageSteps ?? 0}st · Failures: ${rig.failureCount ?? 0} · Resale: ${formatUsd(resaleVal)}`,
+            `  Status:   ${rig.status} (${rig.enabled ? 'POWER ON' : 'PAUSED'})   Avg Health: ${Math.round(
+              rig.healthPct
+            )}% (Full Repair: ${formatUsd(repairCost)})`,
+            `  Lifecycle: Gen ${gen} · Tier: ${rig.conditionTier ?? 'NEW'} · Age: ${rig.ageSteps ?? 0}st · Failures: ${
+              rig.failureCount ?? 0
+            } · Resale: ${formatUsd(resaleVal)}`,
             `  Tuning:   Pool ${rig.poolMode} (${POOL_MODE_SPECS[rig.poolMode].feePct}% fee)   Firmware: ${rig.firmwareProfile}   OC: ${rig.overclockPct}%`,
-            `  Thermal:  ${rig.temperatureC}°C (Eq: ${t.equilibriumTempC}°C)   Paste: ${rig.pasteStepsRemaining}st left (Repaste: ${formatUsd(repasteCost)})`,
-            `  Output:   ${rig.targetCoin} (${t.targetAlgo}) ${formatHashrate(t.effectiveHashrate, t.targetAlgo)}   Wall: ${t.wallWatts}W   Noise: ${t.noiseDba}dBA`,
-            `  AutoSell: ${formatCoinAmount(rig.lastStepCoins)} ${rig.targetCoin}/st -> ${formatUsd(rig.lastStepUsd)}/st   Solo Wins: ${rig.soloBlocksWon}   Lifetime: ${formatUsd(rig.totalEarnedUsd)}`,
+            `  Thermal:  ${rig.temperatureC}°C (Eq: ${t.equilibriumTempC}°C)   Paste: ${
+              rig.pasteStepsRemaining
+            }st left (Repaste: ${formatUsd(repasteCost)})`,
+            `  Output:   ${rig.targetCoin} (${t.targetAlgo}) ${formatHashrate(
+              t.effectiveHashrate,
+              t.targetAlgo
+            )}   Wall: ${t.wallWatts}W   Noise: ${t.noiseDba}dBA`,
+            `  AutoSell: ${formatCoinAmount(rig.lastStepCoins)} ${rig.targetCoin}/st -> ${formatUsd(
+              rig.lastStepUsd
+            )}/st   Solo Wins: ${rig.soloBlocksWon}   Lifetime: ${formatUsd(rig.totalEarnedUsd)}`,
             `  Illicit:  ${modSpec ? `${modSpec.name} (${modSpec.summary})` : 'None (Stock legal ROM)'}`,
-            `  Parts:    ${ch?.name} | ${comp?.name} | ${rig.gpuIds.length}x GPU | ${stor?.name}`,
-            `            ${psu?.name} | ${cool?.name} | ${os?.name}`,
+            `  OS Kernel: ${os?.name ?? rig.osId}`,
+            ``,
+            `  COMPONENT HEALTH (Rig health = average of installed components):`,
+            ...componentLines,
           ].join('\n'),
+        },
+        {
+          kind: 'TEXT',
+          text:
+            rig.gpuIds.length > 1
+              ? `Repair tips: "repair ${idx + 1}" fixes whole rig, "repair ${
+                  idx + 1
+                } gpu" fixes all GPUs, or "repair ${idx + 1} gpu 1" / "repair ${
+                  idx + 1
+                } psu" fixes a single part.`
+              : `Repair tips: "repair ${idx + 1}" fixes whole rig, or "repair ${
+                  idx + 1
+                } <chassis|compute|gpu|storage|psu|cooling>" fixes 1 part.`,
         },
       ]);
       return;
     }
 
     if (cmd === 'repair' || cmd === 'repaste') {
+      if (cmd === 'repair' && arg1 && arg1 !== 'all' && arg2 && arg2 !== 'all') {
+        const rigIdx = parseInt(arg1, 10) - 1;
+        if (isNaN(rigIdx) || !state.rigs[rigIdx]) {
+          append([
+            {
+              kind: 'ERR',
+              text: 'Usage: repair [<rig#>|all] OR repair <rig#> <chassis|compute|gpu|storage|psu|cooling> [gpuSlot#]',
+            },
+          ]);
+          return;
+        }
+
+        const rawPart = arg2.toLowerCase();
+        let slot: RepairComponentSlot | null = null;
+        let gpuSlotIdx: number | undefined = undefined;
+
+        if (['chassis', 'case', 'rack', 'frame'].includes(rawPart)) {
+          slot = 'chassis';
+        } else if (['compute', 'cpu', 'asic', 'fpga', 'blade', 'proc', 'processor'].includes(rawPart)) {
+          slot = 'compute';
+        } else if (['storage', 'ram', 'mem', 'memory', 'ssd', 'hdd', 'nvme', 'disk'].includes(rawPart)) {
+          slot = 'storage';
+        } else if (['psu', 'power', 'supply'].includes(rawPart)) {
+          slot = 'psu';
+        } else if (['cooling', 'cool', 'fan', 'fans', 'heatsink', 'aio'].includes(rawPart)) {
+          slot = 'cooling';
+        } else if (['gpu', 'gpus', 'card', 'cards', 'video'].includes(rawPart)) {
+          slot = 'gpu';
+          if (arg3) {
+            const parsedSlot = parseInt(arg3.replace(/^#/, ''), 10);
+            if (isNaN(parsedSlot) || parsedSlot < 1) {
+              append([{ kind: 'ERR', text: `Invalid GPU slot "${arg3}". Example: repair ${rigIdx + 1} gpu 1` }]);
+              return;
+            }
+            gpuSlotIdx = parsedSlot - 1;
+          }
+        } else {
+          const gpuInlineMatch = rawPart.match(/^gpu#?(\d+)$/);
+          if (gpuInlineMatch) {
+            slot = 'gpu';
+            gpuSlotIdx = parseInt(gpuInlineMatch[1], 10) - 1;
+          }
+        }
+
+        if (!slot) {
+          append([
+            {
+              kind: 'ERR',
+              text: `Unknown component "${arg2}". Valid parts: chassis, compute, gpu [slot#], storage, psu, cooling.`,
+            },
+          ]);
+          return;
+        }
+
+        const res = onRepairComponent(rigIdx, slot, gpuSlotIdx);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+
       const targetArg = !arg1 || arg1 === 'all' ? 'ALL' : parseInt(arg1, 10) - 1;
       if (targetArg !== 'ALL' && (isNaN(targetArg) || !state.rigs[targetArg])) {
-        append([{ kind: 'ERR', text: `Usage: ${cmd} [<rig#>|all]` }]);
+        append([
+          {
+            kind: 'ERR',
+            text:
+              cmd === 'repair'
+                ? 'Usage: repair [<rig#>|all] OR repair <rig#> <chassis|compute|gpu|storage|psu|cooling> [gpuSlot#]'
+                : 'Usage: repaste [<rig#>|all]',
+          },
+        ]);
         return;
       }
       if (cmd === 'repair') {
@@ -4107,7 +4289,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
               ? `build(${wizard.step.toLowerCase()})>`
               : tinker
               ? `tinker(R${tinker.rigIndex + 1}${tinker.slot === 'MENU' ? '' : `:${tinker.slot}`})>`
-              : 'miner@blockworks:~$'}
+              : 'miner@hashrate:~$'}
           </span>
           <input
             ref={inputRef}

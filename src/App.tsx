@@ -32,11 +32,15 @@ import {
   calculatePartTradeInCost,
   calculateRigBuildCost,
   calculateRigResaleValue,
+  computeAverageRigHealth,
+  createInitialComponentHealth,
   createNewGameState,
+  ensureRigComponentHealth,
   findOpenGridSlot,
   generateBlackMarketListings,
   generateInteractiveEvent,
   generateUsedMarketListings,
+  getComponentRepairCost,
   getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
   getFacility,
@@ -70,6 +74,7 @@ import {
   PlacedCoolingUnit,
   PoolMode,
   PowerContractId,
+  RepairComponentSlot,
   RigBuildConfig,
   RoomCoolingType,
   SandboxConfig,
@@ -89,6 +94,7 @@ import {
   TextGameTerminal,
 } from './components/TextGameTerminal';
 import { MatrixRainCanvas } from './components/MatrixRainCanvas';
+import { SideTelemetryPanels } from './components/SideTelemetryPanels';
 
 const EMPLOYEE_NAMES = [
   'Alex Mercer',
@@ -759,7 +765,44 @@ export default function App() {
               ),
               ...(prev.transactions ?? []),
             ].slice(0, 200),
-            rigs: prev.rigs.map((r, i) => (i === rigIndex ? { ...r, ...nextRigPatch } : r)),
+            rigs: prev.rigs.map((r, i) => {
+              if (i !== rigIndex) return r;
+              const baseComp = ensureRigComponentHealth(r);
+              const nextGpuLen = nextRigPatch.gpuIds ? nextRigPatch.gpuIds.length : r.gpuIds.length;
+              const computeSwapped =
+                slot === 'compute' ||
+                (nextRigPatch.computeId !== undefined && nextRigPatch.computeId !== r.computeId);
+              const nextComp = {
+                chassis: slot === 'chassis' ? 100 : baseComp.chassis,
+                compute: computeSwapped ? 100 : baseComp.compute,
+                gpus: baseComp.gpus.slice(0, nextGpuLen),
+                storage: slot === 'storage' ? 100 : baseComp.storage,
+                psu: slot === 'psu' ? 100 : baseComp.psu,
+                cooling: slot === 'cooling' ? 100 : baseComp.cooling,
+              };
+              const nextAvg = computeAverageRigHealth(nextComp);
+              const minComp = Math.min(
+                nextComp.chassis,
+                nextComp.compute,
+                ...nextComp.gpus,
+                nextComp.storage,
+                nextComp.psu,
+                nextComp.cooling
+              );
+              const nextStatus =
+                r.status === 'NEEDS_REPAIR' && nextAvg > 20 && minComp > 20
+                  ? r.enabled
+                    ? 'MINING'
+                    : 'PAUSED'
+                  : r.status;
+              return {
+                ...r,
+                ...nextRigPatch,
+                componentHealth: nextComp,
+                healthPct: nextAvg,
+                status: nextStatus,
+              };
+            }),
           }
         : prev
     );
@@ -805,7 +848,17 @@ export default function App() {
                 makeTx(prev.stepCount, 'SALE', refund, `Removed all GPUs from ${rig.name}`),
                 ...(prev.transactions ?? []),
               ].slice(0, 200),
-              rigs: prev.rigs.map((r, i) => (i === rigIndex ? { ...r, gpuIds: [] } : r)),
+              rigs: prev.rigs.map((r, i) => {
+                if (i !== rigIndex) return r;
+                const baseComp = ensureRigComponentHealth(r);
+                const nextComp = { ...baseComp, gpus: [] };
+                return {
+                  ...r,
+                  gpuIds: [],
+                  componentHealth: nextComp,
+                  healthPct: computeAverageRigHealth(nextComp),
+                };
+              }),
             }
           : prev
       );
@@ -840,11 +893,20 @@ export default function App() {
                 ),
                 ...(prev.transactions ?? []),
               ].slice(0, 200),
-              rigs: prev.rigs.map((r, i) =>
-                i === rigIndex
-                  ? { ...r, gpuIds: r.gpuIds.filter((_id, gIdx) => gIdx !== slotIdx) }
-                  : r
-              ),
+              rigs: prev.rigs.map((r, i) => {
+                if (i !== rigIndex) return r;
+                const baseComp = ensureRigComponentHealth(r);
+                const nextComp = {
+                  ...baseComp,
+                  gpus: baseComp.gpus.filter((_h, gIdx) => gIdx !== slotIdx),
+                };
+                return {
+                  ...r,
+                  gpuIds: r.gpuIds.filter((_id, gIdx) => gIdx !== slotIdx),
+                  componentHealth: nextComp,
+                  healthPct: computeAverageRigHealth(nextComp),
+                };
+              }),
             }
           : prev
       );
@@ -904,11 +966,20 @@ export default function App() {
               ),
               ...(prev.transactions ?? []),
             ].slice(0, 200),
-            rigs: prev.rigs.map((r, i) =>
-              i === rigIndex
-                ? { ...r, gpuIds: [...r.gpuIds, ...Array(toAdd).fill(gpuSpec.id)] }
-                : r
-            ),
+            rigs: prev.rigs.map((r, i) => {
+              if (i !== rigIndex) return r;
+              const baseComp = ensureRigComponentHealth(r);
+              const nextComp = {
+                ...baseComp,
+                gpus: [...baseComp.gpus, ...Array(toAdd).fill(100)],
+              };
+              return {
+                ...r,
+                gpuIds: [...r.gpuIds, ...Array(toAdd).fill(gpuSpec.id)],
+                componentHealth: nextComp,
+                healthPct: computeAverageRigHealth(nextComp),
+              };
+            }),
           }
         : prev
     );
@@ -960,7 +1031,10 @@ export default function App() {
     const targets = state.rigs.filter(
       (r, idx) =>
         (rigIndexOrAll === 'ALL' || idx === rigIndexOrAll) &&
-        (r.healthPct < 100 || r.status === 'FAILED')
+        (getRigRepairCost(r, state) > 0 ||
+          r.healthPct < 100 ||
+          r.status === 'FAILED' ||
+          r.status === 'NEEDS_REPAIR')
     );
     const totalCost = targets.reduce((s, r) => s + getRigRepairCost(r, state), 0);
     if (targets.length === 0 || state.cash < totalCost) {
@@ -995,6 +1069,7 @@ export default function App() {
           targetIds.has(r.id)
             ? {
                 ...r,
+                componentHealth: createInitialComponentHealth(r.gpuIds.length, 100),
                 healthPct: 100,
                 status: r.enabled ? 'MINING' : 'PAUSED',
               }
@@ -1003,6 +1078,129 @@ export default function App() {
       };
     });
     return { ok: true, count: targets.length, cost: totalCost };
+  };
+
+  const handleRepairComponent = (
+    rigIndex: number,
+    slot: RepairComponentSlot,
+    gpuSlotIndex?: number
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const rig = state.rigs[rigIndex];
+    if (!rig) return { ok: false, summary: `Rig #${rigIndex + 1} not found.` };
+
+    if (slot === 'gpu') {
+      if (rig.gpuIds.length === 0) {
+        return { ok: false, summary: `${rig.name} has no GPUs installed.` };
+      }
+      if (
+        typeof gpuSlotIndex === 'number' &&
+        (gpuSlotIndex < 0 || gpuSlotIndex >= rig.gpuIds.length)
+      ) {
+        return {
+          ok: false,
+          summary: `GPU slot #${gpuSlotIndex + 1} not found on ${rig.name} (installed slots: 1..${rig.gpuIds.length}).`,
+        };
+      }
+    }
+
+    const cost = getComponentRepairCost(rig, slot, gpuSlotIndex, state);
+    if (cost <= 0) {
+      const partLabel =
+        slot === 'gpu'
+          ? typeof gpuSlotIndex === 'number'
+            ? `GPU #${gpuSlotIndex + 1}`
+            : 'GPUs'
+          : slot.toUpperCase();
+      return { ok: false, summary: `${rig.name} ${partLabel} is already at 100% health.` };
+    }
+    if (state.cash < cost) {
+      return { ok: false, summary: `Insufficient cash (need ${formatUsd(cost)}).` };
+    }
+
+    const baseComp = ensureRigComponentHealth(rig);
+    const nextGpus =
+      slot === 'gpu'
+        ? typeof gpuSlotIndex === 'number'
+          ? baseComp.gpus.map((h, i) => (i === gpuSlotIndex ? 100 : h))
+          : baseComp.gpus.map(() => 100)
+        : baseComp.gpus;
+    const nextComp = {
+      chassis: slot === 'chassis' ? 100 : baseComp.chassis,
+      compute: slot === 'compute' ? 100 : baseComp.compute,
+      gpus: nextGpus,
+      storage: slot === 'storage' ? 100 : baseComp.storage,
+      psu: slot === 'psu' ? 100 : baseComp.psu,
+      cooling: slot === 'cooling' ? 100 : baseComp.cooling,
+    };
+    const nextAvg = computeAverageRigHealth(nextComp);
+    const minCompHealth = Math.min(
+      nextComp.chassis,
+      nextComp.compute,
+      ...nextComp.gpus,
+      nextComp.storage,
+      nextComp.psu,
+      nextComp.cooling
+    );
+    const stillCritical = nextAvg <= 20 || minCompHealth <= 20;
+
+    const partLabel =
+      slot === 'gpu'
+        ? typeof gpuSlotIndex === 'number'
+          ? `GPU #${gpuSlotIndex + 1}`
+          : `all ${rig.gpuIds.length} GPU(s)`
+        : slot.toUpperCase();
+
+    soundFx.playCash();
+    setState((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        cash: prev.cash - cost,
+        currentCycleStats: {
+          ...prev.currentCycleStats,
+          maintenanceSpendUsd: prev.currentCycleStats.maintenanceSpendUsd + cost,
+        },
+        stats: {
+          ...prev.stats,
+          totalMaintenanceCostUsd: prev.stats.totalMaintenanceCostUsd + cost,
+          repairsCompleted: prev.stats.repairsCompleted + 1,
+        },
+        transactions: [
+          makeTx(
+            prev.stepCount,
+            'REPAIR',
+            -cost,
+            `Repaired ${partLabel} on ${rig.name} (avg health ${Math.round(nextAvg)}%)`
+          ),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
+        rigs: prev.rigs.map((r, i) => {
+          if (i !== rigIndex) return r;
+          const nextStatus =
+            r.status === 'FAILED' || r.status === 'NEEDS_REPAIR'
+              ? stillCritical
+                ? 'NEEDS_REPAIR'
+                : r.enabled
+                ? 'MINING'
+                : 'PAUSED'
+              : r.status;
+          return {
+            ...r,
+            componentHealth: nextComp,
+            healthPct: nextAvg,
+            status: nextStatus,
+          };
+        }),
+      };
+    });
+
+    return {
+      ok: true,
+      summary: `Repaired ${partLabel} on ${rig.name} to 100% for ${formatUsd(cost)} (Rig avg health: ${Math.round(
+        nextAvg
+      )}%${stillCritical ? ' — another component still <=20%!' : ''}).`,
+    };
   };
 
   const handleRepasteRigs = (
@@ -1209,6 +1407,7 @@ export default function App() {
         gridY: slot.gridY,
         temperatureC: fac.ambientTempC + 25,
         healthPct: 100,
+        componentHealth: createInitialComponentHealth(config.gpuIds.length, 100),
         conditionTier: 'NEW',
         ageSteps: 0,
         failureCount: 0,
@@ -1294,6 +1493,7 @@ export default function App() {
         gridY: slot.gridY,
         temperatureC: fac.ambientTempC + 20,
         healthPct: item.conditionPct,
+        componentHealth: createInitialComponentHealth(item.config.gpuIds.length, item.conditionPct),
         conditionTier: item.conditionTier,
         ageSteps: item.ageSteps,
         failureCount: 0,
@@ -2631,7 +2831,7 @@ export default function App() {
             onClick={() => triggerTerminalCommand('status')}
             className="font-display text-lg font-bold tracking-tight text-green-300 matrix-glow whitespace-nowrap shrink-0"
           >
-            Blockworks Tycoon{state.isSandbox ? ' [SANDBOX]' : ''}
+            HASHRATE{state.isSandbox ? ' [SANDBOX]' : ''}
           </button>
 
           <nav className="flex items-center gap-5 overflow-x-auto">
@@ -2852,77 +3052,84 @@ export default function App() {
             </div>
           )}
 
-          <TextGameTerminal
-            state={state}
-            commandTrigger={commandTrigger}
-            onStepSteps={handleStepSteps}
-            onResolveEvent={handleResolveEvent}
-            onUnlockCoin={handleUnlockCoin}
-            onDeployRig={handleDeployRig}
-            onSalvageRig={handleSalvageRig}
-            onRetireRig={handleRetireRig}
-            onDeployBackupRig={handleDeployBackupRig}
-            onSellBackupRig={handleSellBackupRig}
-            onBuyUsedListing={handleBuyUsedListing}
-            onRefreshUsedMarket={handleRefreshUsedMarket}
-            onRenameRig={handleRenameRig}
-            onToggleRig={handleToggleRig}
-            onChangeRigCoin={handleChangeRigCoin}
-            onChangeRigOverclock={handleChangeRigOverclock}
-            onOverclockRigs={handleOverclockRigs}
-            onTinkerPart={handleTinkerPart}
-            onTinkerGpu={handleTinkerGpu}
-            onSetRigPool={handleSetRigPool}
-            onSetRigProfile={handleSetRigProfile}
-            onRepairRigs={handleRepairRigs}
-            onRepasteRigs={handleRepasteRigs}
-            onAddCoolingUnit={handleAddCoolingUnit}
-            onToggleCoolingUnit={handleToggleCoolingUnit}
-            onRemoveCoolingUnit={handleRemoveCoolingUnit}
-            onSelectFacility={handleSelectFacility}
-            onBuyFacilityUpgrade={handleBuyFacilityUpgrade}
-            onSelectPowerContract={handleSelectPowerContract}
-            onHireEmployee={handleHireEmployee}
-            onTrainEmployee={handleTrainEmployee}
-            onFireEmployee={handleFireEmployee}
-            onUpdateEmployee={handleUpdateEmployee}
-            onStartResearch={handleStartResearch}
-            onStartChallenge={handleStartChallenge}
-            onLaunchCampaign={handleLaunchCampaign}
-            onAcceptContract={handleAcceptContract}
-            onAbandonContract={handleAbandonContract}
-            onToggleSiphon={handleToggleSiphon}
-            onRentBotnet={handleRentBotnet}
-            onWashTrade={handleWashTrade}
-            onSabotageRival={handleSabotageRival}
-            onLaunderHeat={handleLaunderHeat}
-            onBribeInspectors={handleBribeInspectors}
-            onBuyBlackMarket={handleBuyBlackMarket}
-            onBackupSave={() => handleBackupSave()}
-            onRestoreBackup={() => handleRestoreBackup(Boolean(state.isSandbox))}
-            onExportSave={() => handleExportSave(Boolean(state.isSandbox))}
-            onToggleDevMode={handleToggleDevMode}
-            onOpenDevPanel={() => setDevPanelOpen(true)}
-            onToggleDevUnlockAll={handleToggleDevUnlockAll}
-            onDevAddCash={handleDevAddCash}
-            onDevAddRp={handleDevAddRp}
-            onDevUnlockAllResearch={handleDevUnlockAllResearch}
-            onDevOwnAllFacilities={handleDevOwnAllFacilities}
-            onDevUnlockAllCoins={handleDevUnlockAllCoins}
-            onDevResetRigTemps={handleDevResetRigTemps}
-            onDevAdjustCoinPrice={handleDevAdjustCoinPrice}
-            onDevTriggerEvent={handleDevTriggerEvent}
-            onDevSetRegime={handleDevSetRegime}
-            onDevTriggerHalving={handleDevTriggerHalving}
-            onDevSetHeat={handleDevSetHeat}
-            onDevRefreshBlackMarket={handleDevRefreshBlackMarket}
-            onSetTutorialStep={handleSetTutorialStep}
-            userPaused={userPaused}
-            autoPauseReason={autoPauseReason}
-            autoCountdown={autoCountdown}
-            onSetUserPaused={setUserPaused}
-            onActiveModalChange={setActiveTerminalModal}
-          />
+          <div className="flex flex-col lg:flex-row gap-4 items-stretch">
+            <div className="flex-1 min-w-0">
+              <TextGameTerminal
+                state={state}
+                commandTrigger={commandTrigger}
+                onStepSteps={handleStepSteps}
+                onResolveEvent={handleResolveEvent}
+                onUnlockCoin={handleUnlockCoin}
+                onDeployRig={handleDeployRig}
+                onSalvageRig={handleSalvageRig}
+                onRetireRig={handleRetireRig}
+                onDeployBackupRig={handleDeployBackupRig}
+                onSellBackupRig={handleSellBackupRig}
+                onBuyUsedListing={handleBuyUsedListing}
+                onRefreshUsedMarket={handleRefreshUsedMarket}
+                onRenameRig={handleRenameRig}
+                onToggleRig={handleToggleRig}
+                onChangeRigCoin={handleChangeRigCoin}
+                onChangeRigOverclock={handleChangeRigOverclock}
+                onOverclockRigs={handleOverclockRigs}
+                onTinkerPart={handleTinkerPart}
+                onTinkerGpu={handleTinkerGpu}
+                onSetRigPool={handleSetRigPool}
+                onSetRigProfile={handleSetRigProfile}
+                onRepairRigs={handleRepairRigs}
+                onRepairComponent={handleRepairComponent}
+                onRepasteRigs={handleRepasteRigs}
+                onAddCoolingUnit={handleAddCoolingUnit}
+                onToggleCoolingUnit={handleToggleCoolingUnit}
+                onRemoveCoolingUnit={handleRemoveCoolingUnit}
+                onSelectFacility={handleSelectFacility}
+                onBuyFacilityUpgrade={handleBuyFacilityUpgrade}
+                onSelectPowerContract={handleSelectPowerContract}
+                onHireEmployee={handleHireEmployee}
+                onTrainEmployee={handleTrainEmployee}
+                onFireEmployee={handleFireEmployee}
+                onUpdateEmployee={handleUpdateEmployee}
+                onStartResearch={handleStartResearch}
+                onStartChallenge={handleStartChallenge}
+                onLaunchCampaign={handleLaunchCampaign}
+                onAcceptContract={handleAcceptContract}
+                onAbandonContract={handleAbandonContract}
+                onToggleSiphon={handleToggleSiphon}
+                onRentBotnet={handleRentBotnet}
+                onWashTrade={handleWashTrade}
+                onSabotageRival={handleSabotageRival}
+                onLaunderHeat={handleLaunderHeat}
+                onBribeInspectors={handleBribeInspectors}
+                onBuyBlackMarket={handleBuyBlackMarket}
+                onBackupSave={() => handleBackupSave()}
+                onRestoreBackup={() => handleRestoreBackup(Boolean(state.isSandbox))}
+                onExportSave={() => handleExportSave(Boolean(state.isSandbox))}
+                onToggleDevMode={handleToggleDevMode}
+                onOpenDevPanel={() => setDevPanelOpen(true)}
+                onToggleDevUnlockAll={handleToggleDevUnlockAll}
+                onDevAddCash={handleDevAddCash}
+                onDevAddRp={handleDevAddRp}
+                onDevUnlockAllResearch={handleDevUnlockAllResearch}
+                onDevOwnAllFacilities={handleDevOwnAllFacilities}
+                onDevUnlockAllCoins={handleDevUnlockAllCoins}
+                onDevResetRigTemps={handleDevResetRigTemps}
+                onDevAdjustCoinPrice={handleDevAdjustCoinPrice}
+                onDevTriggerEvent={handleDevTriggerEvent}
+                onDevSetRegime={handleDevSetRegime}
+                onDevTriggerHalving={handleDevTriggerHalving}
+                onDevSetHeat={handleDevSetHeat}
+                onDevRefreshBlackMarket={handleDevRefreshBlackMarket}
+                onSetTutorialStep={handleSetTutorialStep}
+                userPaused={userPaused}
+                autoPauseReason={autoPauseReason}
+                autoCountdown={autoCountdown}
+                onSetUserPaused={setUserPaused}
+                onActiveModalChange={setActiveTerminalModal}
+              />
+            </div>
+
+            <SideTelemetryPanels state={state} onRunCommand={triggerTerminalCommand} />
+          </div>
         </div>
       </main>
 

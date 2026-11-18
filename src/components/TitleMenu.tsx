@@ -100,7 +100,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `blockworks-${sandbox ? 'sandbox' : 'career'}-save.json`;
+      a.download = `hashrate-${sandbox ? 'sandbox' : 'career'}-save.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -161,7 +161,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
             Crypto Mining Tycoon Simulator · Expansion 2.0
           </div>
           <h1 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-green-50 leading-tight [text-wrap:balance]">
-            Blockworks Tycoon
+            HASHRATE
           </h1>
           <p className="mt-2.5 text-sm text-green-100/75 leading-relaxed">
             Scale from a 15A bedroom setup to a substation mega-complex. Negotiate power contracts,

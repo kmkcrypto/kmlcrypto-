@@ -42,7 +42,9 @@ import {
   PoolMode,
   PowerContractId,
   PowerContractSpec,
+  RepairComponentSlot,
   RigBuildConfig,
+  RigComponentHealth,
   SandboxConfig,
   TransactionCategory,
   TransactionEntry,
@@ -56,6 +58,9 @@ import { buildDefaultStats } from './saveSystem';
 import {
   calculateBaseRigPartsCost,
   calculateRigResaleValue,
+  computeAverageRigHealth,
+  createInitialComponentHealth,
+  ensureRigComponentHealth,
   generateUsedMarketListings,
   getGlobalHardwarePriceMult,
   getRigGeneration,
@@ -63,8 +68,11 @@ import {
 
 export {
   calculateRigResaleValue,
+  computeAverageRigHealth,
   computeCompanyValuation,
+  createInitialComponentHealth,
   createInitialRivals,
+  ensureRigComponentHealth,
   generateContractBoard,
   generateUsedMarketListings,
   getPlayerRivalComparison,
@@ -140,21 +148,74 @@ export function getManagerBonuses(state: Pick<GameState, 'employees'>) {
   return { count: mgrs.length, totalSkill, adminOverheadDiscount, opsEfficiencyBonus };
 }
 
+export function getComponentRepairCost(
+  rig: MiningRig,
+  slot: RepairComponentSlot,
+  gpuSlotIdx?: number,
+  state?: Pick<GameState, 'employees' | 'unlockedResearch' | 'activeMarketModifiers'>
+): number {
+  const { chassis, compute, gpus, storage, psu, cooling } = getPartBundle(rig);
+  const compHealth = ensureRigComponentHealth(rig);
+  const techDiscount = state ? getTechnicianBonuses(state).repairDiscount : 0;
+  const hwMult = state ? getGlobalHardwarePriceMult(state) : 1.0;
+
+  const calcSingle = (partCost: number, health: number): number => {
+    const missing = Math.max(0, 100 - health);
+    if (missing < 0.5 && rig.status !== 'FAILED') return 0;
+    const effectiveMissing = Math.max(missing, rig.status === 'FAILED' ? 18 : 0);
+    const faultPenalty = rig.status === 'FAILED' || health <= 25 ? 1.35 : 1.0;
+    return Math.max(
+      8,
+      Math.round((effectiveMissing / 100) * partCost * 0.36 * (1 - techDiscount) * hwMult * faultPenalty)
+    );
+  };
+
+  if (slot === 'gpu') {
+    if (gpus.length === 0) return 0;
+    if (typeof gpuSlotIdx === 'number') {
+      const gpuPart = gpus[gpuSlotIdx];
+      if (!gpuPart) return 0;
+      const gHealth = compHealth.gpus[gpuSlotIdx] ?? rig.healthPct;
+      return calcSingle(gpuPart.cost, gHealth);
+    }
+    return gpus.reduce(
+      (sum, g, i) => sum + calcSingle(g.cost, compHealth.gpus[i] ?? rig.healthPct),
+      0
+    );
+  }
+
+  if (slot === 'chassis') return calcSingle(chassis.cost, compHealth.chassis);
+  if (slot === 'compute') return calcSingle(compute.cost, compHealth.compute);
+  if (slot === 'storage') return calcSingle(storage.cost, compHealth.storage);
+  if (slot === 'psu') return calcSingle(psu.cost, compHealth.psu);
+  return calcSingle(cooling.cost, compHealth.cooling);
+}
+
 export function getRigRepairCost(
   rig: MiningRig,
   state?: Pick<GameState, 'employees' | 'unlockedResearch' | 'activeMarketModifiers'>
 ): number {
-  const missing = Math.max(0, 100 - rig.healthPct);
-  if (missing < 0.5 && rig.status !== 'FAILED') return 0;
-  const effectiveMissing = Math.max(missing, rig.status === 'FAILED' ? 28 : 0);
-  const buildCost = calculateBaseRigPartsCost(rig);
-  const techDiscount = state ? getTechnicianBonuses(state).repairDiscount : 0;
-  const hwMult = state ? getGlobalHardwarePriceMult(state) : 1.0;
-  const faultPenalty = rig.status === 'FAILED' ? 1.35 : 1.0;
-  return Math.max(
-    15,
-    Math.round((effectiveMissing / 100) * buildCost * 0.36 * (1 - techDiscount) * hwMult * faultPenalty)
-  );
+  const compHealth = ensureRigComponentHealth(rig);
+  const avgHealth = rig.componentHealth ? computeAverageRigHealth(compHealth) : rig.healthPct;
+  const anyDamaged =
+    rig.status === 'FAILED' ||
+    avgHealth < 99.5 ||
+    compHealth.chassis < 99.5 ||
+    compHealth.compute < 99.5 ||
+    compHealth.storage < 99.5 ||
+    compHealth.psu < 99.5 ||
+    compHealth.cooling < 99.5 ||
+    compHealth.gpus.some((h) => h < 99.5);
+  if (!anyDamaged) return 0;
+
+  const summed =
+    getComponentRepairCost(rig, 'chassis', undefined, state) +
+    getComponentRepairCost(rig, 'compute', undefined, state) +
+    getComponentRepairCost(rig, 'gpu', undefined, state) +
+    getComponentRepairCost(rig, 'storage', undefined, state) +
+    getComponentRepairCost(rig, 'psu', undefined, state) +
+    getComponentRepairCost(rig, 'cooling', undefined, state);
+  return Math.max(15, summed);
 }
 
 export function getRigRepasteCost(rig: MiningRig): number {
@@ -286,6 +347,7 @@ export function computeRigTelemetry(
     gridX?: number;
     gridY?: number;
     healthPct?: number;
+    componentHealth?: RigComponentHealth;
     pasteStepsRemaining?: number;
     illicitMod?: IllicitModId | null;
     conditionTier?: MiningRig['conditionTier'];
@@ -308,7 +370,13 @@ export function computeRigTelemetry(
 
   const fw = FIRMWARE_PROFILE_SPECS[rig.firmwareProfile ?? 'BALANCED'];
   const illicit = rig.illicitMod ? ILLICIT_MOD_SPECS[rig.illicitMod] : null;
-  const healthPct = rig.healthPct ?? 100;
+  const compHealth = rig.componentHealth
+    ? ensureRigComponentHealth({ gpuIds: rig.gpuIds, healthPct: rig.healthPct ?? 100, componentHealth: rig.componentHealth })
+    : null;
+  const healthPct = compHealth ? computeAverageRigHealth(compHealth) : (rig.healthPct ?? 100);
+  const minCompHealth = compHealth
+    ? Math.min(compHealth.chassis, compHealth.compute, compHealth.storage, compHealth.psu, compHealth.cooling, ...(compHealth.gpus.length > 0 ? compHealth.gpus : [100]))
+    : healthPct;
   const pasteBonusC = (rig.pasteStepsRemaining ?? 0) > 0 ? 6 : 0;
 
   const gpuWatts = gpus.reduce((s, g) => s + g.watts, 0);
@@ -410,7 +478,7 @@ export function computeRigTelemetry(
   }
 
   let healthFactor = 1.0;
-  if (rig.status === 'FAILED' || healthPct <= 20) {
+  if (rig.status === 'FAILED' || healthPct <= 20 || minCompHealth <= 20) {
     healthFactor = 0;
   } else if (healthPct < 75) {
     healthFactor = Math.max(0.5, 1 - (75 - healthPct) * 0.009);
@@ -771,6 +839,7 @@ export function createNewGameState(
     gridY: 1 + Math.floor(idx / 4),
     temperatureC: startFac.ambientTempC + 28,
     healthPct: 100,
+    componentHealth: createInitialComponentHealth(0, 100),
     conditionTier: 'NEW',
     ageSteps: 0,
     failureCount: 0,
@@ -1392,14 +1461,27 @@ export function resolvePendingEvent(
     summary = 'Funded R&D telemetry sprint (+24.0 RP, +4 Reputation).';
     milestoneHit = true;
   } else if (res === 'ops_maint_pass') {
-    next.rigs = next.rigs.map((r) => ({
-      ...r,
-      healthPct: Math.min(100, Number((r.healthPct + 12).toFixed(1))),
-      temperatureC: Math.max(20, r.temperatureC - 6),
-      overclockPct: Math.min(100, r.overclockPct),
-      status: r.status === 'FAILED' ? 'MINING' : r.status,
-    }));
-    summary = 'Performed fleet maintenance sweep (+12% condition, -6°C, OC capped to 100%).';
+    next.rigs = next.rigs.map((r) => {
+      const c = ensureRigComponentHealth(r);
+      const heal = (v: number) => Math.min(100, Number((v + 12).toFixed(1)));
+      const nextComp: RigComponentHealth = {
+        chassis: heal(c.chassis),
+        compute: heal(c.compute),
+        gpus: c.gpus.map(heal),
+        storage: heal(c.storage),
+        psu: heal(c.psu),
+        cooling: heal(c.cooling),
+      };
+      return {
+        ...r,
+        componentHealth: nextComp,
+        healthPct: computeAverageRigHealth(nextComp),
+        temperatureC: Math.max(20, r.temperatureC - 6),
+        overclockPct: Math.min(100, r.overclockPct),
+        status: r.status === 'FAILED' || r.status === 'NEEDS_REPAIR' ? (r.enabled ? 'MINING' : 'PAUSED') : r.status,
+      };
+    });
+    summary = 'Performed fleet maintenance sweep (+12% component health, -6°C, OC capped to 100%).';
   } else if (res === 'ops_flip_lot') {
     const stepRev = Math.max(40, state.rigs.reduce((s, r) => s + r.lastStepUsd, 0));
     const gain = Math.round(Math.max(240, stepRev * 4.2) * 0.75);
@@ -1415,43 +1497,59 @@ export function resolvePendingEvent(
     });
     summary = `Flipped surplus hardware lot for +${formatUsd(gain)} (-2 Reputation).`;
   } else if (res === 'hw_fix') {
-    next.rigs = next.rigs.map((r) =>
-      r.id === evt.targetRigId
-        ? {
-            ...r,
-            healthPct: 100,
-            pasteStepsRemaining: 16,
-            status: r.enabled ? 'MINING' : 'PAUSED',
-          }
-        : r
-    );
+    next.rigs = next.rigs.map((r) => {
+      if (r.id !== evt.targetRigId) return r;
+      const nextComp = createInitialComponentHealth(r.gpuIds.length, 100);
+      return {
+        ...r,
+        componentHealth: nextComp,
+        healthPct: 100,
+        pasteStepsRemaining: 16,
+        status: r.enabled ? 'MINING' : 'PAUSED',
+      };
+    });
     next.stats.repairsCompleted += 1;
-    summary = 'Replaced VRM caps and repasted target rig (100% condition).';
+    summary = 'Replaced VRM caps and repasted target rig (100% component health).';
     milestoneHit = true;
   } else if (res === 'hw_research') {
-    next.rigs = next.rigs.map((r) =>
-      r.id === evt.targetRigId
-        ? {
-            ...r,
-            healthPct: Math.max(20, r.healthPct - 18),
-          }
-        : r
-    );
+    next.rigs = next.rigs.map((r) => {
+      if (r.id !== evt.targetRigId) return r;
+      const c = ensureRigComponentHealth(r);
+      const nextComp: RigComponentHealth = {
+        ...c,
+        compute: Math.max(20, Number((c.compute - 22).toFixed(1))),
+        gpus: c.gpus.map((g) => Math.max(20, Number((g - 18).toFixed(1)))),
+        psu: Math.max(20, Number((c.psu - 14).toFixed(1))),
+      };
+      return {
+        ...r,
+        componentHealth: nextComp,
+        healthPct: computeAverageRigHealth(nextComp),
+      };
+    });
     next.researchPoints += 12;
-    summary = 'Captured silicon telemetry logs (+12.0 RP, -18% rig condition).';
+    summary = 'Captured silicon telemetry logs (+12.0 RP, degraded core/GPU condition).';
   } else if (res === 'hw_push') {
     const bonus = Math.max(80, Math.round(state.rigs.reduce((s, r) => s + r.lastStepUsd, 0) * 2));
     next.cash += bonus;
-    next.rigs = next.rigs.map((r) =>
-      r.id === evt.targetRigId
-        ? {
-            ...r,
-            firmwareProfile: 'TURBO',
-            temperatureC: Math.min(98, r.temperatureC + 14),
-            healthPct: Math.max(20, r.healthPct - 22),
-          }
-        : r
-    );
+    next.rigs = next.rigs.map((r) => {
+      if (r.id !== evt.targetRigId) return r;
+      const c = ensureRigComponentHealth(r);
+      const nextComp: RigComponentHealth = {
+        ...c,
+        compute: Math.max(20, Number((c.compute - 26).toFixed(1))),
+        gpus: c.gpus.map((g) => Math.max(20, Number((g - 24).toFixed(1)))),
+        psu: Math.max(20, Number((c.psu - 20).toFixed(1))),
+        cooling: Math.max(20, Number((c.cooling - 15).toFixed(1))),
+      };
+      return {
+        ...r,
+        firmwareProfile: 'TURBO',
+        temperatureC: Math.min(98, r.temperatureC + 14),
+        componentHealth: nextComp,
+        healthPct: computeAverageRigHealth(nextComp),
+      };
+    });
     next.transactions.unshift({
       id: `tx_push_${Date.now()}`,
       step: state.stepCount,
@@ -2020,24 +2118,46 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       condTierWear *
       (1 - techBonus.wearReduction);
 
-    const nextHealth = Math.max(
-      20,
-      Math.min(100, rig.healthPct - totalWear + techBonus.repairPerStep)
+    const compH = ensureRigComponentHealth(rig);
+    const { psu, storage, os } = getPartBundle(rig);
+    const psuRatio = psu.maxWatts > 0 ? finalTelemetry.rawWatts / psu.maxWatts : 1;
+    const applyDelta = (cur: number, mult: number) => {
+      const jitter = 0.85 + Math.random() * 0.3;
+      const nextVal = cur - totalWear * mult * jitter + techBonus.repairPerStep;
+      return Number(Math.max(20, Math.min(100, nextVal)).toFixed(1));
+    };
+
+    const nextCompHealth: RigComponentHealth = {
+      chassis: applyDelta(compH.chassis, 0.4),
+      compute: applyDelta(compH.compute, nextTemp > 80 ? 1.4 : 1.15),
+      gpus: compH.gpus.map((gh) => applyDelta(gh, nextTemp > 80 ? 1.45 : 1.25)),
+      storage: applyDelta(compH.storage, storage.storageTb >= 40 ? 0.95 : 0.65),
+      psu: applyDelta(compH.psu, psuRatio > 0.85 ? 1.4 : 1.0),
+      cooling: applyDelta(compH.cooling, rig.firmwareProfile === 'TURBO' ? 1.25 : 0.95),
+    };
+    const nextHealth = computeAverageRigHealth(nextCompHealth);
+    const minCompHealth = Math.min(
+      nextCompHealth.chassis,
+      nextCompHealth.compute,
+      nextCompHealth.storage,
+      nextCompHealth.psu,
+      nextCompHealth.cooling,
+      ...(nextCompHealth.gpus.length > 0 ? nextCompHealth.gpus : [100])
     );
 
     // Spontaneous hardware failure risk when condition < 65% or running very hot
-    const { os } = getPartBundle(rig);
     const telemetrySafety = nextUnlocked.includes('res_predictive_telemetry') ? 0.65 : 1.0;
     const stabOffset = Math.max(0.45, 1 - os.stabilityBonus);
     let failChance = 0;
-    if (nextHealth < 62) {
-      failChance = ((62 - nextHealth) / 100) * 0.08 * telemetrySafety * stabOffset;
+    if (minCompHealth < 62) {
+      failChance = ((62 - minCompHealth) / 100) * 0.08 * telemetrySafety * stabOffset;
     }
     if (nextTemp > 88) {
       failChance += 0.03 * telemetrySafety;
     }
 
-    let finalStatus: MiningRig['status'] = nextHealth <= 20 ? 'NEEDS_REPAIR' : status;
+    let finalStatus: MiningRig['status'] =
+      nextHealth <= 20 || minCompHealth <= 20 ? 'NEEDS_REPAIR' : status;
     let nextFailures = rig.failureCount ?? 0;
     if (failChance > 0 && Math.random() < failChance) {
       finalStatus = 'FAILED';
@@ -2047,7 +2167,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       alertHit = true;
       pushNews(
         `Equipment Failure: ${rig.name}`,
-        `Component fault at ${nextHealth.toFixed(0)}% condition. Run "repair" or "retire" to inspect.`,
+        `Component fault at ${nextHealth.toFixed(0)}% avg condition. Run "inspect <#>" or "repair".`,
         'ALERT'
       );
     }
@@ -2061,7 +2181,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       ...rig,
       ageSteps: baseAge,
       temperatureC: nextTemp,
-      healthPct: Number(nextHealth.toFixed(1)),
+      componentHealth: nextCompHealth,
+      healthPct: nextHealth,
       pasteStepsRemaining: nextPaste,
       failureCount: nextFailures,
       status: finalStatus,

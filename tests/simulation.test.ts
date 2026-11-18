@@ -17,9 +17,13 @@ import {
 } from '../src/engine/saveSystem';
 import {
   advanceOneStep,
+  computeAverageRigHealth,
   computeFacilityCoolingSummary,
   computeRigTelemetry,
+  createInitialComponentHealth,
   createNewGameState,
+  ensureRigComponentHealth,
+  getComponentRepairCost,
   getEffectiveElectricityRate,
   getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
@@ -310,5 +314,63 @@ describe('Blockworks Tycoon 2.0 Simulation Engine', () => {
     assert.equal(badJson.ok, false);
     const missingFields = validateAndParseImportedSave('{"foo": "bar"}');
     assert.equal(missingFields.ok, false);
+  });
+
+  it('11. Individual component health averages cleanly and single-part repair costs price individually', () => {
+    const base = createNewGameState('STANDARD', false, 'TEST_COMP_HLTH');
+    const multiGpuRig = {
+      ...base.rigs[0],
+      gpuIds: ['gpu_gtx1060', 'gpu_r9_290x'],
+      componentHealth: {
+        chassis: 100,
+        compute: 80,
+        gpus: [50, 90],
+        storage: 100,
+        psu: 60,
+        cooling: 80,
+      },
+      healthPct: 80,
+    };
+
+    // Average of [100, 80, 50, 90, 100, 60, 80] = 560 / 7 = 80
+    assert.equal(computeAverageRigHealth(multiGpuRig.componentHealth), 80);
+
+    const legacyRigWithoutMap = {
+      ...base.rigs[0],
+      gpuIds: ['gpu_gtx1060', 'gpu_r9_290x'],
+      healthPct: 74,
+      componentHealth: undefined,
+    };
+    const ensured = ensureRigComponentHealth(legacyRigWithoutMap);
+    assert.equal(ensured.gpus.length, 2);
+    assert.equal(ensured.chassis, 74);
+
+    // Individual part repair cost vs full rig repair cost
+    const gpu1RepairCost = getComponentRepairCost(multiGpuRig, 'gpu', 0, base);
+    const gpu2RepairCost = getComponentRepairCost(multiGpuRig, 'gpu', 1, base);
+    const allGpuRepairCost = getComponentRepairCost(multiGpuRig, 'gpu', undefined, base);
+    const chassisRepairCost = getComponentRepairCost(multiGpuRig, 'chassis', undefined, base);
+    const fullRigRepairCost = getRigRepairCost(multiGpuRig, base);
+
+    assert.equal(chassisRepairCost, 0, 'Pristine component at 100% should cost $0 to repair');
+    assert.ok(gpu1RepairCost > 0, 'Damaged GPU #1 should have positive repair cost');
+    assert.equal(allGpuRepairCost, gpu1RepairCost + gpu2RepairCost, 'Repairing all GPUs should equal sum of individual GPU slot repair costs');
+    assert.ok(
+      gpu1RepairCost < fullRigRepairCost,
+      'Repairing a single component should cost less than repairing the entire damaged rig'
+    );
+
+    // Verify advanceOneStep wears individual components and keeps rig.healthPct synced to average
+    const stepped = advanceOneStep({
+      ...base,
+      rigs: [{ ...multiGpuRig, componentHealth: createInitialComponentHealth(2, 100), healthPct: 100 }],
+    });
+    const steppedRig = stepped.nextState.rigs[0];
+    assert.ok(steppedRig.componentHealth, 'Stepped rig should retain componentHealth map');
+    assert.equal(
+      steppedRig.healthPct,
+      computeAverageRigHealth(steppedRig.componentHealth),
+      'Rig healthPct must equal the average of all individual components'
+    );
   });
 });

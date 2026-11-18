@@ -14,9 +14,67 @@ import {
   HardwareGen,
   MiningRig,
   RigBuildConfig,
+  RigComponentHealth,
   UsedMarketListing,
 } from '../types/game';
 import { createSeededRng } from '../utils/rng';
+
+export function createInitialComponentHealth(
+  gpuCount: number,
+  initialPct = 100
+): RigComponentHealth {
+  const val = Number(Math.max(20, Math.min(100, initialPct)).toFixed(1));
+  return {
+    chassis: val,
+    compute: val,
+    gpus: Array.from({ length: Math.max(0, gpuCount) }, () => val),
+    storage: val,
+    psu: val,
+    cooling: val,
+  };
+}
+
+export function ensureRigComponentHealth(
+  rig: Pick<MiningRig, 'gpuIds' | 'healthPct' | 'componentHealth'>
+): RigComponentHealth {
+  const fallback = Number(Math.max(20, Math.min(100, rig.healthPct ?? 100)).toFixed(1));
+  const c = rig.componentHealth;
+  if (!c) {
+    return createInitialComponentHealth(rig.gpuIds.length, fallback);
+  }
+  const gpus = rig.gpuIds.map((_, idx) => {
+    const val = c.gpus?.[idx];
+    return typeof val === 'number' && Number.isFinite(val)
+      ? Number(Math.max(20, Math.min(100, val)).toFixed(1))
+      : fallback;
+  });
+  const clamp = (v: unknown) =>
+    typeof v === 'number' && Number.isFinite(v)
+      ? Number(Math.max(20, Math.min(100, v)).toFixed(1))
+      : fallback;
+  return {
+    chassis: clamp(c.chassis),
+    compute: clamp(c.compute),
+    gpus,
+    storage: clamp(c.storage),
+    psu: clamp(c.psu),
+    cooling: clamp(c.cooling),
+  };
+}
+
+export function computeAverageRigHealth(comp: RigComponentHealth): number {
+  const vals = [
+    comp.chassis,
+    comp.compute,
+    ...comp.gpus,
+    comp.storage,
+    comp.psu,
+    comp.cooling,
+  ];
+  if (vals.length === 0) return 100;
+  const avg = vals.reduce((s, v) => s + v, 0) / vals.length;
+  return Number(Math.max(20, Math.min(100, avg)).toFixed(1));
+}
 
 export function getRigGeneration(config: RigBuildConfig): HardwareGen {
   const ch = CHASSIS_PARTS.find((c) => c.id === config.chassisId);
