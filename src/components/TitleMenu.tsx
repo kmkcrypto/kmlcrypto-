@@ -9,6 +9,7 @@ interface TitleMenuProps {
   savedSummary?: string;
   onStartNew: (difficulty: DifficultyLevel, devMode?: boolean, runSeed?: string) => void;
   onResume: () => void;
+  onReturnToStudy?: () => void;
 }
 
 export const TitleMenu: React.FC<TitleMenuProps> = ({
@@ -16,6 +17,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
   savedSummary,
   onStartNew,
   onResume,
+  onReturnToStudy,
 }) => {
   const [difficulty, setDifficulty] = useState<DifficultyLevel>('STANDARD');
   const [runSeed, setRunSeed] = useState<string>(() => generateRandomSeed());
@@ -146,6 +148,16 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
               </button>
             </div>
           </div>
+
+          {onReturnToStudy && (
+            <button
+              type="button"
+              onClick={onReturnToStudy}
+              className="text-xs text-green-400/60 hover:text-green-300 underline-offset-4 hover:underline transition-colors text-left"
+            >
+              Return to Study Portal
+            </button>
+          )}
         </div>
       </aside>
     </div>

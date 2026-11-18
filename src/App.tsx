@@ -59,6 +59,7 @@ import { formatStepLabel, formatUsd } from './utils/format';
 import { generateRandomSeed } from './utils/rng';
 import { soundFx } from './utils/sound';
 import { TitleMenu } from './components/TitleMenu';
+import { EducationLanding } from './components/EducationLanding';
 import { DevPanel } from './components/DevPanel';
 import {
   StepBatchResult,
@@ -184,6 +185,7 @@ export default function App() {
   });
 
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
+  const [showEduLanding, setShowEduLanding] = useState<boolean>(true);
   const [devPanelOpen, setDevPanelOpen] = useState<boolean>(false);
   const [matrixRain, setMatrixRain] = useState<boolean>(true);
   const [commandTrigger, setCommandTrigger] = useState<TerminalCommandTrigger | null>(null);
@@ -1791,6 +1793,10 @@ export default function App() {
     showBanner('Black Market inventory refreshed.');
   };
 
+  if (showEduLanding && (!state || state.mode === 'TITLE_MENU')) {
+    return <EducationLanding onOpenPortal={() => { soundFx.playClick(); setShowEduLanding(false); }} />;
+  }
+
   if (!state || state.mode === 'TITLE_MENU') {
     const savedSummary = savedSnapshot
       ? `${formatStepLabel(savedSnapshot.stepCount)} · ${formatUsd(savedSnapshot.cash, true)}`
@@ -1801,6 +1807,10 @@ export default function App() {
         savedSummary={savedSummary}
         onStartNew={handleStartNew}
         onResume={handleResume}
+        onReturnToStudy={() => {
+          soundFx.playClick();
+          setShowEduLanding(true);
+        }}
       />
     );
   }
