@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Volume2,
   VolumeX,
   SkipForward,
   Wrench,
   Binary,
+  Pause,
+  Play,
 } from 'lucide-react';
 import {
   CHASSIS_PARTS,
@@ -184,11 +186,17 @@ export default function App() {
     return null;
   });
 
+const AUTO_STEP_SECONDS = 30;
+
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
   const [showEduLanding, setShowEduLanding] = useState<boolean>(true);
   const [devPanelOpen, setDevPanelOpen] = useState<boolean>(false);
   const [matrixRain, setMatrixRain] = useState<boolean>(true);
+  const [userPaused, setUserPaused] = useState<boolean>(false);
+  const [activeTerminalModal, setActiveTerminalModal] = useState<'BUILDER' | 'TINKER' | null>(null);
+  const [autoCountdown, setAutoCountdown] = useState<number>(AUTO_STEP_SECONDS);
   const [commandTrigger, setCommandTrigger] = useState<TerminalCommandTrigger | null>(null);
+  const autoStepRef = useRef<() => void>(() => {});
 
   const triggerTerminalCommand = useCallback((cmd: string) => {
     soundFx.playClick();
@@ -230,6 +238,9 @@ export default function App() {
     const fresh = createNewGameState(difficulty, devMode, runSeed);
     setState(fresh);
     setDevPanelOpen(false);
+    setActiveTerminalModal(null);
+    setUserPaused(false);
+    setAutoCountdown(AUTO_STEP_SECONDS);
     if (devMode) {
       showBanner(`Dev Mode active (${fresh.runSeed}): $2.50M, 1,000 RP, all coins & dev event tools ready.`);
     } else {
@@ -241,17 +252,21 @@ export default function App() {
     soundFx.playClick();
     if (savedSnapshot) {
       setState({ ...savedSnapshot, mode: 'PLAYING' });
+      setActiveTerminalModal(null);
+      setAutoCountdown(AUTO_STEP_SECONDS);
     }
   };
 
-  const handleStepSteps = (steps: number): StepBatchResult | null => {
+  const handleStepSteps = (steps: number, silent = false): StepBatchResult | null => {
     if (!state) return null;
     if (state.pendingEvent) {
-      soundFx.playAlert();
-      showBanner(`Resolve "${state.pendingEvent.title}" in the terminal before stepping.`);
+      if (!silent) {
+        soundFx.playAlert();
+        showBanner(`Resolve "${state.pendingEvent.title}" in the terminal before stepping.`);
+      }
       return null;
     }
-    soundFx.playClick();
+    if (!silent) soundFx.playClick();
     const count = Math.max(1, Math.min(200, Math.round(steps)));
 
     let current = state;
@@ -282,9 +297,10 @@ export default function App() {
 
     if (anyAlert) soundFx.playAlert();
     else if (anyMilestone) soundFx.playMilestone();
-    else if (totalMiningCash > 0) soundFx.playCash();
+    else if (!silent && totalMiningCash > 0) soundFx.playCash();
 
     setState(current);
+    setAutoCountdown(AUTO_STEP_SECONDS);
     return {
       stepsRun,
       newStepCount: current.stepCount,
@@ -295,6 +311,50 @@ export default function App() {
       haltedByEvent,
     };
   };
+
+  const autoPauseReason = !state
+    ? 'Menu'
+    : userPaused
+    ? 'Manual'
+    : state.pendingEvent
+    ? 'Event'
+    : activeTerminalModal === 'BUILDER'
+    ? 'Builder'
+    : activeTerminalModal === 'TINKER'
+    ? 'Tinker'
+    : (state.tutorialStep ?? 0) > 0
+    ? 'Tutorial'
+    : devPanelOpen
+    ? 'Dev Panel'
+    : null;
+
+  useEffect(() => {
+    autoStepRef.current = () => {
+      handleStepSteps(1, true);
+    };
+  });
+
+  useEffect(() => {
+    if (showEduLanding || !state || state.mode !== 'PLAYING' || autoPauseReason !== null) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setAutoCountdown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [showEduLanding, state?.mode, autoPauseReason]);
+
+  useEffect(() => {
+    if (
+      autoCountdown === 0 &&
+      !showEduLanding &&
+      state?.mode === 'PLAYING' &&
+      autoPauseReason === null
+    ) {
+      autoStepRef.current();
+      setAutoCountdown(AUTO_STEP_SECONDS);
+    }
+  }, [autoCountdown, showEduLanding, state?.mode, autoPauseReason]);
 
   const handleResolveEvent = (choiceKey: string): { ok: boolean; summary: string } => {
     if (!state) return { ok: false, summary: 'No game active.' };
@@ -1959,6 +2019,43 @@ export default function App() {
               type="button"
               onClick={() => {
                 soundFx.playClick();
+                setUserPaused((p) => !p);
+              }}
+              title={
+                autoPauseReason === null
+                  ? 'Pause automatic 30s stepping'
+                  : userPaused
+                  ? 'Resume automatic 30s stepping'
+                  : `Auto-stepping paused (${autoPauseReason})`
+              }
+              className={`px-2.5 py-1.5 rounded-lg border text-xs font-mono inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 tabular-nums ${
+                autoPauseReason === null
+                  ? 'bg-green-500/15 hover:bg-green-500/25 border-green-500/40 text-green-300'
+                  : 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/45 text-amber-200'
+              }`}
+            >
+              {autoPauseReason === null ? (
+                <>
+                  <Pause className="w-3.5 h-3.5" />
+                  <span>Auto {autoCountdown}s</span>
+                </>
+              ) : userPaused ? (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Paused</span>
+                </>
+              ) : (
+                <>
+                  <Pause className="w-3.5 h-3.5" />
+                  <span>Paused: {autoPauseReason}</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                soundFx.playClick();
                 setMatrixRain((v) => !v);
               }}
               title={matrixRain ? 'Disable Matrix Rain' : 'Enable Matrix Rain'}
@@ -2079,6 +2176,11 @@ export default function App() {
             onDevSetHeat={handleDevSetHeat}
             onDevRefreshBlackMarket={handleDevRefreshBlackMarket}
             onSetTutorialStep={handleSetTutorialStep}
+            userPaused={userPaused}
+            autoPauseReason={autoPauseReason}
+            autoCountdown={autoCountdown}
+            onSetUserPaused={setUserPaused}
+            onActiveModalChange={setActiveTerminalModal}
           />
         </div>
       </main>

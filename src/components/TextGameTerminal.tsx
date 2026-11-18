@@ -162,6 +162,11 @@ interface TextGameTerminalProps {
   onDevSetHeat: (heat: number) => void;
   onDevRefreshBlackMarket: () => void;
   onSetTutorialStep: (step: number) => void;
+  userPaused: boolean;
+  autoPauseReason: string | null;
+  autoCountdown: number;
+  onSetUserPaused: (paused: boolean) => void;
+  onActiveModalChange: (modal: 'BUILDER' | 'TINKER' | null) => void;
 }
 
 const TOP_COMMANDS = [
@@ -169,6 +174,9 @@ const TOP_COMMANDS = [
   'tutorial',
   'status',
   'step',
+  'pause',
+  'resume',
+  'auto',
   'event',
   'decide',
   'build rig',
@@ -268,6 +276,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onDevSetHeat,
   onDevRefreshBlackMarket,
   onSetTutorialStep,
+  userPaused,
+  autoPauseReason,
+  autoCountdown,
+  onSetUserPaused,
+  onActiveModalChange,
 }) => {
   const [lines, setLines] = useState<LogLine[]>([]);
   const [input, setInput] = useState('');
@@ -937,6 +950,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [lines]);
+
+  useEffect(() => {
+    onActiveModalChange(wizard ? 'BUILDER' : tinker ? 'TINKER' : null);
+  }, [wizard, tinker, onActiveModalChange]);
 
   useEffect(() => {
     if (!commandTrigger) return;
@@ -1664,7 +1681,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             `  STEPS, EVENTS & STATUS`,
             `    status | look                     Show facility map, regime, heat & fleet stats`,
             `    tutorial [next|skip|restart]      Walk through what stats mean & build your first rig`,
-            `    step [n] | next [n]               Advance n steps (pauses if interactive event hits)`,
+            `    step [n] | next [n]               Advance n steps manually (auto-steps every 30s)`,
+            `    pause | resume | auto             Pause or resume the 30s auto-step timer`,
             `    event | decide <1|2|3>            View active crisis prompt or lock in choice`,
             `    log                               Show recent market, raid, contract & system logs`,
             `  HARDWARE, OVERCLOCK, TINKER & REPAIRS`,
@@ -1758,6 +1776,57 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       } else {
         printTutorialStep(cur);
       }
+      return;
+    }
+
+    if (cmd === 'pause') {
+      onSetUserPaused(true);
+      append([
+        {
+          kind: 'WARN',
+          text: 'Auto-stepping PAUSED (30s timer stopped). Manual "step [n]" still works; type "resume" anytime.',
+        },
+      ]);
+      return;
+    }
+
+    if (cmd === 'resume' || cmd === 'unpause' || cmd === 'play') {
+      onSetUserPaused(false);
+      const blockedBy = state.pendingEvent
+        ? 'active event decision'
+        : (state.tutorialStep ?? 0) > 0
+        ? 'onboarding tutorial'
+        : null;
+      append([
+        {
+          kind: blockedBy ? 'WARN' : 'OK',
+          text: blockedBy
+            ? `Manual pause cleared — 30s auto-stepping will start automatically once the ${blockedBy} finishes.`
+            : 'Auto-stepping RESUMED (1 step every 30s). Type "pause" anytime.',
+        },
+      ]);
+      return;
+    }
+
+    if (cmd === 'auto') {
+      if (arg1 === 'off' || arg1 === 'pause' || arg1 === 'stop') {
+        onSetUserPaused(true);
+        append([{ kind: 'WARN', text: 'Auto-stepping PAUSED. Type "resume" or "auto on" to restart.' }]);
+        return;
+      }
+      if (arg1 === 'on' || arg1 === 'resume' || arg1 === 'start') {
+        onSetUserPaused(false);
+        append([{ kind: 'OK', text: 'Auto-stepping RESUMED (1 step every 30s).' }]);
+        return;
+      }
+      append([
+        {
+          kind: autoPauseReason ? 'WARN' : 'OK',
+          text: autoPauseReason
+            ? `Auto-step (30s): PAUSED (${autoPauseReason}). Auto-pauses during events, rig building, tinkering, and tutorial.`
+            : `Auto-step (30s): ACTIVE — next automatic step in ${autoCountdown}s. Type "pause" to stop.`,
+        },
+      ]);
       return;
     }
 
@@ -3350,6 +3419,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             ]
           : []),
         { label: 'status', cmd: 'status' },
+        { label: userPaused ? 'resume' : 'pause', cmd: userPaused ? 'resume' : 'pause' },
         { label: 'step 1', cmd: 'step 1' },
         { label: 'step 5', cmd: 'step 5' },
         { label: 'rigs', cmd: 'rigs' },
@@ -3428,17 +3498,25 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         </div>
         {state.pendingEvent ? (
           <span className="text-amber-300 font-semibold">
-            Decision Active: {state.pendingEvent.category}
+            Decision Active · Auto-Paused
           </span>
         ) : wizard ? (
           <span className="text-amber-300 font-semibold">
-            Rig Builder Step: {wizard.step}
+            Rig Builder ({wizard.step}) · Auto-Paused
           </span>
         ) : tinker ? (
           <span className="text-amber-300 font-semibold">
-            Tinker Workbench: Rig #{tinker.rigIndex + 1} ({tinker.slot})
+            Tinker Workbench · Auto-Paused
           </span>
-        ) : null}
+        ) : autoPauseReason ? (
+          <span className="text-amber-300 font-semibold tabular-nums">
+            Auto-Step Paused ({autoPauseReason})
+          </span>
+        ) : (
+          <span className="text-green-400/90 tabular-nums">
+            Auto-Step in {autoCountdown}s
+          </span>
+        )}
       </div>
 
       {/* Main Scrollback Output */}
