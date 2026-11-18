@@ -1,0 +1,58 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Outfit', system-ui, sans-serif;
+    --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #020603;
+    color: #DCFCE7;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono, .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Matrix CRT phosphor scanlines & subtle glow */
+.matrix-scanlines {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(34, 197, 94, 0.04) 0px,
+    rgba(34, 197, 94, 0.04) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+.matrix-glow {
+  text-shadow: 0 0 8px rgba(74, 222, 128, 0.35);
+}
+
+/* Custom Matrix scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #020704;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #14532D;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #22C55E;
+}

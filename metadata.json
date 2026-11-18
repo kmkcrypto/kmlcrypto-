@@ -1,0 +1,6 @@
+{
+  "name": "Blockworks Tycoon",
+  "description": "Historical cryptocurrency mining, custom rig assembly, market trading, facility management, and media influence tycoon simulation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
