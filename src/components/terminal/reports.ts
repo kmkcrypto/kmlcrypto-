@@ -11,6 +11,7 @@ import {
 import {
   computeCompanyValuation,
   computeFacilityCoolingSummary,
+  computeValuationBreakdown,
   getEffectiveElectricityRate,
   getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
@@ -20,6 +21,10 @@ import {
   getPlayerRivalComparison,
   getPowerContract,
 } from '../../engine/simulation';
+import {
+  previewPowerContract,
+  renderAsciiLineChart,
+} from '../../engine/previews';
 import { GameState, TransactionCategory } from '../../types/game';
 import { formatStepLabel, formatUsd } from '../../utils/format';
 
@@ -29,6 +34,35 @@ function padR(s: string, len: number): string {
 
 function padL(s: string, len: number): string {
   return s.length >= len ? s : ' '.repeat(len - s.length) + s;
+}
+
+export function formatValuationReport(state: GameState): string {
+  const val = computeValuationBreakdown(state);
+  const rigRows = state.rigs.slice(0, 10).map((r, i) => {
+    const cost = Math.max(1, r.purchasePriceUsd ?? 355);
+    const roiPct = Math.round(((r.totalEarnedUsd - cost) / cost) * 100);
+    return `    #${i + 1} ${padR(r.name, 22)} Cost:${padL(formatUsd(cost), 9)} Earned:${padL(
+      formatUsd(r.totalEarnedUsd),
+      9
+    )} Last:${padL(formatUsd(r.lastStepUsd), 8)}/st  ROI:${padL(`${roiPct >= 0 ? '+' : ''}${roiPct}%`, 6)}`;
+  });
+
+  return [
+    `  ITEMIZED COMPANY VALUATION BREAKDOWN`,
+    `    Cash & Liquid Treasury: ${padL(formatUsd(val.cashUsd), 12)}`,
+    `    Coin Treasury & Shorts: ${padL(formatUsd(val.walletValueUsd), 12)} (${(state.shortPositions ?? []).length} shorts)`,
+    `    Active Fleet Resale:    ${padL(formatUsd(val.activeFleetUsd), 12)} (${state.rigs.length} rigs)`,
+    `    Backup Vault Assets:    ${padL(formatUsd(val.backupVaultUsd), 12)} (${(state.backupRigs ?? []).length} rigs)`,
+    `    Facility Real Estate:   ${padL(formatUsd(val.facilityEquityUsd), 12)} (${state.ownedFacilityIds.length} owned)`,
+    `    Expansion Wings Equity: ${padL(formatUsd(val.expansionWingsUsd), 12)} (${state.facilityExtraRooms ?? 0} wings)`,
+    `    R&D Patent IP Value:    ${padL(formatUsd(val.researchIpUsd), 12)} (${state.unlockedResearch.length} techs)`,
+    `    Custom ASIC Inventory:  ${padL(formatUsd(val.fabInventoryUsd), 12)} (${(state.fab?.inventory ?? []).reduce((s, i) => s + i.qty, 0)} chips)`,
+    `    ────────────────────────────────────────`,
+    `    TOTAL ENTERPRISE VALUE: ${padL(formatUsd(val.totalUsd), 12)}`,
+    ``,
+    `  FLEET LIFETIME ROI (top ${Math.min(10, state.rigs.length)} rigs)`,
+    ...(rigRows.length > 0 ? rigRows : ['    (No active rigs deployed)']),
+  ].join('\n');
 }
 
 export function formatStatsReport(state: GameState): string {
@@ -99,9 +133,16 @@ export function formatPowerReport(state: GameState): string {
       : locked
       ? `[At ${FACILITY_TIERS[c.unlockFacilityIndex].name}]`
       : '[READY]';
+    const prev = previewPowerContract(c.id, state);
+    const deltaTxt =
+      active || !prev
+        ? 'current plan'
+        : `${prev.netCycleDeltaUsd <= 0 ? 'saves ' : '+'}${formatUsd(
+            Math.abs(prev.netCycleDeltaUsd)
+          )}/cyc · Cap ${prev.capDeltaKw >= 0 ? '+' : ''}${prev.capDeltaKw}kW`;
     return `  ${idx + 1}. ${padR(c.name, 31)} Rate:${Math.round(c.rateMultiplier * 100)}% Cap:${Math.round(
       c.capacityMultiplier * 100
-    )}% Fee:${padL(formatUsd(c.cycleFixedFee), 5)}/cyc  ${gate}\n     ${c.summary}`;
+    )}% Fee:${padL(formatUsd(c.cycleFixedFee), 5)}/cyc  ${gate}\n     ${c.summary} (${deltaTxt})`;
   }).join('\n');
 
   const upgradeRows = FACILITY_UPGRADES.map((u, idx) => {
@@ -246,3 +287,90 @@ export function formatChallengesReport(state: GameState): string {
     )} + ${c.rewardRp} RP\n     ${c.description}`;
   }).join('\n');
 }
+
+export type PortfolioChartMetric = 'portfolio' | 'cash' | 'valuation' | 'profit' | 'hashrate' | 'power';
+
+export function formatPortfolioChart(
+  state: GameState,
+  metric: PortfolioChartMetric = 'portfolio'
+): string {
+  const hist = state.performanceHistory ?? [];
+  if (hist.length < 2) {
+    return '  Not enough performance history yet. Run "step 3" to plot historical ASCII charts.';
+  }
+  const labels = hist.map((h) => h.stepLabel);
+
+  if (metric === 'cash') {
+    return [
+      `  CASH RESERVE TREND (${hist.length} steps)`,
+      renderAsciiLineChart(
+        hist.map((h) => h.cash),
+        labels,
+        (v) => formatUsd(v, true)
+      ),
+    ].join('\n');
+  }
+  if (metric === 'valuation') {
+    return [
+      `  COMPANY VALUATION TREND (${hist.length} steps)`,
+      renderAsciiLineChart(
+        hist.map((h) => h.valuation),
+        labels,
+        (v) => formatUsd(v, true)
+      ),
+    ].join('\n');
+  }
+  if (metric === 'profit') {
+    return [
+      `  NET STEP PROFIT (MINING REV - POWER COST)`,
+      renderAsciiLineChart(
+        hist.map((h) => h.netPerStepUsd),
+        labels,
+        (v) => formatUsd(v, true)
+      ),
+    ].join('\n');
+  }
+  if (metric === 'hashrate') {
+    return [
+      `  FLEET HASH SCORE TREND (${hist.length} steps)`,
+      renderAsciiLineChart(
+        hist.map((h) => h.fleetHashScore),
+        labels,
+        (v) => `${Math.round(v)}`
+      ),
+    ].join('\n');
+  }
+  if (metric === 'power') {
+    return [
+      `  FACILITY POWER LOAD TREND (kW)`,
+      renderAsciiLineChart(
+        hist.map((h) => h.powerKw),
+        labels,
+        (v) => `${v.toFixed(1)}kW`
+      ),
+    ].join('\n');
+  }
+
+  return [
+    `  1) NET OPERATING PROFIT PER STEP`,
+    renderAsciiLineChart(
+      hist.map((h) => h.netPerStepUsd),
+      labels,
+      (v) => formatUsd(v, true),
+      6,
+      40
+    ),
+    ``,
+    `  2) COMPANY VALUATION`,
+    renderAsciiLineChart(
+      hist.map((h) => h.valuation),
+      labels,
+      (v) => formatUsd(v, true),
+      6,
+      40
+    ),
+    ``,
+    `  Tip: Run "chart cash", "chart profit", "chart hashrate", "chart power", or "chart <COIN>".`,
+  ].join('\n');
+}
+

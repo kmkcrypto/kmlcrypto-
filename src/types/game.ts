@@ -4,7 +4,7 @@ export type DifficultyLevel = 'BOOTSTRAP' | 'STANDARD' | 'TYCOON_SANDBOX' | 'SAN
 
 export type TechEra = 'CPU' | 'GPU' | 'FPGA' | 'ASIC';
 
-export type HardwareGen = 1 | 2 | 3 | 4;
+export type HardwareGen = 1 | 2 | 3 | 4 | 5;
 
 export type HardwareConditionTier = 'NEW' | 'REFURBISHED' | 'USED' | 'DAMAGED';
 
@@ -156,6 +156,7 @@ export interface RigBuildConfig {
   overclockPct: number;
   poolMode?: PoolMode;
   firmwareProfile?: FirmwareProfile;
+  roomId?: string;
 }
 
 export type RepairComponentSlot =
@@ -180,6 +181,7 @@ export interface MiningRig extends RigBuildConfig {
   enabled: boolean;
   gridX: number;
   gridY: number;
+  roomId?: string;
   temperatureC: number;
   healthPct: number;
   componentHealth?: RigComponentHealth;
@@ -203,6 +205,8 @@ export interface MiningRig extends RigBuildConfig {
   soloBlocksWon: number;
   lastStepBlockHit: boolean;
   illicitMod: IllicitModId | null;
+  payoutMode?: 'AUTOSELL' | 'HOLD';
+  customAsicSpec?: CustomAsicSpec;
   lastStepCoins: number;
   lastStepUsd: number;
   totalMinedCoins: number;
@@ -238,7 +242,28 @@ export interface PlacedCoolingUnit {
   type: RoomCoolingType;
   gridX: number;
   gridY: number;
+  roomId?: string;
   enabled: boolean;
+}
+
+export type RoomZoneType =
+  | 'RESIDENTIAL'
+  | 'WORKSHOP'
+  | 'HOT_AISLE'
+  | 'COLD_AISLE'
+  | 'INDUSTRIAL_BAY'
+  | 'CLEANROOM';
+
+export interface FacilityRoom {
+  id: string;
+  index: number;
+  name: string;
+  zoneType: RoomZoneType;
+  slotCapacity: number;
+  ambientTempDeltaC: number;
+  airflowFactor: number;
+  noiseBaffleDba: number;
+  isExpansion?: boolean;
 }
 
 export type FacilityUpgradeId =
@@ -430,6 +455,7 @@ export interface RivalSyndicate {
   hostility: number;
   disruptedSteps: number;
   lastActionSummary: string;
+  intelRevealedUntilStep?: number;
 }
 
 export type ContractType =
@@ -440,7 +466,9 @@ export type ContractType =
   | 'FACILITY_EXPANSION'
   | 'MAINTENANCE_SLA'
   | 'RESEARCH_PARTNERSHIP'
-  | 'OPERATIONAL_PERFORMANCE';
+  | 'OPERATIONAL_PERFORMANCE'
+  | 'UPTIME_STREAK'
+  | 'EFFICIENCY_CAP';
 
 export interface ContractSpec {
   id: string;
@@ -472,6 +500,7 @@ export interface UsedMarketListing {
   listPriceUsd: number;
   retailPriceUsd: number;
   config: Omit<RigBuildConfig, 'name'>;
+  componentHealth?: RigComponentHealth;
   summary: string;
 }
 
@@ -509,6 +538,7 @@ export interface BlackMarketListing {
   modId?: IllicitModId;
   presetConfig?: Omit<RigBuildConfig, 'name'>;
   discountPct?: number;
+  defectRiskPct?: number;
 }
 
 export interface UndergroundState {
@@ -529,7 +559,10 @@ export type PendingEventCategory =
   | 'GRID'
   | 'RIVAL'
   | 'RAID'
-  | 'OPERATIONS';
+  | 'OPERATIONS'
+  | 'FACILITY'
+  | 'EMPLOYEE'
+  | 'INDUSTRY';
 
 export interface PendingEventOption {
   key: '1' | '2' | '3';
@@ -548,6 +581,8 @@ export interface PendingEvent {
   targetCoin?: CoinSymbol;
   targetRigId?: string;
   targetRivalId?: string;
+  targetComponentSlot?: RepairComponentSlot;
+  targetGpuIdx?: number;
   options: PendingEventOption[];
 }
 
@@ -573,7 +608,9 @@ export type TransactionCategory =
   | 'CONTRACT'
   | 'RESEARCH'
   | 'EVENT'
-  | 'REWARD';
+  | 'REWARD'
+  | 'EXCHANGE'
+  | 'FAB';
 
 export interface TransactionEntry {
   id: string;
@@ -662,6 +699,18 @@ export interface SandboxConfig {
   operatingCostMult: number;
 }
 
+export interface PerformanceSnapshot {
+  step: number;
+  stepLabel: string;
+  cash: number;
+  valuation: number;
+  revenuePerStepUsd: number;
+  powerCostPerStepUsd: number;
+  netPerStepUsd: number;
+  fleetHashScore: number;
+  powerKw: number;
+}
+
 export interface GameState {
   mode: GameModeState;
   difficulty: DifficultyLevel;
@@ -678,6 +727,7 @@ export interface GameState {
   facilityId: string;
   ownedFacilityIds: string[];
   facilityUpgrades: Partial<Record<FacilityUpgradeId, number>>;
+  facilityExtraRooms?: number;
   powerContractId: PowerContractId;
   rigs: MiningRig[];
   backupRigs: MiningRig[];
@@ -689,6 +739,7 @@ export interface GameState {
   marketRegime: MarketRegime;
   regimeStepsRemaining: number;
   employees: HiredEmployee[];
+  strikeStepsRemaining?: number;
   mediaCredibility: number;
   regulatoryScrutiny: number;
   activeCampaigns: ActivePRCampaign[];
@@ -700,6 +751,7 @@ export interface GameState {
   pendingEvent: PendingEvent | null;
   ledger: CycleLedgerEntry[];
   transactions: TransactionEntry[];
+  performanceHistory?: PerformanceSnapshot[];
   currentCycleStats: {
     miningRevenueUsd: number;
     electricitySpendUsd: number;
@@ -716,9 +768,94 @@ export interface GameState {
   noiseFinesTotal: number;
   stats: EmpireStats;
   tutorialStep?: number;
+  onboardingMode?: OnboardingMode;
+  seenTutorials?: string[];
+  claimedObjectives?: string[];
   devMode: boolean;
   devUnlockAll: boolean;
+  wallet?: Record<CoinSymbol, number>;
+  walletCostBasis?: Record<CoinSymbol, number>;
+  limitOrders?: LimitOrder[];
+  shortPositions?: ShortPosition[];
+  fab?: FabState;
 }
+
+export type ChipProcessNode = '7nm' | '5nm' | '3nm' | '2nm';
+
+export interface CustomAsicSpec {
+  blueprintId: string;
+  name: string;
+  algo: MiningAlgorithm;
+  processNode: ChipProcessNode;
+  hashRate: number;
+  watts: number;
+  heatC: number;
+}
+
+export interface CustomChipBlueprint {
+  id: string;
+  name: string;
+  algo: MiningAlgorithm;
+  processNode: ChipProcessNode;
+  unitCostUsd: number;
+  waferSteps: number;
+  hashRate: number;
+  watts: number;
+  heatC: number;
+  wholesaleValueUsd: number;
+  createdStep: number;
+}
+
+export interface FabProductionOrder {
+  id: string;
+  blueprintId: string;
+  blueprintName: string;
+  qty: number;
+  stepsRemaining: number;
+  totalSteps: number;
+}
+
+export interface CustomAsicInventoryItem {
+  blueprintId: string;
+  name: string;
+  algo: MiningAlgorithm;
+  processNode: ChipProcessNode;
+  hashRate: number;
+  watts: number;
+  heatC: number;
+  wholesaleValueUsd: number;
+  qty: number;
+}
+
+export interface FabState {
+  linesCount: number;
+  blueprints: CustomChipBlueprint[];
+  productionQueue: FabProductionOrder[];
+  inventory: CustomAsicInventoryItem[];
+  totalUnitsManufactured: number;
+  totalExportRevenueUsd: number;
+}
+
+export interface LimitOrder {
+  id: string;
+  side: 'BUY' | 'SELL';
+  coin: CoinSymbol;
+  targetPriceUsd: number;
+  amount: number;
+  reservedUsd?: number;
+  createdStep: number;
+}
+
+export interface ShortPosition {
+  id: string;
+  coin: CoinSymbol;
+  entryPriceUsd: number;
+  collateralUsd: number;
+  coinSize: number;
+  openedStep: number;
+}
+
+export type OnboardingMode = 'GUIDED' | 'VETERAN';
 
 export interface SaveFileEnvelope {
   format: 'BLOCKWORKS_SAVE_V2';

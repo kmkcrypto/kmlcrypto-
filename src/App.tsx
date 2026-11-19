@@ -14,6 +14,7 @@ import {
   COMPUTE_PARTS,
   COOLING_PARTS,
   EMPLOYEE_SPECS,
+  FACILITY_PROFILES,
   FACILITY_TIERS,
   FACILITY_UPGRADES,
   GPU_PARTS,
@@ -29,14 +30,23 @@ import {
 import {
   advanceOneStep,
   BILLING_CYCLE_STEPS,
+  buildFabLine,
   calculatePartTradeInCost,
   calculateRigBuildCost,
   calculateRigResaleValue,
+  cancelLimitOrder,
+  claimCompletedObjectives,
+  closeShortPosition,
   computeAverageRigHealth,
   createInitialComponentHealth,
   createNewGameState,
+  deployCustomAsicToRig,
+  designCustomChipBlueprint,
   ensureRigComponentHealth,
+  executeSpotBuy,
+  executeSpotSell,
   findOpenGridSlot,
+  findOpenRoomId,
   generateBlackMarketListings,
   generateInteractiveEvent,
   generateUsedMarketListings,
@@ -44,12 +54,20 @@ import {
   getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
   getFacility,
+  getFacilityRoomExpansionCost,
+  getFacilityRooms,
   getFacilityTotals,
   getFacilityUpgradeCost,
   getRigRepasteCost,
   getRigRepairCost,
+  investigateRivalSyndicate,
+  openShortPosition,
+  placeLimitOrder,
+  queueFabProduction,
   resolvePendingEvent,
+  sellCustomAsicsWholesale,
 } from './engine/simulation';
+import { getUnlockedSystems } from './data/onboarding';
 import { getGlobalHardwarePriceMult } from './engine/usedMarket';
 import {
   CAREER_STORAGE_KEY,
@@ -63,6 +81,7 @@ import {
 } from './engine/saveSystem';
 import {
   ChallengeId,
+  ChipProcessNode,
   CoinSymbol,
   DifficultyLevel,
   EmployeeRole,
@@ -70,7 +89,9 @@ import {
   FirmwareProfile,
   GameState,
   MarketRegime,
+  MiningAlgorithm,
   MiningRig,
+  OnboardingMode,
   PlacedCoolingUnit,
   PoolMode,
   PowerContractId,
@@ -195,10 +216,18 @@ export default function App() {
     devMode = false,
     runSeed?: string,
     sandboxConfig?: SandboxConfig,
-    challengeId: ChallengeId | null = null
+    challengeId: ChallengeId | null = null,
+    onboardingMode: OnboardingMode = 'GUIDED'
   ) => {
     soundFx.playMilestone();
-    const fresh = createNewGameState(difficulty, devMode, runSeed, sandboxConfig, challengeId);
+    const fresh = createNewGameState(
+      difficulty,
+      devMode,
+      runSeed,
+      sandboxConfig,
+      challengeId,
+      onboardingMode
+    );
     setState(fresh);
     setDevPanelOpen(false);
     setActiveTerminalModal(null);
@@ -536,6 +565,30 @@ export default function App() {
     setState((prev) => (prev ? { ...prev, tutorialStep } : prev));
   };
 
+  const handleMarkTutorialSeen = (guideId: string) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      const existing = prev.seenTutorials ?? [];
+      if (existing.includes(guideId)) return prev;
+      return {
+        ...prev,
+        seenTutorials: [...existing, guideId],
+      };
+    });
+  };
+
+  const handleSetOnboardingMode = (onboardingMode: OnboardingMode) => {
+    setState((prev) => (prev ? { ...prev, onboardingMode } : prev));
+  };
+
+  const handleClaimObjectives = () => {
+    setState((prev) => {
+      if (!prev) return prev;
+      const res = claimCompletedObjectives(prev);
+      return res.newlyCompleted.length > 0 ? res.nextState : prev;
+    });
+  };
+
   const handleTinkerPart = (
     rigIndex: number,
     slot: 'chassis' | 'compute' | 'storage' | 'psu' | 'cooling' | 'os',
@@ -798,6 +851,7 @@ export default function App() {
               return {
                 ...r,
                 ...nextRigPatch,
+                customAsicSpec: computeSwapped ? undefined : r.customAsicSpec,
                 componentHealth: nextComp,
                 healthPct: nextAvg,
                 status: nextStatus,
@@ -1022,6 +1076,166 @@ export default function App() {
       };
     });
     return true;
+  };
+
+  const handleSetRigPayout = (
+    rigIndexOrAll: number | 'ALL',
+    payoutMode: 'AUTOSELL' | 'HOLD'
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    if (rigIndexOrAll !== 'ALL' && !state.rigs[rigIndexOrAll]) {
+      return { ok: false, summary: `Rig #${rigIndexOrAll + 1} not found.` };
+    }
+    soundFx.playClick();
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            rigs: prev.rigs.map((r, idx) =>
+              rigIndexOrAll === 'ALL' || idx === rigIndexOrAll ? { ...r, payoutMode } : r
+            ),
+          }
+        : prev
+    );
+    const scope =
+      rigIndexOrAll === 'ALL'
+        ? `All ${state.rigs.length} rig(s)`
+        : state.rigs[rigIndexOrAll]?.name ?? `Rig #${rigIndexOrAll + 1}`;
+    return {
+      ok: true,
+      summary:
+        payoutMode === 'HOLD'
+          ? `${scope} set to HOLD payouts (mined coins accumulate in Treasury Wallet).`
+          : `${scope} set to AUTOSELL payouts (mined coins auto-liquidate every step).`,
+    };
+  };
+
+  const handleExchangeBuy = (
+    coin: CoinSymbol,
+    usdAmount: number
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = executeSpotBuy(state, coin, usdAmount);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playCash();
+    setState((prev) => (prev ? executeSpotBuy(prev, coin, usdAmount).nextState : prev));
+    return { ok: true, summary: check.summary };
+  };
+
+  const handleExchangeSell = (
+    coin: CoinSymbol,
+    amountOrAll: number | 'ALL'
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = executeSpotSell(state, coin, amountOrAll);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playCash();
+    setState((prev) => (prev ? executeSpotSell(prev, coin, amountOrAll).nextState : prev));
+    return { ok: true, summary: check.summary };
+  };
+
+  const handlePlaceLimitOrder = (
+    side: 'BUY' | 'SELL',
+    coin: CoinSymbol,
+    targetPriceUsd: number,
+    amount: number
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = placeLimitOrder(state, side, coin, targetPriceUsd, amount);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playClick();
+    setState((prev) =>
+      prev ? placeLimitOrder(prev, side, coin, targetPriceUsd, amount).nextState : prev
+    );
+    return { ok: true, summary: check.summary };
+  };
+
+  const handleCancelLimitOrder = (orderIdx: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = cancelLimitOrder(state, orderIdx);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playClick();
+    setState((prev) => (prev ? cancelLimitOrder(prev, orderIdx).nextState : prev));
+    return { ok: true, summary: check.summary };
+  };
+
+  const handleOpenShort = (
+    coin: CoinSymbol,
+    collateralUsd: number
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = openShortPosition(state, coin, collateralUsd);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playCash();
+    setState((prev) => (prev ? openShortPosition(prev, coin, collateralUsd).nextState : prev));
+    return { ok: true, summary: check.summary };
+  };
+
+  const handleCloseShort = (posIdx: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = closeShortPosition(state, posIdx);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playCash();
+    setState((prev) => (prev ? closeShortPosition(prev, posIdx).nextState : prev));
+    return { ok: true, summary: check.summary };
+  };
+
+  const handleBuildFabLine = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = buildFabLine(state);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playMilestone();
+    setState((prev) => (prev ? buildFabLine(prev).nextState : prev));
+    return { ok: true, summary: check.summary };
+  };
+
+  const handleDesignCustomChip = (
+    name: string,
+    algo: MiningAlgorithm,
+    node: ChipProcessNode
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = designCustomChipBlueprint(state, name, algo, node);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playCash();
+    setState((prev) => (prev ? designCustomChipBlueprint(prev, name, algo, node).nextState : prev));
+    return { ok: true, summary: check.summary };
+  };
+
+  const handleQueueFabProduction = (
+    bpIdx: number,
+    qty: number
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = queueFabProduction(state, bpIdx, qty);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playCash();
+    setState((prev) => (prev ? queueFabProduction(prev, bpIdx, qty).nextState : prev));
+    return { ok: true, summary: check.summary };
+  };
+
+  const handleDeployCustomAsic = (
+    invIdx: number,
+    rigIdx: number
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = deployCustomAsicToRig(state, invIdx, rigIdx);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playMilestone();
+    setState((prev) => (prev ? deployCustomAsicToRig(prev, invIdx, rigIdx).nextState : prev));
+    return { ok: true, summary: check.summary };
+  };
+
+  const handleSellCustomAsic = (
+    invIdx: number,
+    qtyOrAll: number | 'ALL'
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = sellCustomAsicsWholesale(state, invIdx, qtyOrAll);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playCash();
+    setState((prev) => (prev ? sellCustomAsicsWholesale(prev, invIdx, qtyOrAll).nextState : prev));
+    return { ok: true, summary: check.summary };
   };
 
   const handleRepairRigs = (
@@ -1392,11 +1606,17 @@ export default function App() {
       const fac = getFacility(prev.facilityId);
       if (prev.cash < cost || prev.rigs.length >= getEffectiveFacilityMaxRigs(prev)) return prev;
       const slot = findOpenGridSlot(fac, prev.rigs, prev.coolingUnits ?? []);
+      const rooms = getFacilityRooms(prev);
+      const assignedRoomId =
+        config.roomId && rooms.some((r) => r.id === config.roomId)
+          ? config.roomId
+          : findOpenRoomId(rooms, prev.rigs);
 
       const newRig: MiningRig = {
         ...config,
         id: `rig_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         poolMode: config.poolMode ?? 'PPS',
+        payoutMode: config.payoutMode ?? 'AUTOSELL',
         firmwareProfile: config.firmwareProfile ?? 'BALANCED',
         pasteStepsRemaining: 16,
         soloBlocksWon: 0,
@@ -1405,6 +1625,7 @@ export default function App() {
         enabled: true,
         gridX: slot.gridX,
         gridY: slot.gridY,
+        roomId: assignedRoomId,
         temperatureC: fac.ambientTempC + 25,
         healthPct: 100,
         componentHealth: createInitialComponentHealth(config.gpuIds.length, 100),
@@ -1477,6 +1698,16 @@ export default function App() {
       }
       const fac = getFacility(prev.facilityId);
       const slot = findOpenGridSlot(fac, prev.rigs, prev.coolingUnits ?? []);
+      const rooms = getFacilityRooms(prev);
+      const assignedRoomId = findOpenRoomId(rooms, prev.rigs);
+      const compHealth = item.componentHealth
+        ? ensureRigComponentHealth({
+            gpuIds: item.config.gpuIds,
+            healthPct: item.conditionPct,
+            componentHealth: item.componentHealth,
+          })
+        : createInitialComponentHealth(item.config.gpuIds.length, item.conditionPct);
+      const avgHp = computeAverageRigHealth(compHealth);
       const newRig: MiningRig = {
         ...item.config,
         name: rigName,
@@ -1491,15 +1722,16 @@ export default function App() {
         enabled: true,
         gridX: slot.gridX,
         gridY: slot.gridY,
+        roomId: assignedRoomId,
         temperatureC: fac.ambientTempC + 20,
-        healthPct: item.conditionPct,
-        componentHealth: createInitialComponentHealth(item.config.gpuIds.length, item.conditionPct),
+        healthPct: avgHp,
+        componentHealth: compHealth,
         conditionTier: item.conditionTier,
         ageSteps: item.ageSteps,
         failureCount: 0,
         isUsedPurchase: true,
         purchasePriceUsd: item.listPriceUsd,
-        status: item.conditionPct <= 20 ? 'NEEDS_REPAIR' : 'MINING',
+        status: avgHp <= 20 ? 'NEEDS_REPAIR' : 'MINING',
         lastStepCoins: 0,
         lastStepUsd: 0,
         totalMinedCoins: 0,
@@ -1572,7 +1804,7 @@ export default function App() {
     };
   };
 
-  const handleAddCoolingUnit = (type: RoomCoolingType): boolean => {
+  const handleAddCoolingUnit = (type: RoomCoolingType, roomNumber?: number): boolean => {
     const spec = ROOM_COOLING_UNITS.find((u) => u.id === type);
     if (!spec || !state) return false;
     const facIndex = FACILITY_TIERS.findIndex((f) => f.id === state.facilityId);
@@ -1581,33 +1813,46 @@ export default function App() {
       state.devUnlockAll ||
       !spec.researchRequired ||
       state.unlockedResearch.includes(spec.researchRequired);
-    if (!unlockedFac || !unlockedRes || state.cash < spec.cost) return false;
+    const unitCost = state.unlockedResearch.includes('res_bulk_procurement')
+      ? Math.round(spec.cost * 0.92)
+      : spec.cost;
+    if (!unlockedFac || !unlockedRes || state.cash < unitCost) return false;
 
     setState((prev) => {
-      if (!prev || prev.cash < spec.cost) return prev;
+      if (!prev) return prev;
+      const costNow = prev.unlockedResearch.includes('res_bulk_procurement')
+        ? Math.round(spec.cost * 0.92)
+        : spec.cost;
+      if (prev.cash < costNow) return prev;
+      const rooms = getFacilityRooms(prev);
+      const pickedRoom =
+        roomNumber && rooms[roomNumber - 1]
+          ? rooms[roomNumber - 1]
+          : rooms[(prev.coolingUnits ?? []).length % Math.max(1, rooms.length)];
       const newUnit: PlacedCoolingUnit = {
         id: `cool_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
         type,
         gridX: 0,
         gridY: 0,
+        roomId: pickedRoom?.id ?? 'room_1',
         enabled: true,
       };
       soundFx.playCash();
-      showBanner(`Installed ${spec.name} (+${spec.coolingPowerC}°C facility cooling).`);
+      showBanner(`Installed ${spec.name} in ${pickedRoom?.name ?? 'Facility'} (+${spec.coolingPowerC}°C).`);
       return {
         ...prev,
-        cash: prev.cash - spec.cost,
+        cash: prev.cash - costNow,
         coolingUnits: [...(prev.coolingUnits ?? []), newUnit],
         currentCycleStats: {
           ...prev.currentCycleStats,
-          otherSpendUsd: prev.currentCycleStats.otherSpendUsd + spec.cost,
+          otherSpendUsd: prev.currentCycleStats.otherSpendUsd + costNow,
         },
         stats: {
           ...prev.stats,
-          totalCoolingSpendUsd: prev.stats.totalCoolingSpendUsd + spec.cost,
+          totalCoolingSpendUsd: prev.stats.totalCoolingSpendUsd + costNow,
         },
         transactions: [
-          makeTx(prev.stepCount, 'FACILITY', -spec.cost, `Installed ${spec.name}`),
+          makeTx(prev.stepCount, 'FACILITY', -costNow, `Installed ${spec.name}`),
           ...(prev.transactions ?? []),
         ].slice(0, 200),
       };
@@ -1681,6 +1926,20 @@ export default function App() {
         if (prev.cash < cost) return prev;
       }
 
+      const newRooms = getFacilityRooms({
+        facilityId,
+        facilityUpgrades: prev.facilityUpgrades,
+        facilityExtraRooms: 0,
+      });
+      const reallocatedRigs = prev.rigs.map((r, rIdx) => {
+        const rm = newRooms[rIdx % Math.max(1, newRooms.length)];
+        return { ...r, roomId: rm?.id ?? 'room_1' };
+      });
+      const reallocatedCoolers = (prev.coolingUnits ?? []).map((u, uIdx) => {
+        const rm = newRooms[uIdx % Math.max(1, newRooms.length)];
+        return { ...u, roomId: rm?.id ?? 'room_1' };
+      });
+
       soundFx.playMilestone();
       showBanner(
         action === 'BUY'
@@ -1692,7 +1951,10 @@ export default function App() {
         ...prev,
         cash: prev.cash - cost,
         facilityId,
+        facilityExtraRooms: 0,
         ownedFacilityIds: nextOwned,
+        rigs: reallocatedRigs,
+        coolingUnits: reallocatedCoolers,
         currentCycleStats: {
           ...prev.currentCycleStats,
           otherSpendUsd: prev.currentCycleStats.otherSpendUsd + cost,
@@ -1730,6 +1992,141 @@ export default function App() {
       };
     });
     return true;
+  };
+
+  const handleMoveRigToRoom = (
+    rigIdxOrAll: number | 'ALL',
+    roomNumber: number
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const rooms = getFacilityRooms(state);
+    const targetRoom = rooms[roomNumber - 1];
+    if (!targetRoom) {
+      return { ok: false, summary: `Room #${roomNumber} not found (1..${rooms.length}).` };
+    }
+    if (rigIdxOrAll === 'ALL') {
+      const totalFit = rooms.reduce((s, rm) => s + rm.slotCapacity, 0);
+      if (state.rigs.length > targetRoom.slotCapacity) {
+        return {
+          ok: false,
+          summary: `${targetRoom.name} holds max ${targetRoom.slotCapacity} rigs (you have ${state.rigs.length} total across ${totalFit} facility slots).`,
+        };
+      }
+      soundFx.playClick();
+      setState((prev) =>
+        prev ? { ...prev, rigs: prev.rigs.map((r) => ({ ...r, roomId: targetRoom.id })) } : prev
+      );
+      return { ok: true, summary: `Relocated all ${state.rigs.length} rig(s) into ${targetRoom.name}.` };
+    }
+    const targetRig = state.rigs[rigIdxOrAll];
+    if (!targetRig) return { ok: false, summary: `Rig #${rigIdxOrAll + 1} not found.` };
+    const occupants = state.rigs.filter((r, i) => i !== rigIdxOrAll && (r.roomId ?? rooms[0]?.id) === targetRoom.id).length;
+    if (occupants >= targetRoom.slotCapacity) {
+      return {
+        ok: false,
+        summary: `${targetRoom.name} is full (${occupants}/${targetRoom.slotCapacity} bays occupied).`,
+      };
+    }
+    soundFx.playClick();
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            rigs: prev.rigs.map((r, i) => (i === rigIdxOrAll ? { ...r, roomId: targetRoom.id } : r)),
+          }
+        : prev
+    );
+    return {
+      ok: true,
+      summary: `Moved ${targetRig.name} to Room #${targetRoom.index} (${targetRoom.name}).`,
+    };
+  };
+
+  const handleMoveCoolerToRoom = (
+    unitIdx: number,
+    roomNumber: number
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const rooms = getFacilityRooms(state);
+    const targetRoom = rooms[roomNumber - 1];
+    if (!targetRoom) {
+      return { ok: false, summary: `Room #${roomNumber} not found (1..${rooms.length}).` };
+    }
+    const unit = (state.coolingUnits ?? [])[unitIdx];
+    if (!unit) return { ok: false, summary: `Cooling unit #${unitIdx + 1} not found.` };
+    soundFx.playClick();
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            coolingUnits: (prev.coolingUnits ?? []).map((u, i) =>
+              i === unitIdx ? { ...u, roomId: targetRoom.id } : u
+            ),
+          }
+        : prev
+    );
+    const spec = ROOM_COOLING_UNITS.find((s) => s.id === unit.type);
+    return {
+      ok: true,
+      summary: `Placed cooling unit #${unitIdx + 1} (${spec?.name ?? unit.type}) inside ${targetRoom.name}.`,
+    };
+  };
+
+  const handleExpandFacilityRooms = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const fac = getFacility(state.facilityId);
+    const profile = FACILITY_PROFILES[fac.id] ?? FACILITY_PROFILES.fac_bedroom;
+    const currentExtra = state.facilityExtraRooms ?? 0;
+    if (currentExtra >= profile.maxExpansions) {
+      return {
+        ok: false,
+        summary: `${fac.name} already has maximum expansion wings (${currentExtra}/${profile.maxExpansions}).`,
+      };
+    }
+    const cost = getFacilityRoomExpansionCost(fac.id, currentExtra);
+    if (state.cash < cost) {
+      return { ok: false, summary: `Insufficient cash (need ${formatUsd(cost)}).` };
+    }
+    soundFx.playMilestone();
+    showBanner(`Built Expansion Wing #${currentExtra + 1} (+${profile.expansionSlots} cold-aisle slots).`);
+    setState((prev) => {
+      if (!prev) return prev;
+      const cur = prev.facilityExtraRooms ?? 0;
+      const c = getFacilityRoomExpansionCost(prev.facilityId, cur);
+      if (cur >= profile.maxExpansions || prev.cash < c) return prev;
+      return {
+        ...prev,
+        cash: prev.cash - c,
+        facilityExtraRooms: cur + 1,
+        currentCycleStats: {
+          ...prev.currentCycleStats,
+          otherSpendUsd: prev.currentCycleStats.otherSpendUsd + c,
+        },
+        stats: {
+          ...prev.stats,
+          totalFacilitySpendUsd: prev.stats.totalFacilitySpendUsd + c,
+        },
+        transactions: [
+          makeTx(prev.stepCount, 'FACILITY', -c, `Built ${fac.name} Expansion Wing #${cur + 1}`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
+        news: [
+          {
+            id: `news_exp_${Date.now()}`,
+            step: prev.stepCount,
+            stepLabel: formatStepLabel(prev.stepCount),
+            title: `Wing Constructed: ${fac.name}`,
+            detail: `Added Expansion Wing #${cur + 1} (+${profile.expansionSlots} cold-aisle slots, -2°C ambient).`,
+            category: 'FACILITY' as const,
+          },
+          ...prev.news,
+        ].slice(0, 60),
+      };
+    });
+    return {
+      ok: true,
+      summary: `Constructed Expansion Wing #${currentExtra + 1} (+${profile.expansionSlots} rig slots, -2°C ambient) for ${formatUsd(cost)}.`,
+    };
   };
 
   const handleBuyFacilityUpgrade = (
@@ -1975,6 +2372,95 @@ export default function App() {
           }
         : prev
     );
+  };
+
+  const handleGiveStaffBonus = (
+    empIdxOrAll: number | 'ALL'
+  ): { ok: boolean; summary: string } => {
+    if (!state || state.employees.length === 0) {
+      return { ok: false, summary: 'No employees hired.' };
+    }
+    const targets =
+      empIdxOrAll === 'ALL'
+        ? state.employees
+        : state.employees[empIdxOrAll]
+        ? [state.employees[empIdxOrAll]]
+        : [];
+    if (targets.length === 0) {
+      return { ok: false, summary: `Staff #${Number(empIdxOrAll) + 1} not found.` };
+    }
+    const cost = targets.reduce((s, e) => s + 150 * (e.skillLevel ?? 1), 0);
+    if (state.cash < cost) {
+      return { ok: false, summary: `Bonus requires ${formatUsd(cost)} cash.` };
+    }
+    const targetIds = new Set(targets.map((t) => t.id));
+    soundFx.playMilestone();
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            cash: prev.cash - cost,
+            currentCycleStats: {
+              ...prev.currentCycleStats,
+              otherSpendUsd: prev.currentCycleStats.otherSpendUsd + cost,
+            },
+            transactions: [
+              makeTx(prev.stepCount, 'STAFF', -cost, `Spot morale bonus (${targets.length} staff)`),
+              ...(prev.transactions ?? []),
+            ].slice(0, 200),
+            employees: prev.employees.map((e) =>
+              targetIds.has(e.id)
+                ? { ...e, morale: Math.min(100, Number(((e.morale ?? 80) + 18).toFixed(1))) }
+                : e
+            ),
+          }
+        : prev
+    );
+    return {
+      ok: true,
+      summary: `Paid ${formatUsd(cost)} spot bonus (+18 morale to ${targets.length} staff).`,
+    };
+  };
+
+  const handleNegotiateStrike = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    if ((state.strikeStepsRemaining ?? 0) <= 0) {
+      return { ok: false, summary: 'No labor strike is currently active.' };
+    }
+    const count = Math.max(1, state.employees.length);
+    const mgrSkill = state.employees
+      .filter((e) => e.role === 'MANAGER')
+      .reduce((m, e) => Math.max(m, e.skillLevel ?? 1), 0);
+    const cost = Math.round(Math.max(350, count * 220) * Math.max(0.65, 1 - mgrSkill * 0.07));
+    if (state.cash < cost) {
+      return { ok: false, summary: `Strike settlement requires ${formatUsd(cost)}.` };
+    }
+    soundFx.playMilestone();
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            cash: prev.cash - cost,
+            strikeStepsRemaining: 0,
+            currentCycleStats: {
+              ...prev.currentCycleStats,
+              otherSpendUsd: prev.currentCycleStats.otherSpendUsd + cost,
+            },
+            transactions: [
+              makeTx(prev.stepCount, 'STAFF', -cost, 'Labor strike settlement package'),
+              ...(prev.transactions ?? []),
+            ].slice(0, 200),
+            employees: prev.employees.map((e) => ({
+              ...e,
+              morale: Math.min(100, Number(((e.morale ?? 50) + 28).toFixed(1))),
+            })),
+          }
+        : prev
+    );
+    return {
+      ok: true,
+      summary: `Settled labor strike for ${formatUsd(cost)} (+28 morale, crew back to work).`,
+    };
   };
 
   const handleStartResearch = (nodeId: string): boolean => {
@@ -2418,28 +2904,43 @@ export default function App() {
       if (state.rigs.length >= maxRigs) {
         return { ok: false, summary: `Facility full (${maxRigs} max rigs).` };
       }
+      const isLemon = Math.random() < (item.defectRiskPct ?? 22) / 100;
+      const traceHeat = Math.random() < 0.16 ? 4 : 0;
+      const baseComp = createInitialComponentHealth(
+        item.presetConfig.gpuIds.length,
+        isLemon ? 74 : 96
+      );
+      if (isLemon) {
+        baseComp.psu = 38;
+        if (baseComp.gpus.length > 0) baseComp.gpus[0] = 44;
+        else baseComp.compute = 44;
+      }
+      const avgHp = computeAverageRigHealth(baseComp);
       soundFx.playAlert();
       setState((prev) => {
         if (!prev) return prev;
         const f = getFacility(prev.facilityId);
         const slot = findOpenGridSlot(f, prev.rigs, prev.coolingUnits ?? []);
+        const openRoomId = findOpenRoomId(getFacilityRooms(prev), prev.rigs) ?? 'room_1';
         const newRig: MiningRig = {
           ...item.presetConfig!,
           name: `Smuggled Rig #${prev.rigs.length + 1}`,
           id: `rig_bm_${Date.now()}`,
           poolMode: 'PPS',
           firmwareProfile: 'BALANCED',
-          pasteStepsRemaining: 12,
+          pasteStepsRemaining: isLemon ? 4 : 12,
           soloBlocksWon: 0,
           lastStepBlockHit: false,
           illicitMod: null,
           enabled: true,
           gridX: slot.gridX,
           gridY: slot.gridY,
+          roomId: openRoomId,
           temperatureC: f.ambientTempC + 24,
-          healthPct: 96,
-          conditionTier: 'USED',
-          ageSteps: 20,
+          healthPct: avgHp,
+          componentHealth: baseComp,
+          conditionTier: isLemon ? 'DAMAGED' : 'USED',
+          ageSteps: isLemon ? 45 : 20,
           failureCount: 0,
           purchasePriceUsd: item.costUsd,
           status: 'MINING',
@@ -2452,7 +2953,7 @@ export default function App() {
         return {
           ...prev,
           cash: prev.cash - item.costUsd,
-          regulatoryScrutiny: Math.min(100, prev.regulatoryScrutiny + item.heatGain),
+          regulatoryScrutiny: Math.min(100, prev.regulatoryScrutiny + item.heatGain + traceHeat),
           rigs: [...prev.rigs, newRig],
           underground: {
             ...prev.underground,
@@ -2472,9 +2973,15 @@ export default function App() {
           },
         };
       });
+      const lemonNote = isLemon
+        ? ' WARNING: Contraband arrived with a degraded PSU/compute rail (inspect & repair!).'
+        : '';
+      const traceNote = traceHeat > 0 ? ' (+4 serialized audit Heat)' : '';
       return {
         ok: true,
-        summary: `Acquired ${item.title} for ${formatUsd(item.costUsd)} (+${item.heatGain} Heat).`,
+        summary: `Acquired ${item.title} for ${formatUsd(item.costUsd)} (+${
+          item.heatGain + traceHeat
+        } Heat${traceNote}).${lemonNote}`,
       };
     }
 
@@ -2809,13 +3316,16 @@ export default function App() {
     BILLING_CYCLE_STEPS - (state.stepCount % BILLING_CYCLE_STEPS || BILLING_CYCLE_STEPS);
   const regimeSpec = MARKET_REGIME_SPECS[state.marketRegime];
 
+  const unlockedSystems = getUnlockedSystems(state);
   const navCommands: { label: string; cmd: string }[] = [
     { label: 'Status', cmd: 'status' },
     { label: 'Rigs', cmd: 'rigs' },
+    { label: 'Objectives', cmd: 'objectives' },
+    { label: 'Codex', cmd: 'codex' },
     { label: 'Used Market', cmd: 'usedmarket' },
     { label: 'Power', cmd: 'power' },
     { label: 'Market', cmd: 'market' },
-    { label: 'Contracts', cmd: 'contracts' },
+    ...(unlockedSystems.contracts ? [{ label: 'Contracts', cmd: 'contracts' }] : []),
     { label: 'Stats', cmd: 'stats' },
   ];
 
@@ -3085,10 +3595,15 @@ export default function App() {
                 onSelectFacility={handleSelectFacility}
                 onBuyFacilityUpgrade={handleBuyFacilityUpgrade}
                 onSelectPowerContract={handleSelectPowerContract}
+                onMoveRigToRoom={handleMoveRigToRoom}
+                onMoveCoolerToRoom={handleMoveCoolerToRoom}
+                onExpandFacilityRooms={handleExpandFacilityRooms}
                 onHireEmployee={handleHireEmployee}
                 onTrainEmployee={handleTrainEmployee}
                 onFireEmployee={handleFireEmployee}
                 onUpdateEmployee={handleUpdateEmployee}
+                onBonusStaff={handleGiveStaffBonus}
+                onNegotiateStrike={handleNegotiateStrike}
                 onStartResearch={handleStartResearch}
                 onStartChallenge={handleStartChallenge}
                 onLaunchCampaign={handleLaunchCampaign}
@@ -3098,9 +3613,137 @@ export default function App() {
                 onRentBotnet={handleRentBotnet}
                 onWashTrade={handleWashTrade}
                 onSabotageRival={handleSabotageRival}
+                onInvestigateRival={(rivalIdx) => {
+                  if (!state) return { ok: false, summary: 'No active game.' };
+                  const res = investigateRivalSyndicate(state, rivalIdx);
+                  if (res.ok) {
+                    soundFx.playMilestone();
+                    setState((prev) =>
+                      prev
+                        ? {
+                            ...investigateRivalSyndicate(prev, rivalIdx).nextState,
+                            transactions: [
+                              makeTx(prev.stepCount, 'EVENT', -res.cost, `Corporate recon vs ${state.rivals[rivalIdx]?.name ?? 'Rival'}`),
+                              ...(prev.transactions ?? []),
+                            ].slice(0, 200),
+                          }
+                        : prev
+                    );
+                  }
+                  return { ok: res.ok, summary: res.summary };
+                }}
+                onCloneRig={(rigIdx, qty) => {
+                  if (!state) return { ok: false, summary: 'No active game.' };
+                  const src = state.rigs[rigIdx];
+                  if (!src) return { ok: false, summary: `Rig #${rigIdx + 1} not found.` };
+                  const count = Math.max(1, Math.min(12, qty));
+                  const maxRigs = getEffectiveFacilityMaxRigs(state);
+                  if (state.rigs.length + count > maxRigs) {
+                    return {
+                      ok: false,
+                      summary: `Not enough bay slots (${state.rigs.length + count}/${maxRigs} max rigs).`,
+                    };
+                  }
+                  const baseUnitCost = calculateRigBuildCost(src, state);
+                  const hasBulkRd = state.unlockedResearch.includes('res_bulk_procurement');
+                  const discPct =
+                    hasBulkRd && count >= 2 ? 0.1 : count >= 3 ? 0.05 : 0;
+                  const unitCost = Math.round(baseUnitCost * (1 - discPct));
+                  const totalCost = unitCost * count;
+                  if (state.cash < totalCost) {
+                    return {
+                      ok: false,
+                      summary: `Cloning ${count}x ${src.name} costs ${formatUsd(totalCost)} (${formatUsd(unitCost)}/ea).`,
+                    };
+                  }
+                  soundFx.playCash();
+                  setState((prev) => {
+                    if (!prev) return prev;
+                    const f = getFacility(prev.facilityId);
+                    let curRigs = [...prev.rigs];
+                    for (let i = 0; i < count; i++) {
+                      const slot = findOpenGridSlot(f, curRigs, prev.coolingUnits ?? []);
+                      const roomId = findOpenRoomId(getFacilityRooms(prev), curRigs) ?? 'room_1';
+                      curRigs.push({
+                        chassisId: src.chassisId,
+                        computeId: src.computeId,
+                        gpuIds: [...src.gpuIds],
+                        storageId: src.storageId,
+                        psuId: src.psuId,
+                        coolingId: src.coolingId,
+                        osId: src.osId,
+                        targetCoin: src.targetCoin,
+                        overclockPct: src.overclockPct,
+                        name: `${src.name.split('#')[0].trim()} #${curRigs.length + 1}`,
+                        id: `rig_clone_${Date.now()}_${i}`,
+                        poolMode: src.poolMode,
+                        payoutMode: src.payoutMode ?? 'AUTOSELL',
+                        firmwareProfile: src.firmwareProfile,
+                        pasteStepsRemaining: 12,
+                        soloBlocksWon: 0,
+                        lastStepBlockHit: false,
+                        illicitMod: null,
+                        enabled: true,
+                        gridX: slot.gridX,
+                        gridY: slot.gridY,
+                        roomId,
+                        temperatureC: f.ambientTempC + 20,
+                        healthPct: 100,
+                        componentHealth: createInitialComponentHealth(src.gpuIds.length, 100),
+                        conditionTier: 'NEW',
+                        ageSteps: 0,
+                        failureCount: 0,
+                        purchasePriceUsd: unitCost,
+                        status: 'MINING',
+                        lastStepCoins: 0,
+                        lastStepUsd: 0,
+                        totalMinedCoins: 0,
+                        totalEarnedUsd: 0,
+                        createdStep: prev.stepCount,
+                      });
+                    }
+                    return {
+                      ...prev,
+                      cash: prev.cash - totalCost,
+                      rigs: curRigs,
+                      currentCycleStats: {
+                        ...prev.currentCycleStats,
+                        otherSpendUsd: prev.currentCycleStats.otherSpendUsd + totalCost,
+                      },
+                      stats: {
+                        ...prev.stats,
+                        rigPurchasesCount: prev.stats.rigPurchasesCount + count,
+                        totalHardwareSpendUsd: prev.stats.totalHardwareSpendUsd + totalCost,
+                        usedOnlyEligible: false,
+                      },
+                      transactions: [
+                        makeTx(prev.stepCount, 'HARDWARE', -totalCost, `Bulk cloned ${count}x ${src.name}`),
+                        ...(prev.transactions ?? []),
+                      ].slice(0, 200),
+                    };
+                  });
+                  return {
+                    ok: true,
+                    summary: `Deployed ${count}x cloned ${src.name} rigs for ${formatUsd(totalCost)}${
+                      discPct > 0 ? ` (-${Math.round(discPct * 100)}% bulk discount)` : ''
+                    }.`,
+                  };
+                }}
                 onLaunderHeat={handleLaunderHeat}
                 onBribeInspectors={handleBribeInspectors}
                 onBuyBlackMarket={handleBuyBlackMarket}
+                onSetRigPayout={handleSetRigPayout}
+                onExchangeBuy={handleExchangeBuy}
+                onExchangeSell={handleExchangeSell}
+                onPlaceLimitOrder={handlePlaceLimitOrder}
+                onCancelLimitOrder={handleCancelLimitOrder}
+                onOpenShort={handleOpenShort}
+                onCloseShort={handleCloseShort}
+                onBuildFabLine={handleBuildFabLine}
+                onDesignCustomChip={handleDesignCustomChip}
+                onQueueFabProduction={handleQueueFabProduction}
+                onDeployCustomAsic={handleDeployCustomAsic}
+                onSellCustomAsic={handleSellCustomAsic}
                 onBackupSave={() => handleBackupSave()}
                 onRestoreBackup={() => handleRestoreBackup(Boolean(state.isSandbox))}
                 onExportSave={() => handleExportSave(Boolean(state.isSandbox))}
@@ -3120,6 +3763,9 @@ export default function App() {
                 onDevSetHeat={handleDevSetHeat}
                 onDevRefreshBlackMarket={handleDevRefreshBlackMarket}
                 onSetTutorialStep={handleSetTutorialStep}
+                onMarkTutorialSeen={handleMarkTutorialSeen}
+                onSetOnboardingMode={handleSetOnboardingMode}
+                onClaimObjectives={handleClaimObjectives}
                 userPaused={userPaused}
                 autoPauseReason={autoPauseReason}
                 autoCountdown={autoCountdown}

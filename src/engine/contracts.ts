@@ -43,7 +43,7 @@ export function generateContractBoard(
     const duration = 8 + Math.floor(rng() * 9); // 8-16 steps
     const coin = unlockedCoins[Math.floor(rng() * unlockedCoins.length)] ?? 'BTC';
 
-    if (roll < 0.24) {
+    if (roll < 0.2) {
       const targetAmount = Math.round(baseStepRev * duration * (1.1 + rng() * 0.35));
       const rewardCash = Math.round(targetAmount * (0.38 + rng() * 0.14) * slaBonusMult);
       const rewardRp = Math.round(8 + duration * 1.4);
@@ -64,7 +64,7 @@ export function generateContractBoard(
         penaltyCash: Math.round(rewardCash * 0.15),
         description: `Generate ${formatUsd(targetAmount)} in ${coin} mining payouts within ${duration} steps.`,
       });
-    } else if (roll < 0.44) {
+    } else if (roll < 0.36) {
       const targetAmount = Math.round(baseStepRev * duration * (1.2 + rng() * 0.3));
       const rewardCash = Math.round(targetAmount * (0.35 + rng() * 0.14) * slaBonusMult);
       const rewardRp = Math.round(10 + duration * 1.6);
@@ -84,7 +84,7 @@ export function generateContractBoard(
         penaltyCash: Math.round(rewardCash * 0.18),
         description: `Deliver ${formatUsd(targetAmount)} total fleet hash output over ${duration} steps.`,
       });
-    } else if (roll < 0.58) {
+    } else if (roll < 0.48) {
       const quietSteps = 6 + Math.floor(rng() * 5);
       const rewardCash = Math.round((baseStepRev * quietSteps * 0.65 + 320) * slaBonusMult);
       const rewardRp = Math.round(10 + quietSteps * 1.5);
@@ -104,7 +104,7 @@ export function generateContractBoard(
         penaltyCash: Math.round(rewardCash * 0.12),
         description: `Hold peak noise >= 4 dBA under limit for ${quietSteps} steps.`,
       });
-    } else if (roll < 0.72) {
+    } else if (roll < 0.6) {
       const slaSteps = 8 + Math.floor(rng() * 5);
       const targetCond = rep >= 50 ? 90 : 84;
       const rewardCash = Math.round((baseStepRev * slaSteps * 0.55 + 480) * slaBonusMult);
@@ -126,7 +126,47 @@ export function generateContractBoard(
         penaltyCash: Math.round(rewardCash * 0.2),
         description: `Maintain average rig condition >= ${targetCond}% with active mining for ${slaSteps} steps.`,
       });
-    } else if (roll < 0.85) {
+    } else if (roll < 0.72) {
+      const streakSteps = 6 + Math.floor(rng() * 4);
+      const rewardCash = Math.round((baseStepRev * streakSteps * 0.62 + 520) * slaBonusMult);
+      const rewardRp = Math.round(14 + streakSteps * 1.5);
+      list.push({
+        id: `ctr_${state.stepCount}_${i}_${Math.random().toString(36).slice(2, 5)}`,
+        title: `Zero-Fault Uptime Streak (${streakSteps}st)`,
+        clientName,
+        type: 'UPTIME_STREAK',
+        targetAmount: streakSteps,
+        minReputation: 18,
+        progress: 0,
+        durationSteps: streakSteps + 4,
+        stepsRemaining: streakSteps + 4,
+        rewardCash,
+        rewardRp,
+        penaltyCredibility: 6,
+        penaltyCash: Math.round(rewardCash * 0.18),
+        description: `Run ${streakSteps} consecutive steps with zero overheats, breaker trips, or rig failures.`,
+      });
+    } else if (roll < 0.82) {
+      const effSteps = 7 + Math.floor(rng() * 4);
+      const rewardCash = Math.round((baseStepRev * effSteps * 0.52 + 440) * slaBonusMult);
+      const rewardRp = Math.round(14 + effSteps * 1.4);
+      list.push({
+        id: `ctr_${state.stepCount}_${i}_${Math.random().toString(36).slice(2, 5)}`,
+        title: 'Green Grid Efficiency Mandate',
+        clientName,
+        type: 'EFFICIENCY_CAP',
+        targetAmount: effSteps,
+        minReputation: 12,
+        progress: 0,
+        durationSteps: effSteps + 3,
+        stepsRemaining: effSteps + 3,
+        rewardCash,
+        rewardRp,
+        penaltyCredibility: 4,
+        penaltyCash: Math.round(rewardCash * 0.14),
+        description: `Mine actively under 85% breaker utilization for ${effSteps} steps.`,
+      });
+    } else if (roll < 0.9) {
       const rpTarget = Math.round(20 + facIdx * 18 + rng() * 20);
       const rewardCash = Math.round((750 + rpTarget * 42) * slaBonusMult);
       const rewardRp = Math.round(rpTarget * 0.45);

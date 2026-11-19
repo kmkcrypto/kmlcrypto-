@@ -1,7 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
+  Activity,
   AlertTriangle,
   Bell,
+  ChevronDown,
+  ChevronRight,
   Flame,
   Lock,
   ShieldAlert,
@@ -10,7 +13,10 @@ import {
   Zap,
 } from 'lucide-react';
 import { MARKET_REGIME_SPECS } from '../data/catalog';
+import { evaluateEarlyObjectives, getEffectiveOnboardingMode } from '../data/onboarding';
 import {
+  computeCompanyValuation,
+  computeWorkloadSummary,
   getEffectiveFacilityPowerCapKw,
   getFacility,
   getFacilityTotals,
@@ -47,11 +53,18 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
   state,
   onRunCommand,
 }) => {
+  const [marketOpen, setMarketOpen] = useState(true);
+  const [alertsOpen, setAlertsOpen] = useState(true);
+  const [opsOpen, setOpsOpen] = useState(false);
+
   const coins = (Object.keys(state.coins) as CoinSymbol[]).map((sym) => state.coins[sym]);
   const regimeSpec = MARKET_REGIME_SPECS[state.marketRegime];
   const facility = getFacility(state.facilityId);
   const totals = getFacilityTotals(state);
   const effectiveCap = getEffectiveFacilityPowerCapKw(state);
+  const btc = state.coins.BTC;
+  const btcDelta =
+    btc && btc.prevPriceUsd > 0 ? ((btc.priceUsd - btc.prevPriceUsd) / btc.prevPriceUsd) * 100 : 0;
 
   const liveAlerts: LiveAlertItem[] = [];
 
@@ -172,6 +185,27 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
     });
   }
 
+  const workload = computeWorkloadSummary(state);
+  if (workload.strikeActive) {
+    liveAlerts.push({
+      id: 'alert_staff_strike',
+      severity: 'CRIT',
+      tag: 'STRIKE',
+      message: `Crew labor strike (${workload.strikeStepsRemaining}st left): -35% mining output, 0% crew bonuses.`,
+      actionLabel: 'Staff',
+      actionCmd: 'staff negotiate',
+    });
+  } else if (state.employees.length > 0 && (workload.lowMoraleCount > 0 || workload.workloadPct > 130)) {
+    liveAlerts.push({
+      id: 'alert_staff_morale',
+      severity: 'WARN',
+      tag: 'STAFF',
+      message: `Workload ${workload.workloadPct}% · Avg Morale ${workload.avgMorale}% (${workload.lowMoraleCount} low-morale).`,
+      actionLabel: 'Staff',
+      actionCmd: 'staff',
+    });
+  }
+
   for (const mod of state.activeMarketModifiers ?? []) {
     liveAlerts.push({
       id: `alert_mod_${mod.id}`,
@@ -190,29 +224,59 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
   const criticalCount = liveAlerts.filter((a) => a.severity === 'CRIT').length;
   const warnCount = liveAlerts.filter((a) => a.severity === 'WARN').length;
 
+  const latestSnap =
+    state.performanceHistory && state.performanceHistory.length > 0
+      ? state.performanceHistory[state.performanceHistory.length - 1]
+      : null;
+  const valuation = computeCompanyValuation(state);
+  const nextObjective =
+    getEffectiveOnboardingMode(state) === 'GUIDED'
+      ? evaluateEarlyObjectives(state).find((o) => !o.completed)
+      : undefined;
+  const stepsToBill = 30 - (state.stepCount % 30);
+
   return (
     <aside className="w-full lg:w-[375px] xl:w-[410px] shrink-0 flex flex-col gap-3 lg:h-[calc(100vh-158px)] lg:min-h-[540px]">
       {/* Panel 1: Crypto Market */}
-      <section className="relative bg-[#030A05]/84 backdrop-blur-[2px] border border-green-500/35 rounded-xl overflow-hidden shadow-[0_0_35px_rgba(34,197,94,0.1)] flex flex-col">
+      <section className="relative bg-[#030A05]/84 backdrop-blur-[2px] border border-green-500/35 rounded-xl overflow-hidden shadow-[0_0_35px_rgba(34,197,94,0.1)] flex flex-col shrink-0">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 matrix-scanlines opacity-75"
         />
 
         <div className="relative z-10 px-4 py-2.5 bg-[#041108]/92 border-b border-green-500/25 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
+          <button
+            type="button"
+            onClick={() => setMarketOpen((v) => !v)}
+            title={marketOpen ? 'Collapse Crypto Market panel' : 'Expand Crypto Market panel'}
+            className="flex items-center gap-1.5 min-w-0 text-left hover:text-green-200 transition-colors"
+          >
+            {marketOpen ? (
+              <ChevronDown className="w-3.5 h-3.5 text-green-400 shrink-0" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-green-400 shrink-0" />
+            )}
             <TrendingUp className="w-3.5 h-3.5 text-green-400 shrink-0" />
             <h2 className="font-mono text-xs font-bold tracking-wider text-green-300 matrix-glow whitespace-nowrap">
               CRYPTO MARKET
             </h2>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-[10px] text-green-400/80 truncate">
-              {regimeSpec.label}
-            </span>
+          </button>
+          <div className="flex items-center gap-2 min-w-0">
+            {!marketOpen && btc && (
+              <span className="font-mono text-[10px] text-green-300/85 tabular-nums truncate">
+                BTC {formatUsd(btc.priceUsd)} ({btcDelta >= 0 ? '+' : ''}
+                {btcDelta.toFixed(1)}%)
+              </span>
+            )}
+            {marketOpen && (
+              <span className="font-mono text-[10px] text-green-400/80 truncate" title={regimeSpec.summary}>
+                {regimeSpec.label}
+              </span>
+            )}
             <button
               type="button"
               onClick={() => onRunCommand('market')}
+              title="Open full market table & trends in terminal"
               className="px-2 py-0.5 rounded bg-[#020804] hover:bg-green-950 border border-green-500/30 font-mono text-[10px] text-green-300 transition-colors whitespace-nowrap"
             >
               market
@@ -220,116 +284,221 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
           </div>
         </div>
 
-        <div className="relative z-10 p-3 overflow-x-auto">
-          <table className="w-full font-mono text-[11px] border-collapse">
-            <thead>
-              <tr className="text-[10px] uppercase tracking-wider text-green-400/65 border-b border-green-500/20">
-                <th className="text-left font-medium pb-1.5 pr-2">Coin</th>
-                <th className="text-right font-medium pb-1.5 px-1.5">Price</th>
-                <th className="text-right font-medium pb-1.5 px-1.5">1-Step</th>
-                <th className="text-right font-medium pb-1.5 pl-1.5">7-Step</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-green-500/10">
-              {coins.map((coin) => {
-                const stepPct =
-                  coin.prevPriceUsd > 0
-                    ? ((coin.priceUsd - coin.prevPriceUsd) / coin.prevPriceUsd) * 100
-                    : 0;
-                const hist = coin.priceHistory ?? [];
-                const ref7Price =
-                  hist.length > 0
-                    ? hist[Math.max(0, hist.length - 8)].price
-                    : coin.basePriceUsd;
-                const sevenStepPct =
-                  ref7Price > 0 ? ((coin.priceUsd - ref7Price) / ref7Price) * 100 : 0;
+        {marketOpen && (
+          <div className="relative z-10 p-3 overflow-x-auto">
+            <table className="w-full font-mono text-[11px] border-collapse">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wider text-green-400/65 border-b border-green-500/20">
+                  <th className="text-left font-medium pb-1.5 pr-2">Coin</th>
+                  <th className="text-right font-medium pb-1.5 px-1.5">Price</th>
+                  <th className="text-right font-medium pb-1.5 px-1.5">1-Step</th>
+                  <th className="text-right font-medium pb-1.5 pl-1.5">7-Step</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-green-500/10">
+                {coins.map((coin) => {
+                  const stepPct =
+                    coin.prevPriceUsd > 0
+                      ? ((coin.priceUsd - coin.prevPriceUsd) / coin.prevPriceUsd) * 100
+                      : 0;
+                  const hist = coin.priceHistory ?? [];
+                  const ref7Price =
+                    hist.length > 0
+                      ? hist[Math.max(0, hist.length - 8)].price
+                      : coin.basePriceUsd;
+                  const sevenStepPct =
+                    ref7Price > 0 ? ((coin.priceUsd - ref7Price) / ref7Price) * 100 : 0;
 
-                const d1 = formatPctDelta(stepPct);
-                const d7 = formatPctDelta(sevenStepPct);
+                  const d1 = formatPctDelta(stepPct);
+                  const d7 = formatPctDelta(sevenStepPct);
 
-                return (
-                  <tr
-                    key={coin.symbol}
-                    onClick={() =>
-                      onRunCommand(coin.unlocked ? `chart ${coin.symbol}` : 'market')
-                    }
-                    title={
-                      coin.unlocked
-                        ? `Click to view ${coin.name} (${coin.symbol}) chart`
-                        : `${coin.name} (${coin.symbol}) locked — click for market info`
-                    }
-                    className={`cursor-pointer transition-colors hover:bg-green-500/10 ${
-                      coin.unlocked ? 'text-green-100' : 'text-green-200/45'
-                    }`}
-                  >
-                    <td className="py-2 pr-2">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className="w-1.5 h-1.5 rounded-full shrink-0"
-                          style={{ backgroundColor: coin.color }}
-                        />
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1 font-semibold leading-tight">
-                            <span className="truncate">{coin.name}</span>
-                            {!coin.unlocked && (
-                              <Lock className="w-2.5 h-2.5 text-green-500/50 shrink-0" />
-                            )}
-                          </div>
-                          <div className="text-[10px] text-green-400/75 leading-tight">
-                            {coin.symbol}
+                  return (
+                    <tr
+                      key={coin.symbol}
+                      onClick={() =>
+                        onRunCommand(coin.unlocked ? `chart ${coin.symbol}` : 'market')
+                      }
+                      title={
+                        coin.unlocked
+                          ? `Click to view ${coin.name} (${coin.symbol}) ASCII spot chart`
+                          : `${coin.name} (${coin.symbol}) locked — click for market info`
+                      }
+                      className={`cursor-pointer transition-colors hover:bg-green-500/10 ${
+                        coin.unlocked ? 'text-green-100' : 'text-green-200/45'
+                      }`}
+                    >
+                      <td className="py-2 pr-2">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className="w-1.5 h-1.5 rounded-full shrink-0"
+                            style={{ backgroundColor: coin.color }}
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1 font-semibold leading-tight">
+                              <span className="truncate">{coin.name}</span>
+                              {!coin.unlocked && (
+                                <Lock className="w-2.5 h-2.5 text-green-500/50 shrink-0" />
+                              )}
+                            </div>
+                            <div className="text-[10px] text-green-400/75 leading-tight">
+                              {coin.symbol}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </td>
+                      </td>
 
-                    <td className="py-2 px-1.5 text-right tabular-nums font-semibold whitespace-nowrap">
-                      {formatUsd(coin.priceUsd)}
-                    </td>
+                      <td className="py-2 px-1.5 text-right tabular-nums font-semibold whitespace-nowrap">
+                        {formatUsd(coin.priceUsd)}
+                      </td>
 
-                    <td
-                      className={`py-2 px-1.5 text-right tabular-nums whitespace-nowrap font-medium ${
-                        d1.tone === 'up'
-                          ? 'text-emerald-300'
-                          : d1.tone === 'down'
-                          ? 'text-rose-400'
-                          : 'text-green-500/60'
-                      }`}
-                    >
-                      <span className="inline-flex items-center justify-end gap-0.5">
-                        {d1.tone === 'up' && <TrendingUp className="w-2.5 h-2.5" />}
-                        {d1.tone === 'down' && <TrendingDown className="w-2.5 h-2.5" />}
-                        <span>{d1.text}</span>
-                      </span>
-                    </td>
+                      <td
+                        className={`py-2 px-1.5 text-right tabular-nums whitespace-nowrap font-medium ${
+                          d1.tone === 'up'
+                            ? 'text-emerald-300'
+                            : d1.tone === 'down'
+                            ? 'text-rose-400'
+                            : 'text-green-500/60'
+                        }`}
+                      >
+                        <span className="inline-flex items-center justify-end gap-0.5">
+                          {d1.tone === 'up' && <TrendingUp className="w-2.5 h-2.5" />}
+                          {d1.tone === 'down' && <TrendingDown className="w-2.5 h-2.5" />}
+                          <span>{d1.text}</span>
+                        </span>
+                      </td>
 
-                    <td
-                      className={`py-2 pl-1.5 text-right tabular-nums whitespace-nowrap font-medium ${
-                        d7.tone === 'up'
-                          ? 'text-emerald-300'
-                          : d7.tone === 'down'
-                          ? 'text-rose-400'
-                          : 'text-green-500/60'
-                      }`}
-                    >
-                      {d7.text}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      <td
+                        className={`py-2 pl-1.5 text-right tabular-nums whitespace-nowrap font-medium ${
+                          d7.tone === 'up'
+                            ? 'text-emerald-300'
+                            : d7.tone === 'down'
+                            ? 'text-rose-400'
+                            : 'text-green-500/60'
+                        }`}
+                      >
+                        {d7.text}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
-      {/* Panel 2: System Alerts */}
-      <section className="relative bg-[#030A05]/84 backdrop-blur-[2px] border border-green-500/35 rounded-xl overflow-hidden shadow-[0_0_35px_rgba(34,197,94,0.1)] flex-1 min-h-[220px] flex flex-col">
+      {/* Panel 2: Collapsible Ops & Finance Snapshot */}
+      <section className="relative bg-[#030A05]/84 backdrop-blur-[2px] border border-green-500/35 rounded-xl overflow-hidden shadow-[0_0_25px_rgba(34,197,94,0.08)] flex flex-col shrink-0">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 matrix-scanlines opacity-75"
+        />
+        <div className="relative z-10 px-4 py-2 bg-[#041108]/92 border-b border-green-500/20 flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => setOpsOpen((v) => !v)}
+            title={opsOpen ? 'Collapse Operations Snapshot' : 'Expand Operations Snapshot & Trend shortcuts'}
+            className="flex items-center gap-1.5 min-w-0 text-left hover:text-green-200 transition-colors"
+          >
+            {opsOpen ? (
+              <ChevronDown className="w-3.5 h-3.5 text-green-400 shrink-0" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-green-400 shrink-0" />
+            )}
+            <Activity className="w-3.5 h-3.5 text-green-400 shrink-0" />
+            <h2 className="font-mono text-xs font-bold tracking-wider text-green-300 matrix-glow whitespace-nowrap">
+              OPS TELEMETRY
+            </h2>
+          </button>
+          <div className="flex items-center gap-2 font-mono text-[10px]">
+            <span className="text-green-400/80 tabular-nums">
+              {latestSnap
+                ? `Net ${latestSnap.netPerStepUsd >= 0 ? '+' : ''}${formatUsd(latestSnap.netPerStepUsd)}/st`
+                : `Bill ${stepsToBill}st`}
+            </span>
+            <button
+              type="button"
+              onClick={() => onRunCommand('chart portfolio')}
+              title="Plot ASCII portfolio net profit & valuation chart"
+              className="px-2 py-0.5 rounded bg-[#020804] hover:bg-green-950 border border-green-500/30 font-mono text-[10px] text-green-300 transition-colors whitespace-nowrap"
+            >
+              charts
+            </button>
+          </div>
+        </div>
+
+        {opsOpen && (
+          <div className="relative z-10 p-3 font-mono text-[11px] space-y-2 text-green-200/90">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="px-2.5 py-1.5 rounded bg-[#020704]/90 border border-green-500/20">
+                <div className="text-[9px] uppercase text-green-400/65">Valuation</div>
+                <div className="font-bold text-green-300 tabular-nums">{formatUsd(valuation)}</div>
+              </div>
+              <div className="px-2.5 py-1.5 rounded bg-[#020704]/90 border border-green-500/20">
+                <div className="text-[9px] uppercase text-green-400/65">Cycle Bill Due</div>
+                <div className="font-bold text-green-200 tabular-nums">{stepsToBill} step(s)</div>
+              </div>
+            </div>
+            {nextObjective && (
+              <button
+                type="button"
+                onClick={() => onRunCommand('objectives')}
+                className="w-full text-left px-2.5 py-1.5 rounded bg-emerald-500/10 hover:bg-emerald-500/15 border border-emerald-500/30 transition-colors"
+              >
+                <div className="text-[9px] uppercase text-emerald-300/80">Next Objective</div>
+                <div className="text-[11px] text-emerald-200 truncate">{nextObjective.title}</div>
+              </button>
+            )}
+            <div className="flex flex-wrap gap-1.5 pt-0.5">
+              <button
+                type="button"
+                onClick={() => onRunCommand('chart cash')}
+                className="px-2 py-0.5 rounded bg-[#020804] hover:bg-green-950 border border-green-500/25 text-[10px] text-green-300"
+              >
+                cash chart
+              </button>
+              <button
+                type="button"
+                onClick={() => onRunCommand('chart profit')}
+                className="px-2 py-0.5 rounded bg-[#020804] hover:bg-green-950 border border-green-500/25 text-[10px] text-green-300"
+              >
+                profit chart
+              </button>
+              <button
+                type="button"
+                onClick={() => onRunCommand('stats')}
+                className="px-2 py-0.5 rounded bg-[#020804] hover:bg-green-950 border border-green-500/25 text-[10px] text-green-300"
+              >
+                stats
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Panel 3: System Alerts */}
+      <section
+        className={`relative bg-[#030A05]/84 backdrop-blur-[2px] border border-green-500/35 rounded-xl overflow-hidden shadow-[0_0_35px_rgba(34,197,94,0.1)] flex flex-col ${
+          alertsOpen ? 'flex-1 min-h-[200px]' : 'shrink-0'
+        }`}
+      >
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 matrix-scanlines opacity-75"
         />
 
         <div className="relative z-10 px-4 py-2.5 bg-[#041108]/92 border-b border-green-500/25 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setAlertsOpen((v) => !v)}
+            title={alertsOpen ? 'Collapse System Alerts panel' : 'Expand System Alerts panel'}
+            className="flex items-center gap-1.5 text-left hover:text-green-200 transition-colors"
+          >
+            {alertsOpen ? (
+              <ChevronDown className="w-3.5 h-3.5 text-green-400 shrink-0" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-green-400 shrink-0" />
+            )}
             {criticalCount > 0 ? (
               <ShieldAlert className="w-3.5 h-3.5 text-rose-400 shrink-0" />
             ) : warnCount > 0 ? (
@@ -340,7 +509,7 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
             <h2 className="font-mono text-xs font-bold tracking-wider text-green-300 matrix-glow">
               ALERTS
             </h2>
-          </div>
+          </button>
 
           <span
             className={`font-mono text-[10px] font-semibold tabular-nums ${
@@ -357,87 +526,92 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
           </span>
         </div>
 
-        <div className="relative z-10 flex-1 overflow-y-auto p-3 space-y-2 font-mono text-[11px]">
-          {liveAlerts.length === 0 ? (
-            <div className="px-3 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-300/90 text-[11px] flex items-center gap-2">
-              <Zap className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
-              <span>All rigs, power buses, and thermal envelopes nominal.</span>
-            </div>
-          ) : (
-            liveAlerts.map((alert) => {
-              const cls =
-                alert.severity === 'CRIT'
-                  ? 'bg-rose-500/12 border-rose-500/40 text-rose-200'
-                  : alert.severity === 'WARN'
-                  ? 'bg-amber-500/12 border-amber-500/35 text-amber-200'
-                  : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-200';
-              const tagCls =
-                alert.severity === 'CRIT'
-                  ? 'text-rose-400'
-                  : alert.severity === 'WARN'
-                  ? 'text-amber-300'
-                  : 'text-cyan-300';
-
-              return (
-                <div key={alert.id} className={`px-3 py-2 rounded-lg border space-y-1 ${cls}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className={`font-bold text-[10px] tracking-wider inline-flex items-center gap-1 ${tagCls}`}>
-                      {alert.tag === 'THERMAL' && <Flame className="w-3 h-3" />}
-                      {alert.tag}
-                    </span>
-                    {alert.actionCmd && alert.actionLabel && (
-                      <button
-                        type="button"
-                        onClick={() => onRunCommand(alert.actionCmd!)}
-                        className="px-1.5 py-0.5 rounded bg-black/40 hover:bg-black/70 border border-current/30 text-[10px] font-semibold transition-colors whitespace-nowrap"
-                      >
-                        {alert.actionLabel}
-                      </button>
-                    )}
-                  </div>
-                  <p className="leading-snug text-[11px] opacity-95">{alert.message}</p>
-                </div>
-              );
-            })
-          )}
-
-          {recentAlertNews.length > 0 && (
-            <div className="pt-2 border-t border-green-500/20 space-y-1.5">
-              <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-green-400/60">
-                <span>Recent Alert Feed</span>
-                <button
-                  type="button"
-                  onClick={() => onRunCommand('log')}
-                  className="hover:text-green-300 transition-colors"
-                >
-                  log
-                </button>
+        {alertsOpen && (
+          <div className="relative z-10 flex-1 overflow-y-auto p-3 space-y-2 font-mono text-[11px]">
+            {liveAlerts.length === 0 ? (
+              <div className="px-3 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-300/90 text-[11px] flex items-center gap-2">
+                <Zap className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+                <span>All rigs, power buses, and thermal envelopes nominal.</span>
               </div>
-              {recentAlertNews.map((item) => (
-                <div
-                  key={item.id}
-                  className="px-2.5 py-1.5 rounded bg-[#020704]/90 border border-green-500/15 space-y-0.5"
-                >
-                  <div className="flex items-center justify-between gap-2 text-[10px]">
-                    <span
-                      className={
-                        item.category === 'ALERT'
-                          ? 'text-rose-400 font-semibold truncate'
-                          : 'text-amber-300 font-semibold truncate'
-                      }
-                    >
-                      {item.title}
-                    </span>
-                    <span className="text-green-500/70 shrink-0 tabular-nums">
-                      {item.stepLabel}
-                    </span>
+            ) : (
+              liveAlerts.map((alert) => {
+                const cls =
+                  alert.severity === 'CRIT'
+                    ? 'bg-rose-500/12 border-rose-500/40 text-rose-200'
+                    : alert.severity === 'WARN'
+                    ? 'bg-amber-500/12 border-amber-500/35 text-amber-200'
+                    : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-200';
+                const tagCls =
+                  alert.severity === 'CRIT'
+                    ? 'text-rose-400'
+                    : alert.severity === 'WARN'
+                    ? 'text-amber-300'
+                    : 'text-cyan-300';
+
+                return (
+                  <div key={alert.id} className={`px-3 py-2 rounded-lg border space-y-1 ${cls}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span
+                        className={`font-bold text-[10px] tracking-wider inline-flex items-center gap-1 ${tagCls}`}
+                      >
+                        {alert.tag === 'THERMAL' && <Flame className="w-3 h-3" />}
+                        {alert.tag}
+                      </span>
+                      {alert.actionCmd && alert.actionLabel && (
+                        <button
+                          type="button"
+                          onClick={() => onRunCommand(alert.actionCmd!)}
+                          title={`Run "${alert.actionCmd}" in terminal`}
+                          className="px-1.5 py-0.5 rounded bg-black/40 hover:bg-black/70 border border-current/30 text-[10px] font-semibold transition-colors whitespace-nowrap"
+                        >
+                          {alert.actionLabel}
+                        </button>
+                      )}
+                    </div>
+                    <p className="leading-snug text-[11px] opacity-95">{alert.message}</p>
                   </div>
-                  <p className="text-[10px] text-green-200/75 leading-snug">{item.detail}</p>
+                );
+              })
+            )}
+
+            {recentAlertNews.length > 0 && (
+              <div className="pt-2 border-t border-green-500/20 space-y-1.5">
+                <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-green-400/60">
+                  <span>Recent Alert Feed</span>
+                  <button
+                    type="button"
+                    onClick={() => onRunCommand('log')}
+                    className="hover:text-green-300 transition-colors"
+                  >
+                    log
+                  </button>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+                {recentAlertNews.map((item) => (
+                  <div
+                    key={item.id}
+                    className="px-2.5 py-1.5 rounded bg-[#020704]/90 border border-green-500/15 space-y-0.5"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-[10px]">
+                      <span
+                        className={
+                          item.category === 'ALERT'
+                            ? 'text-rose-400 font-semibold truncate'
+                            : 'text-amber-300 font-semibold truncate'
+                        }
+                      >
+                        {item.title}
+                      </span>
+                      <span className="text-green-500/70 shrink-0 tabular-nums">
+                        {item.stepLabel}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-green-200/75 leading-snug">{item.detail}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </section>
     </aside>
   );

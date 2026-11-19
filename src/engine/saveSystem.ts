@@ -9,6 +9,8 @@ import {
   SaveFileEnvelope,
 } from '../types/game';
 import { generateRandomSeed } from '../utils/rng';
+import { buildDefaultWallet } from './exchange';
+import { buildDefaultFab } from './fab';
 import { createInitialRivals } from './rivals';
 import {
   computeAverageRigHealth,
@@ -63,6 +65,8 @@ function migrateRig(r: MiningRig, idx: number): MiningRig {
     soloBlocksWon: typeof r.soloBlocksWon === 'number' ? r.soloBlocksWon : 0,
     lastStepBlockHit: Boolean(r.lastStepBlockHit),
     illicitMod: r.illicitMod ?? null,
+    payoutMode: r.payoutMode === 'HOLD' ? 'HOLD' : 'AUTOSELL',
+    customAsicSpec: r.customAsicSpec,
     lastStepCoins: typeof r.lastStepCoins === 'number' ? r.lastStepCoins : 0,
     lastStepUsd: typeof r.lastStepUsd === 'number' ? r.lastStepUsd : 0,
     totalEarnedUsd: typeof r.totalEarnedUsd === 'number' ? r.totalEarnedUsd : 0,
@@ -152,6 +156,10 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
         ? candidate.ownedFacilityIds
         : ['fac_bedroom'],
       facilityUpgrades: candidate.facilityUpgrades ?? {},
+      facilityExtraRooms:
+        typeof candidate.facilityExtraRooms === 'number' && Number.isFinite(candidate.facilityExtraRooms)
+          ? Math.max(0, Math.min(2, Math.floor(candidate.facilityExtraRooms)))
+          : 0,
       powerContractId: candidate.powerContractId ?? 'contract_standard',
       rigs: candidate.rigs.map((r, i) => migrateRig(r, i)),
       backupRigs: Array.isArray(candidate.backupRigs)
@@ -175,6 +183,10 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
       employees: Array.isArray(candidate.employees)
         ? candidate.employees.map(migrateEmployee)
         : [],
+      strikeStepsRemaining:
+        typeof candidate.strikeStepsRemaining === 'number'
+          ? Math.max(0, candidate.strikeStepsRemaining)
+          : 0,
       mediaCredibility:
         typeof candidate.mediaCredibility === 'number' ? candidate.mediaCredibility : 40,
       regulatoryScrutiny:
@@ -212,6 +224,9 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
           }))
         : [],
       transactions: Array.isArray(candidate.transactions) ? candidate.transactions : [],
+      performanceHistory: Array.isArray(candidate.performanceHistory)
+        ? candidate.performanceHistory
+        : [],
       currentCycleStats: {
         miningRevenueUsd: candidate.currentCycleStats?.miningRevenueUsd ?? 0,
         electricitySpendUsd: candidate.currentCycleStats?.electricitySpendUsd ?? 0,
@@ -238,8 +253,25 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
         typeof candidate.noiseFinesTotal === 'number' ? candidate.noiseFinesTotal : 0,
       stats: buildDefaultStats(candidate.stats),
       tutorialStep: typeof candidate.tutorialStep === 'number' ? candidate.tutorialStep : 0,
+      onboardingMode:
+        candidate.onboardingMode === 'VETERAN' || candidate.onboardingMode === 'GUIDED'
+          ? candidate.onboardingMode
+          : stepCount > 5
+          ? 'VETERAN'
+          : 'GUIDED',
+      seenTutorials: Array.isArray(candidate.seenTutorials)
+        ? candidate.seenTutorials.filter((id): id is string => typeof id === 'string')
+        : [],
+      claimedObjectives: Array.isArray(candidate.claimedObjectives)
+        ? candidate.claimedObjectives.filter((id): id is string => typeof id === 'string')
+        : [],
       devMode: Boolean(candidate.devMode),
       devUnlockAll: Boolean(candidate.devUnlockAll),
+      wallet: buildDefaultWallet(candidate.wallet),
+      walletCostBasis: buildDefaultWallet(candidate.walletCostBasis),
+      limitOrders: Array.isArray(candidate.limitOrders) ? candidate.limitOrders : [],
+      shortPositions: Array.isArray(candidate.shortPositions) ? candidate.shortPositions : [],
+      fab: buildDefaultFab(candidate.fab),
     };
 
     if (hydrated.usedMarketListings.length === 0) {

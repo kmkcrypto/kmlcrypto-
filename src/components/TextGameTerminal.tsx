@@ -1,16 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  ACHIEVEMENTS,
   CHALLENGES,
   CHASSIS_PARTS,
   COMPUTE_PARTS,
   COOLING_PARTS,
   EMPLOYEE_SPECS,
+  FACILITY_PROFILES,
   FACILITY_TIERS,
   FACILITY_UPGRADES,
   FIRMWARE_PROFILE_SPECS,
   GPU_PARTS,
   ILLICIT_MOD_SPECS,
   MARKET_REGIME_SPECS,
+  MILESTONES,
   OS_PARTS,
   POOL_MODE_SPECS,
   POWER_CONTRACTS,
@@ -30,29 +33,56 @@ import {
   computeFacilityCoolingSummary,
   computeRigTelemetry,
   computeStepCoinOutput,
+  computeWorkloadSummary,
   ensureRigComponentHealth,
+  formatAsciiFloorPlan,
+  formatFabStatusReport,
+  formatMarketForecastReport,
+  formatSingleRoomView,
+  formatWalletAndExchangeReport,
   getAutoSellMultiplier,
   getComponentRepairCost,
   getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
+  getEmployeeEfficiencyMult,
   getEmpireAlignment,
   getFacility,
+  getFacilityRooms,
   getFacilityTotals,
   getFacilityUpgradeCost,
   getPowerContract,
   getRigRepasteCost,
   getRigRepairCost,
+  getRivalInvestigateCost,
   getSysEngineerBonus,
+  resolveCoolerRoomId,
 } from '../engine/simulation';
 import { getGlobalHardwarePriceMult, getRigGeneration } from '../engine/usedMarket';
 import {
+  previewCoolingUnit,
+  previewFacilityMove,
+  previewRigEconomics,
+} from '../engine/previews';
+import {
+  CODEX_ENTRIES,
+  CONTEXTUAL_GUIDES,
+  evaluateEarlyObjectives,
+  getEffectiveOnboardingMode,
+  getUnlockedSystems,
+  GuidedSystemId,
+  TUTORIAL_TOPICS,
+} from '../data/onboarding';
+import {
   ChallengeId,
+  ChipProcessNode,
   CoinSymbol,
   EmployeeRole,
   FacilityUpgradeId,
   FirmwareProfile,
   GameState,
   MarketRegime,
+  MiningAlgorithm,
+  OnboardingMode,
   PendingEvent,
   PoolMode,
   PowerContractId,
@@ -76,10 +106,13 @@ import {
   formatChallengesReport,
   formatCoolingCompare,
   formatMilestonesReport,
+  formatPortfolioChart,
   formatPowerReport,
   formatRivalsComparison,
   formatStatsReport,
   formatTransactionHistory,
+  formatValuationReport,
+  PortfolioChartMetric,
 } from './terminal/reports';
 
 export interface LogLine {
@@ -164,16 +197,21 @@ interface TextGameTerminalProps {
     gpuSlotIndex?: number
   ) => { ok: boolean; summary: string };
   onRepasteRigs: (rigIndexOrAll: number | 'ALL') => { ok: boolean; count: number; cost: number };
-  onAddCoolingUnit: (type: RoomCoolingType) => boolean;
+  onAddCoolingUnit: (type: RoomCoolingType, roomNumber?: number) => boolean;
   onToggleCoolingUnit: (coolingId: string) => void;
   onRemoveCoolingUnit: (coolingId: string) => void;
   onSelectFacility: (facilityId: string, action: 'RENT' | 'BUY') => boolean;
   onBuyFacilityUpgrade: (upgradeId: FacilityUpgradeId) => { ok: boolean; summary: string };
   onSelectPowerContract: (contractId: PowerContractId) => { ok: boolean; summary: string };
+  onMoveRigToRoom: (rigIdxOrAll: number | 'ALL', roomNumber: number) => { ok: boolean; summary: string };
+  onMoveCoolerToRoom: (unitIdx: number, roomNumber: number) => { ok: boolean; summary: string };
+  onExpandFacilityRooms: () => { ok: boolean; summary: string };
   onHireEmployee: (role: EmployeeRole) => boolean;
   onTrainEmployee: (empIdx: number) => { ok: boolean; summary: string };
   onFireEmployee: (employeeId: string) => void;
   onUpdateEmployee: (employeeId: string, shift: ShiftType, priority: TaskPriority) => void;
+  onBonusStaff: (empIdxOrAll: number | 'ALL') => { ok: boolean; summary: string };
+  onNegotiateStrike: () => { ok: boolean; summary: string };
   onStartResearch: (nodeId: string) => boolean;
   onStartChallenge: (challengeId: ChallengeId) => { ok: boolean; summary: string };
   onLaunchCampaign: (templateId: string, targetCoin: CoinSymbol) => boolean;
@@ -183,9 +221,32 @@ interface TextGameTerminalProps {
   onRentBotnet: (coin: CoinSymbol) => { ok: boolean; reason?: string; cost?: number };
   onWashTrade: (coin: CoinSymbol) => { ok: boolean; reason?: string; cost?: number };
   onSabotageRival: (rivalId: string) => { ok: boolean; reason?: string; cost?: number };
+  onInvestigateRival: (rivalIdx: number) => { ok: boolean; summary: string };
+  onCloneRig: (rigIdx: number, qty: number) => { ok: boolean; summary: string };
   onLaunderHeat: () => { ok: boolean; reason?: string; cost?: number };
   onBribeInspectors: () => { ok: boolean; reason?: string; cost?: number };
   onBuyBlackMarket: (listingId: string, rigIdx?: number) => { ok: boolean; summary: string };
+  onSetRigPayout: (rigIndexOrAll: number | 'ALL', payoutMode: 'AUTOSELL' | 'HOLD') => { ok: boolean; summary: string };
+  onExchangeBuy: (coin: CoinSymbol, usdAmount: number) => { ok: boolean; summary: string };
+  onExchangeSell: (coin: CoinSymbol, amountOrAll: number | 'ALL') => { ok: boolean; summary: string };
+  onPlaceLimitOrder: (
+    side: 'BUY' | 'SELL',
+    coin: CoinSymbol,
+    targetPriceUsd: number,
+    amount: number
+  ) => { ok: boolean; summary: string };
+  onCancelLimitOrder: (orderIdx: number) => { ok: boolean; summary: string };
+  onOpenShort: (coin: CoinSymbol, collateralUsd: number) => { ok: boolean; summary: string };
+  onCloseShort: (posIdx: number) => { ok: boolean; summary: string };
+  onBuildFabLine: () => { ok: boolean; summary: string };
+  onDesignCustomChip: (
+    name: string,
+    algo: MiningAlgorithm,
+    node: ChipProcessNode
+  ) => { ok: boolean; summary: string };
+  onQueueFabProduction: (bpIdx: number, qty: number) => { ok: boolean; summary: string };
+  onDeployCustomAsic: (invIdx: number, rigIdx: number) => { ok: boolean; summary: string };
+  onSellCustomAsic: (invIdx: number, qtyOrAll: number | 'ALL') => { ok: boolean; summary: string };
   onBackupSave: () => boolean;
   onRestoreBackup: () => boolean;
   onExportSave: () => string | null;
@@ -205,6 +266,9 @@ interface TextGameTerminalProps {
   onDevSetHeat: (heat: number) => void;
   onDevRefreshBlackMarket: () => void;
   onSetTutorialStep: (step: number) => void;
+  onMarkTutorialSeen: (guideId: string) => void;
+  onSetOnboardingMode: (mode: OnboardingMode) => void;
+  onClaimObjectives: () => void;
   userPaused: boolean;
   autoPauseReason: string | null;
   autoCountdown: number;
@@ -214,7 +278,12 @@ interface TextGameTerminalProps {
 
 const TOP_COMMANDS = [
   'help',
+  'codex',
+  'wiki',
+  'objectives',
+  'goals',
   'tutorial',
+  'mode',
   'status',
   'step',
   'pause',
@@ -243,9 +312,19 @@ const TOP_COMMANDS = [
   'power',
   'facilities',
   'facility',
+  'rooms',
+  'room',
+  'floorplan',
+  'move',
   'market',
+  'forecast',
+  'wallet',
+  'exchange',
+  'trade',
   'unlock',
   'chart',
+  'fab',
+  'foundry',
   'contracts',
   'contract',
   'rivals',
@@ -259,6 +338,7 @@ const TOP_COMMANDS = [
   'priority',
   'research',
   'stats',
+  'valuation',
   'history',
   'tx',
   'ledger',
@@ -311,10 +391,15 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onSelectFacility,
   onBuyFacilityUpgrade,
   onSelectPowerContract,
+  onMoveRigToRoom,
+  onMoveCoolerToRoom,
+  onExpandFacilityRooms,
   onHireEmployee,
   onTrainEmployee,
   onFireEmployee,
   onUpdateEmployee,
+  onBonusStaff,
+  onNegotiateStrike,
   onStartResearch,
   onStartChallenge,
   onLaunchCampaign,
@@ -324,9 +409,23 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onRentBotnet,
   onWashTrade,
   onSabotageRival,
+  onInvestigateRival,
+  onCloneRig,
   onLaunderHeat,
   onBribeInspectors,
   onBuyBlackMarket,
+  onSetRigPayout,
+  onExchangeBuy,
+  onExchangeSell,
+  onPlaceLimitOrder,
+  onCancelLimitOrder,
+  onOpenShort,
+  onCloseShort,
+  onBuildFabLine,
+  onDesignCustomChip,
+  onQueueFabProduction,
+  onDeployCustomAsic,
+  onSellCustomAsic,
   onBackupSave,
   onRestoreBackup,
   onExportSave,
@@ -346,6 +445,9 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onDevSetHeat,
   onDevRefreshBlackMarket,
   onSetTutorialStep,
+  onMarkTutorialSeen,
+  onSetOnboardingMode,
+  onClaimObjectives,
   userPaused,
   autoPauseReason,
   autoCountdown,
@@ -574,11 +676,28 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     const challengeSpec = state.activeChallengeId
       ? CHALLENGES.find((c) => c.id === state.activeChallengeId)
       : null;
+    const onboardingMode = getEffectiveOnboardingMode(state);
+    const unlockedSys = getUnlockedSystems(state);
+    const earlyObjs = evaluateEarlyObjectives(state);
+    const doneObjs = earlyObjs.filter((o) => o.completed).length;
+    const nextObj = earlyObjs.find((o) => !o.completed);
+    const opsSummaryLine = unlockedSys.ops
+      ? `| OPS:     ${padRight(covertSummary || 'Clean institutional baseline', 28)} VAULT: ${padRight(
+          `${(state.backupRigs ?? []).length} retired rig(s) | "stats"`,
+          32
+        )} |`
+      : `| MODE:    ${padRight(
+          `${onboardingMode} (Gradual progression)`,
+          28
+        )} VAULT: ${padRight(`${(state.backupRigs ?? []).length} retired | "codex"`, 32)} |`;
+    const contractDisplay = unlockedSys.contracts
+      ? contractText
+      : `Locked (${unlockedSys.unlockNotes.contracts.slice(0, 22)}...)`;
 
     const box = [
       `+================================================================================+`,
       `| ${padRight(
-        `${formatStepLabel(state.stepCount)} | ${facility.name}${state.isSandbox ? ' [SANDBOX]' : ''} | Seed: ${state.runSeed}`,
+        `${formatStepLabel(state.stepCount)} | ${facility.name}${state.isSandbox ? ' [SANDBOX]' : ''} | Mode: ${onboardingMode} | Seed: ${state.runSeed}`,
         78
       )} |`,
       `| ${padRight(
@@ -594,6 +713,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       ...(modBanner ? [modBanner] : []),
       ...(challengeSpec
         ? [`| ${padRight(`CHALLENGE: ${challengeSpec.title} — ${challengeSpec.description}`, 78)} |`]
+        : []),
+      ...(nextObj && onboardingMode === 'GUIDED'
+        ? [
+            `| ${padRight(
+              `NEXT OBJECTIVE (${doneObjs}/${earlyObjs.length}): ${nextObj.title}`,
+              78
+            )} |`,
+          ]
         : []),
       `+--------------------------------------------------------------------------------+`,
       `| SLOTS [${renderAsciiBar(slotsPct, 14)}] ${padRight(
@@ -615,17 +742,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         ? rigLines
         : [`|  No rigs deployed. Run "build rig", "usedmarket", or "build preset 1".        |`]),
       `+--------------------------------------------------------------------------------+`,
-      `| COOLING: ${padRight(coolList, 28)} CONTRACT: ${padRight(contractText, 29)} |`,
+      `| COOLING: ${padRight(coolList, 28)} CONTRACT: ${padRight(contractDisplay, 29)} |`,
       `| POWER:   ${padRight(contract.name.slice(0, 28), 28)} R&D: ${padRight(
         activeRes
           ? `${activeRes.name.slice(0, 20)} (${Math.round(state.activeResearchProgress)}/${activeRes.costRp})`
           : 'Idle',
         34
       )} |`,
-      `| OPS:     ${padRight(covertSummary || 'Clean institutional baseline', 28)} VAULT: ${padRight(
-        `${(state.backupRigs ?? []).length} retired rig(s) | "stats"`,
-        32
-      )} |`,
+      opsSummaryLine,
       `+================================================================================+`,
     ].join('\n');
 
@@ -659,23 +783,22 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   const printTutorialStep = (stepNum: number) => {
     if (stepNum === 1) {
       append([
-        { kind: 'HEAD', text: 'TUTORIAL [1/5] — READING YOUR DASHBOARD (status)' },
+        { kind: 'HEAD', text: 'TUTORIAL [1/6] — READING YOUR DASHBOARD & OBJECTIVES' },
         {
           kind: 'PRE',
           text: [
-            `  Step & bill in Nst  Time only moves when you run "step [n]". Utility & rent`,
-            `                      bills settle automatically every ${BILLING_CYCLE_STEPS} steps.`,
-            `  Cash & Rev/st       All mined crypto AUTO-SELLS each step into Cash. "RP"`,
-            `                      is Research Points spent in "research" to unlock parts.`,
-            `  SLOTS/POWER/NOISE   Facility limits. Exceeding Power trips breakers; high`,
-            `                      Noise triggers complaints & fines.`,
-            `  Regime & Heat       Regime cycles (Accumulation -> Bull -> Mania -> Winter)`,
-            `                      move coin prices. Heat (0-100) rises with illegal "ops".`,
+            `  Step & bill in Nst  Advance simulation with "step [n]" or let the 30s auto-timer`,
+            `                      run. Rent, utility, and payroll bills settle every ${BILLING_CYCLE_STEPS} steps.`,
+            `  Cash & Rev/st       Mined crypto AUTO-SELLS each step into Cash. "RP" is Research`,
+            `                      Points spent in "research" to unlock stronger hardware.`,
+            `  SLOTS/POWER/NOISE   Facility limits. Exceeding Power trips breakers; high Noise`,
+            `                      triggers fines. Watch your early goals with "objectives".`,
+            `  Codex & Guides      Type "codex" anytime for a permanent mechanic encyclopedia.`,
           ].join('\n'),
         },
         {
           kind: 'OK',
-          text: 'Next -> Type "rigs" to inspect your starter rig & tuning columns (or "tutorial next" / "tutorial skip").',
+          text: 'Next -> Type "rigs" or "inspect 1" to check your starter rig (or "tutorial next" / "tutorial skip").',
         },
       ]);
       return;
@@ -683,21 +806,21 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (stepNum === 2) {
       append([
-        { kind: 'HEAD', text: 'TUTORIAL [2/5] — RIGS, POOLS, OVERCLOCK & TINKER' },
+        { kind: 'HEAD', text: 'TUTORIAL [2/6] — RIGS, COMPONENT HEALTH & MAINTENANCE' },
         {
           kind: 'PRE',
           text: [
-            `  COIN/POOL   PPS = steady payout each step (0% luck); PPLNS (PLN) = +12%`,
-            `              avg with mild swings; SOLO = rare all-or-nothing block jackpots.`,
-            `  PROFILE     ECO (-watts/heat/wear), BAL (standard), TRB (+hash, +heat/wear).`,
-            `  HLTH & TEMP Temps > 82°C throttle speed. Maintain rigs with "repair"/"repaste".`,
-            `  overclock   "overclock 1 115" pushes speed (80..150%) for extra watts & heat.`,
-            `  tinker      "tinker 1" opens a workbench to swap parts (60% trade-in credit).`,
+            `  inspect <#>     Shows every component's individual health % (chassis, compute,`,
+            `                  GPUs, storage, PSU, cooling). Rig Health = average of all parts.`,
+            `  repair          "repair 1" repairs whole rig; "repair 1 psu" or "repair 1 gpu 1"`,
+            `                  fixes just one worn part. If any part hits <=20%, rig halts!`,
+            `  repaste <#>     Applies fresh paste (-6°C cooling for 16 steps).`,
+            `  overclock/tinker "overclock 1 115" tunes speed/heat; "tinker 1" swaps parts (60% trade-in).`,
           ].join('\n'),
         },
         {
           kind: 'OK',
-          text: 'Next -> Type "tutorial next" to learn the 8 rig parts, or jump straight into "build rig" to build Rig #2!',
+          text: 'Next -> Type "tutorial next" for Rig Building, or run "inspect 1" now!',
         },
       ]);
       return;
@@ -705,7 +828,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (stepNum === 3) {
       append([
-        { kind: 'HEAD', text: 'TUTORIAL [3/5] — HOW TO BUILD A RIG (8 PARTS)' },
+        { kind: 'HEAD', text: 'TUTORIAL [3/6] — HOW TO BUILD A RIG (8 PARTS)' },
         {
           kind: 'PRE',
           text: [
@@ -721,7 +844,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         },
         {
           kind: 'OK',
-          text: 'Next -> Type "build rig" (or click "build rig" below) to assemble Rig #2 with live guided tips!',
+          text: 'Next -> Type "build rig" (or "usedmarket" for surplus deals) to add Rig #2!',
         },
       ]);
       return;
@@ -729,19 +852,19 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (stepNum === 4) {
       append([
-        { kind: 'HEAD', text: 'TUTORIAL [4/5] — BUILD YOUR FIRST CUSTOM RIG' },
+        { kind: 'HEAD', text: 'TUTORIAL [4/6] — DEPLOYING YOUR SECOND RIG' },
         {
           kind: 'PRE',
           text: [
-            `  You have an open Bedroom slot and enough Cash for a custom rig (~$273+).`,
-            `  Inside "build rig", pick option numbers (e.g. "1") at each prompt — or`,
-            `  type "preset 1" on Step 1/8 to quick-load a starter build.`,
-            `  Review the final spec sheet and type "deploy" to bring Rig #2 online.`,
+            `  You have open Bedroom slots and enough Cash for a custom rig (~$273+) or a`,
+            `  discounted surplus listing in "usedmarket".`,
+            `  Inside "build rig", pick option numbers (e.g. "1") or "preset 1" to load a build.`,
+            `  Review the spec sheet and type "deploy" to bring Rig #2 online.`,
           ].join('\n'),
         },
         {
           kind: 'OK',
-          text: 'Next -> Type "build rig" now to open the guided rig builder.',
+          text: 'Next -> Type "build rig" now (or "tutorial next" to continue).',
         },
       ]);
       return;
@@ -749,21 +872,42 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (stepNum === 5) {
       append([
-        { kind: 'HEAD', text: 'TUTORIAL [5/5] — RUNNING STEPS & SCALING YOUR EMPIRE' },
+        { kind: 'HEAD', text: 'TUTORIAL [5/6] — POWER, COOLING & R&D RESEARCH' },
         {
           kind: 'PRE',
           text: [
-            `  step [n]      Advance N steps to earn auto-sell USD & RP. Interactive`,
-            `                events pause stepping until you choose option 1, 2, or 3.`,
-            `  contracts     Accept timed contracts for extra cash & RP payouts.`,
-            `  market        Track halvings, regimes, charts, and "unlock <COIN>" tiers.`,
-            `  research      Unlock high-tier chassis, GPUs, ASICs, and immersion cooling.`,
-            `  ops / bm      Optional illegal ops (power siphon, botnet, blackmarket).`,
+            `  power        View kW usage vs facility cap and switch power contracts.`,
+            `  cool         Add room fans/AC/liquid coolers to prevent >82°C thermal throttling.`,
+            `  research     Start an R&D project ("research start 1") to spend RP on GPUs/ASICs.`,
+            `  objectives   Claim bonus Cash & RP as you complete early-game milestones.`,
           ].join('\n'),
         },
         {
           kind: 'OK',
-          text: 'Final step -> Type "step 5" to run your expanded fleet and finish the tutorial!',
+          text: 'Next -> Type "tutorial next" for final scaling tips, or start "research" now.',
+        },
+      ]);
+      return;
+    }
+
+    if (stepNum === 6) {
+      append([
+        { kind: 'HEAD', text: 'TUTORIAL [6/6] — GRADUATED SYSTEMS & SPECIALIST GUIDES' },
+        {
+          kind: 'PRE',
+          text: [
+            `  As your operation grows, Guided Mode gradually unlocks advanced systems:`,
+            `    - Contracts ("tutorial contracts")  -> Step 3 or 2nd rig`,
+            `    - Employees ("tutorial employees")  -> Suburban Garage or $1,800 cash`,
+            `    - Rivals/PR ("tutorial ops")        -> Suburban Garage or Step 10`,
+            `    - Black Market ("tutorial blackmarket") -> Suburban Garage or Step 14`,
+            `  Type "tutorial list" to replay any guide, "codex" for full reference,`,
+            `  or "tutorial veteran" anytime to unlock all commands immediately.`,
+          ].join('\n'),
+        },
+        {
+          kind: 'OK',
+          text: 'Final step -> Type "step 3" to run your fleet and complete general onboarding!',
         },
       ]);
     }
@@ -988,12 +1132,22 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       true
     );
 
+    const econ = previewRigEconomics(config, totalCost, state);
     const warnings: string[] = [];
     if (state.cash < totalCost) warnings.push(`Insufficient cash (need ${formatUsd(totalCost)})`);
     if (state.rigs.length >= maxRigs) warnings.push(`Facility full (${maxRigs} max rigs)`);
     if (t.isUnderpowered) warnings.push(`PSU overloaded (${t.rawWatts}W > ${psu.maxWatts}W)`);
     if (!coin.unlocked) warnings.push(`${coin.symbol} is locked (unlock it for ${formatUsd(coin.unlockCostUsd)})`);
     if (t.effectiveHashrate <= 0) warnings.push(`Zero hashrate for ${config.targetCoin} (${t.targetAlgo})`);
+    for (const ew of econ.warnings) {
+      if (!warnings.includes(ew)) warnings.push(ew);
+    }
+
+    const paybackLabel =
+      econ.paybackSteps !== null ? `~${econ.paybackSteps} steps` : 'No payback (net <= 0)';
+    const netLabel = `${econ.netPerStepUsd >= 0 ? '+' : '-'}${formatUsd(
+      Math.abs(econ.netPerStepUsd)
+    )}/st`;
 
     const spec = [
       `+---------------- BUILD SPECIFICATION ----------------+`,
@@ -1006,14 +1160,19 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       `| Cooling: ${padRight(`${cooling.name} (Est ${t.equilibriumTempC}°C / ${t.noiseDba}dBA)`, 42)} |`,
       `| Tune:    ${padRight(`${config.poolMode ?? 'PPS'} · ${config.firmwareProfile ?? 'BALANCED'} · OC ${config.overclockPct}%`, 42)} |`,
       `| OS/Coin: ${padRight(`${os.name} -> ${config.targetCoin} (${formatHashrate(t.effectiveHashrate, t.targetAlgo)})`, 42)} |`,
-      `| Cost:    ${padRight(`${formatUsd(totalCost)} | Auto-Sell: ${formatUsd(est.autoSoldUsd)}/step`, 42)} |`,
+      `+------------------ PURCHASE PREVIEW -----------------+`,
+      `| Build Cost: ${padRight(formatUsd(totalCost), 39)} |`,
+      `| Gross Rev:  ${padRight(`${formatUsd(est.autoSoldUsd)}/step`, 39)} |`,
+      `| Power Draw: ${padRight(`${econ.powerKw.toFixed(2)} kW (-${formatUsd(econ.powerCostPerStepUsd)}/step)`, 39)} |`,
+      `| Net Profit: ${padRight(`${netLabel} · Grid ${econ.projectedTotalKw.toFixed(2)}/${econ.facilityCapKw} kW`, 39)} |`,
+      `| Est Payback:${padRight(` ${paybackLabel}`, 39)} |`,
       `+-----------------------------------------------------+`,
     ].join('\n');
 
     append([
       { kind: 'PRE', text: spec },
       ...(warnings.length > 0
-        ? warnings.map((w) => ({ kind: 'ERR' as const, text: `WARNING: ${w}` }))
+        ? warnings.map((w) => ({ kind: 'WARN' as const, text: `[!] ${w}` }))
         : [{ kind: 'OK' as const, text: 'Build validated. Ready to deploy!' }]),
       ...(guideTip ? [{ kind: 'OK' as const, text: guideTip }] : []),
       {
@@ -1027,14 +1186,18 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     if (bootedRef.current) return;
     bootedRef.current = true;
     state.news.forEach((n) => seenNewsIdsRef.current.add(n.id));
+    const onboardingMode = getEffectiveOnboardingMode(state);
     append([
       {
         kind: 'HEAD',
-        text: `HASHRATE // MATRIX TERMINAL (SEED: ${state.runSeed})`,
+        text: `HASHRATE // MATRIX TERMINAL (${onboardingMode} MODE · SEED: ${state.runSeed})`,
       },
       {
         kind: 'TEXT',
-        text: 'Open-ended step simulation: tune rigs ("rig 1 pool solo", "rig 1 profile turbo"), chase "contracts" & "rivals", or go covert with "ops" & "blackmarket". Type "help" or "tutorial" anytime.',
+        text:
+          onboardingMode === 'GUIDED'
+            ? 'Guided Mode active: start with "objectives", "rigs", "build rig", and "step". Type "codex" for the encyclopedia, "tutorial list" for guides, or "mode veteran" to unlock all systems.'
+            : 'Veteran Mode active: all systems unlocked. Tune rigs ("rig 1 pool solo"), chase "contracts" & "rivals", or go covert with "ops" & "blackmarket". Type "help" or "codex" anytime.',
       },
     ]);
     printStatus();
@@ -1082,6 +1245,20 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       }))
     );
   }, [state.news]);
+
+  useEffect(() => {
+    const seen = state.seenTutorials ?? [];
+    if (!seen.includes('ctx_overheat') && state.rigs.some((r) => r.status === 'OVERHEATED' || r.status === 'THROTTLED')) {
+      const g = CONTEXTUAL_GUIDES.ctx_overheat;
+      onMarkTutorialSeen('ctx_overheat');
+      append([{ kind: 'WARN', text: `[FIRST-TIME GUIDE: ${g.title}] ${g.body} (Run "${g.tipCommand}".)` }]);
+    }
+    if (!seen.includes('ctx_low_health') && state.rigs.some((r) => r.status === 'NEEDS_REPAIR' || r.status === 'FAILED')) {
+      const g = CONTEXTUAL_GUIDES.ctx_low_health;
+      onMarkTutorialSeen('ctx_low_health');
+      append([{ kind: 'WARN', text: `[FIRST-TIME GUIDE: ${g.title}] ${g.body} (Run "${g.tipCommand}".)` }]);
+    }
+  }, [state.rigs]);
 
   useEffect(() => {
     if (state.pendingEvent && state.pendingEvent.id !== seenEventIdRef.current) {
@@ -1784,44 +1961,93 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       return;
     }
 
-    if (cmd === 'help' || cmd === '?') {
+    const maybeShowContextualGuide = (guideId: string) => {
+      const seen = state.seenTutorials ?? [];
+      if (seen.includes(guideId)) return;
+      const guide = CONTEXTUAL_GUIDES[guideId];
+      if (!guide) return;
+      onMarkTutorialSeen(guideId);
       append([
-        { kind: 'HEAD', text: 'COMMAND REFERENCE MANUAL (EXPANSION 2.0)' },
+        {
+          kind: 'OK',
+          text: `[FIRST-TIME GUIDE: ${guide.title}] ${guide.body}${
+            guide.tipCommand ? ` (Run "${guide.tipCommand}" for the full guide.)` : ''
+          }`,
+        },
+      ]);
+    };
+
+    const unlockedSys = getUnlockedSystems(state);
+    const checkSystemUnlocked = (sysId: GuidedSystemId, label: string): boolean => {
+      if (unlockedSys[sysId]) return true;
+      append([
+        {
+          kind: 'WARN',
+          text: `${label} not yet unlocked in Guided Mode: ${unlockedSys.unlockNotes[sysId]}. (Run "objectives" to track progress, or "tutorial veteran" to unlock all systems now.)`,
+        },
+      ]);
+      return false;
+    };
+
+    if (cmd === 'help' || cmd === '?') {
+      const onboardingMode = getEffectiveOnboardingMode(state);
+      const lockedUpcoming: string[] = [];
+      if (!unlockedSys.contracts) lockedUpcoming.push(`contracts (${unlockedSys.unlockNotes.contracts})`);
+      if (!unlockedSys.staff) lockedUpcoming.push(`staff/hire (${unlockedSys.unlockNotes.staff})`);
+      if (!unlockedSys.rivals) lockedUpcoming.push(`rivals/pr (${unlockedSys.unlockNotes.rivals})`);
+      if (!unlockedSys.ops) lockedUpcoming.push(`ops/blackmarket (${unlockedSys.unlockNotes.ops})`);
+
+      append([
+        { kind: 'HEAD', text: `COMMAND REFERENCE MANUAL (${onboardingMode} MODE)` },
         {
           kind: 'PRE',
           text: [
-            `  STEPS, EVENTS & PROGRESSION`,
-            `    status | look                     Facility grid, power contract, modifiers & fleet`,
-            `    tutorial [next|skip|restart]      Walk through what stats mean & build your first rig`,
-            `    step [n] | next [n]               Advance n steps (auto-steps every 30s)`,
-            `    pause | resume | auto             Pause or resume the 30s auto-step timer`,
+            `  STEPS, ONBOARDING & PROGRESSION`,
+            `    status | look                     Facility grid, power contract & fleet`,
+            `    objectives | goals                Early-game guided goals & bonus Cash/RP rewards`,
+            `    codex [topic] | wiki [topic]      Permanent in-terminal mechanics encyclopedia`,
+            `    tutorial [list|<topic>|restart]   Interactive & replayable topic tutorials`,
+            `    mode <guided|veteran>             Switch between gradual unlocks or full access`,
+            `    step [n] | pause | resume | auto  Advance steps or toggle 30s auto-stepping`,
             `    event | decide <1|2|3>            View active event or lock in choice`,
-            `    stats | history [category]        Lifetime financial analytics & transaction log`,
-            `    milestones | achievements         Track expansion milestones & Steam-style badges`,
-            `    challenges [start <1..5>]         View or activate rule-constrained challenges`,
-            `    save <backup|restore|export>      Create backup, restore, or download save JSON`,
+            `    stats | valuation | history | milestones | achievements | challenges | save`,
             `  HARDWARE, USED MARKET & MAINTENANCE`,
             `    build rig | presets | build preset <#>    Assemble custom rig (unlocked parts only)`,
             `    usedmarket | used [buy <#>|refresh]       Browse/buy factory, refurb, used & damaged rigs`,
             `    tinker [<#>] [<slot> <part#>]             Swap rig parts (60% trade-in credit)`,
             `    overclock [<#|all>] <80..150>             Adjust clock multiplier (power/heat trade-off)`,
-            `    rigs | inspect <#>                        Fleet roster or full rig telemetry & value`,
-            `    rig <#|all> <on|off|oc N|coin X|pool|profile>  Toggle, tune, or change pool/profile`,
+            `    rigs | inspect <#>                        Fleet roster & per-component health breakdown`,
+            `    rig <#|all> <on|off|oc N|coin X|pool|profile|payout <hold|sell>> | rig <#> clone [qty]`,
             `    repair [<#>|all] [<part> [slot#]] | repaste [<#>|all]  Repair full rig or 1 part (e.g. "repair 1 gpu")`,
-            `    retire <#> | backup [deploy <#>] [sell <#>]  Retire active rig to backup vault`,
-            `    rename <#> <name> | sell <#> | salvage <#>   Rename or sell rig at market resale value`,
-            `  POWER, COOLING, FACILITIES & STAFF`,
+            `    retire <#> | backup [deploy <#>] [sell <#>] | rename <#> <name> | sell <#>`,
+            `  POWER, COOLING, ROOMS, FACILITIES${unlockedSys.staff ? ' & STAFF' : ''}`,
             `    power [contract <1..4> | upgrade <1..6>]  Manage power contracts & electrical grid`,
-            `    cool [compare | add <fan|indfan|ac|liquid|chiller|hvac> | toggle <#> | sell <#>]`,
-            `    facilities | facility <rent|buy> <1..6> | facility upgrade [<1..6>]`,
-            `    staff | hire <tech|elec|mgr|eng|res|pr|analyst> | train <#> | fire <#> | shift | priority`,
-            `    research [done | start <#>] | ledger`,
-            `  MARKET, RIVALS, CONTRACTS & COVERT OPS`,
-            `    market | unlock <COIN> | chart <COIN>     Spot rates, modifiers, halvings & charts`,
-            `    contracts | contract <accept <1..3>|abandon>   Reputation-gated enterprise contracts`,
-            `    rivals [compare]                          Inspect rival syndicates & benchmark rank`,
-            `    pr | pr launch <1..5> <COIN>              Legal PR campaigns`,
-            `    ops | blackmarket                         Underground ops (siphon/botnet/wash/sabotage)`,
+            `    cool [compare | add <type> [room <#>] | room <#> <room#> | toggle <#> | sell <#>]`,
+            `    rooms | room [<#> | expand] | floorplan   ASCII room blueprint & wing expansion`,
+            `    rig <#> room <#> | move <#> <room#>       Move rig into a cooler or baffled room`,
+            `    facilities | facility <rent|buy|preview> <1..6> | facility <upgrade|expand>`,
+            ...(unlockedSys.staff
+              ? [`    staff | hire <tech|elec|mgr|eng|res|pr|analyst> | train <#> | fire <#> | shift | priority`]
+              : []),
+            `    research [done | start <#>] | fab [line build|design|produce|deploy|sell] | ledger`,
+            `  MARKET, EXCHANGE${unlockedSys.contracts || unlockedSys.rivals || unlockedSys.ops ? ', CONTRACTS, RIVALS & OPS' : ''}`,
+            `    market | forecast [COIN] | unlock <COIN> | chart <COIN|portfolio|cash|profit|hashrate|power>`,
+            `    wallet | exchange [buy|sell|limit|cancel|short|close]   Treasury wallet & spot/margin desk`,
+            ...(unlockedSys.contracts
+              ? [`    contracts | contract <accept <1..4>|abandon>   Reputation-gated enterprise contracts`]
+              : []),
+            ...(unlockedSys.rivals
+              ? [
+                  `    rivals [compare | investigate <#>]        Rival syndicates, rank & corporate recon`,
+                  `    pr | pr launch <1..5> <COIN>              Legal PR campaigns`,
+                ]
+              : []),
+            ...(unlockedSys.ops
+              ? [`    ops | blackmarket                         Underground ops (siphon/botnet/wash/sabotage)`]
+              : []),
+            ...(lockedUpcoming.length > 0
+              ? [``, `  UPCOMING GUIDED UNLOCKS (or run "mode veteran" to unlock now):`, ...lockedUpcoming.map((l) => `    - ${l}`)]
+              : []),
           ].join('\n'),
         },
       ]);
@@ -1830,6 +2056,108 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (cmd === 'status' || cmd === 'look') {
       printStatus();
+      return;
+    }
+
+    if (cmd === 'objectives' || cmd === 'goals' || cmd === 'missions') {
+      onClaimObjectives();
+      const objs = evaluateEarlyObjectives(state);
+      const done = objs.filter((o) => o.completed).length;
+      const rows = objs.map((o, idx) => {
+        const mark = o.completed ? '[x]' : '[ ]';
+        return `  ${mark} ${idx + 1}. ${padRight(o.title, 46)} +${padLeft(formatUsd(o.rewardCash), 5)} +${padLeft(
+          `${o.rewardRp}RP`,
+          4
+        )}\n         ${o.completed ? 'Completed!' : `How: ${o.hint}`}`;
+      });
+      append([
+        {
+          kind: 'HEAD',
+          text: `EARLY-GAME OBJECTIVES (${done}/${objs.length} COMPLETED)`,
+        },
+        { kind: 'PRE', text: rows.join('\n') },
+        {
+          kind: 'TEXT',
+          text:
+            done < objs.length
+              ? 'Rewards deposit automatically as each objective finishes. Type "tutorial list" or "codex" for detailed help.'
+              : 'All early-game objectives complete! Run "milestones", "challenges", or "contracts" for mid-game targets.',
+        },
+      ]);
+      return;
+    }
+
+    if (cmd === 'codex' || cmd === 'wiki' || cmd === 'manual') {
+      const q = [arg1, arg2].filter(Boolean).join(' ').trim().toLowerCase();
+      if (!q) {
+        const list = CODEX_ENTRIES.map(
+          (e) => `  codex ${padRight(e.key, 12)} -> ${e.title}`
+        ).join('\n');
+        append([
+          { kind: 'HEAD', text: 'HASHRATE PERMANENT CODEX & MECHANICS ENCYCLOPEDIA' },
+          { kind: 'PRE', text: list },
+          {
+            kind: 'TEXT',
+            text: 'Type "codex <topic>" (e.g. "codex hardware", "codex power", "codex employees") or search any keyword (e.g. "codex repair").',
+          },
+        ]);
+        return;
+      }
+
+      const match =
+        CODEX_ENTRIES.find((e) => e.key === q) ??
+        CODEX_ENTRIES.find(
+          (e) =>
+            e.title.toLowerCase().includes(q) ||
+            e.keywords.some((k) => k.includes(q) || q.includes(k))
+        );
+      if (!match) {
+        append([
+          {
+            kind: 'ERR',
+            text: `No Codex topic matched "${q}". Run "codex" to list all ${CODEX_ENTRIES.length} entries.`,
+          },
+        ]);
+        return;
+      }
+      append([
+        { kind: 'HEAD', text: `CODEX // ${match.title}` },
+        { kind: 'PRE', text: match.body.join('\n') },
+        {
+          kind: 'TEXT',
+          text: 'Run "codex" to view all entries or "tutorial list" for interactive walkthroughs.',
+        },
+      ]);
+      return;
+    }
+
+    if (cmd === 'mode') {
+      if (arg1 === 'veteran' || arg1 === 'full' || arg1 === 'open') {
+        onSetOnboardingMode('VETERAN');
+        append([
+          {
+            kind: 'OK',
+            text: 'Switched to VETERAN MODE: all commands (Contracts, Staff, Rivals, PR, Covert Ops, Black Market) are unlocked immediately.',
+          },
+        ]);
+        return;
+      }
+      if (arg1 === 'guided') {
+        onSetOnboardingMode('GUIDED');
+        append([
+          {
+            kind: 'OK',
+            text: 'Switched to GUIDED MODE: early-game objectives and progressive system pacing active.',
+          },
+        ]);
+        return;
+      }
+      append([
+        {
+          kind: 'TEXT',
+          text: `Current Experience Mode: ${getEffectiveOnboardingMode(state)}. Run "mode veteran" or "mode guided" to switch.`,
+        },
+      ]);
       return;
     }
 
@@ -1846,13 +2174,99 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (cmd === 'tutorial' || cmd === 'guide') {
       const cur = state.tutorialStep ?? 0;
+      const topicAliases: Record<string, string> = {
+        hardware: 'hardware',
+        health: 'hardware',
+        component: 'hardware',
+        components: 'hardware',
+        repair: 'hardware',
+        rig: 'hardware',
+        rigs: 'hardware',
+        power: 'power',
+        electricity: 'power',
+        cooling: 'power',
+        cool: 'power',
+        thermal: 'power',
+        facility: 'facilities',
+        facilities: 'facilities',
+        employee: 'employees',
+        employees: 'employees',
+        staff: 'employees',
+        hire: 'employees',
+        contract: 'contracts',
+        contracts: 'contracts',
+        ops: 'ops',
+        operations: 'ops',
+        pr: 'ops',
+        rivals: 'ops',
+        blackmarket: 'blackmarket',
+        bm: 'blackmarket',
+        underground: 'blackmarket',
+      };
+
+      if (arg1 === 'list' || arg1 === 'topics' || arg1 === 'all') {
+        const topicRows = Object.values(TUTORIAL_TOPICS).map(
+          (t) => `  tutorial ${padRight(t.id, 13)} -> ${t.summary}`
+        );
+        append([
+          { kind: 'HEAD', text: 'REPLAYABLE TUTORIAL DIRECTORY' },
+          {
+            kind: 'PRE',
+            text: [
+              `  tutorial general       -> 6-step interactive starter walkthrough (replayable)`,
+              ...topicRows,
+              `  tutorial veteran       -> Switch immediately to Veteran Mode (unlock all systems)`,
+            ].join('\n'),
+          },
+          {
+            kind: 'TEXT',
+            text: 'Run any topic command above, "objectives" for early goals, or "codex" for quick reference.',
+          },
+        ]);
+        return;
+      }
+
+      if (arg1 === 'veteran') {
+        onSetOnboardingMode('VETERAN');
+        lastTutorialStepRef.current = 0;
+        onSetTutorialStep(0);
+        append([
+          {
+            kind: 'OK',
+            text: 'Veteran Mode enabled: general walkthrough closed and all game systems unlocked.',
+          },
+        ]);
+        return;
+      }
+
       if (arg1 === 'skip' || arg1 === 'off' || arg1 === 'done' || arg1 === 'exit') {
         lastTutorialStepRef.current = 0;
         onSetTutorialStep(0);
-        append([{ kind: 'TEXT', text: 'Tutorial closed. Type "tutorial restart" anytime to replay it.' }]);
+        append([
+          {
+            kind: 'TEXT',
+            text: 'Tutorial closed. Type "tutorial restart", "tutorial list", or "codex" anytime to replay or read guides.',
+          },
+        ]);
         return;
       }
-      if (arg1 === 'restart' || arg1 === 'start') {
+
+      const rawTopic = arg1 === 'replay' ? arg2 : arg1;
+      const mappedTopic = rawTopic ? topicAliases[rawTopic] : undefined;
+      if (mappedTopic && TUTORIAL_TOPICS[mappedTopic]) {
+        const t = TUTORIAL_TOPICS[mappedTopic];
+        append([
+          { kind: 'HEAD', text: `TUTORIAL // ${t.title}` },
+          { kind: 'PRE', text: t.lines.join('\n') },
+          {
+            kind: 'OK',
+            text: `Try next -> "${t.nextCommand}" (or "tutorial list" to browse other guides).`,
+          },
+        ]);
+        return;
+      }
+
+      if (arg1 === 'restart' || arg1 === 'start' || arg1 === 'replay' || arg1 === 'general') {
         lastTutorialStepRef.current = 1;
         onSetTutorialStep(1);
         printTutorialStep(1);
@@ -1863,10 +2277,15 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           lastTutorialStepRef.current = 1;
           onSetTutorialStep(1);
           printTutorialStep(1);
-        } else if (cur >= 5) {
+        } else if (cur >= 6) {
           lastTutorialStepRef.current = 0;
           onSetTutorialStep(0);
-          append([{ kind: 'OK', text: 'Tutorial complete! Type "help" for all commands or "tutorial restart" anytime.' }]);
+          append([
+            {
+              kind: 'OK',
+              text: 'Tutorial complete! Type "tutorial list", "objectives", or "codex" anytime.',
+            },
+          ]);
         } else {
           const next = cur + 1;
           lastTutorialStepRef.current = next;
@@ -1962,13 +2381,13 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             )} | RP: +${res.rpEarned.toFixed(1)}${soloNote}${billNote}${haltNote}`,
           },
         ]);
-        if (state.tutorialStep === 5) {
+        if (state.tutorialStep === 6) {
           lastTutorialStepRef.current = 0;
           onSetTutorialStep(0);
           append([
             {
               kind: 'OK',
-              text: 'Tutorial complete! Keep scaling with "contracts", "research", "facilities", or "ops". Type "tutorial restart" anytime.',
+              text: 'Tutorial complete! Run "objectives", "codex", or "tutorial list" anytime.',
             },
           ]);
         }
@@ -1979,14 +2398,21 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     if (cmd === 'presets') {
       const unlockedPresets = getUnlockedPresets();
       const rows = unlockedPresets.map((p, i) => {
-        const cost = calculateRigBuildCost({ ...p.config, name: p.label }, state);
-        return `  ${i + 1}. ${padRight(p.label, 26)} ${padLeft(formatUsd(cost), 9)}  ${padRight(
-          state.coins[p.config.targetCoin]?.unlocked ? p.config.targetCoin : 'BTC',
-          5
-        )}`;
+        const cfg: RigBuildConfig = {
+          ...p.config,
+          targetCoin: state.coins[p.config.targetCoin]?.unlocked ? p.config.targetCoin : 'BTC',
+          name: p.label,
+        };
+        const cost = calculateRigBuildCost(cfg, state);
+        const econ = previewRigEconomics(cfg, cost, state);
+        const payback = econ.paybackSteps !== null ? `${econ.paybackSteps}st` : 'Never';
+        return `  ${i + 1}. ${padRight(p.label, 24)} ${padLeft(formatUsd(cost), 8)}  ${padRight(
+          cfg.targetCoin,
+          4
+        )}  Net:${padLeft(`${econ.netPerStepUsd >= 0 ? '+' : ''}${formatUsd(econ.netPerStepUsd)}/st`, 10)}  ROI:${payback}`;
       });
       append([
-        { kind: 'HEAD', text: 'READY-TO-DEPLOY RIG PRESETS' },
+        { kind: 'HEAD', text: 'READY-TO-DEPLOY RIG PRESETS (WITH PURCHASE PREVIEW)' },
         { kind: 'PRE', text: rows.length > 0 ? rows.join('\n') : '  (No presets unlocked yet.)' },
         {
           kind: 'TEXT',
@@ -2000,9 +2426,53 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'usedmarket' || cmd === 'used') {
+      maybeShowContextualGuide('ctx_usedmarket');
       if (arg1 === 'refresh') {
         const res = onRefreshUsedMarket();
         append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'preview') {
+        const idx = parseInt(arg2, 10) - 1;
+        const listing = (state.usedMarketListings ?? [])[idx];
+        if (!listing) {
+          append([{ kind: 'ERR', text: 'Usage: usedmarket preview <listing#>' }]);
+          return;
+        }
+        const cfg: RigBuildConfig = { ...listing.config, name: listing.title };
+        const econ = previewRigEconomics(cfg, listing.listPriceUsd, state);
+        const ch = listing.componentHealth;
+        const partLine = ch
+          ? `  Part Health: Chassis ${Math.round(ch.chassis)}% · Compute ${Math.round(
+              ch.compute
+            )}% · PSU ${Math.round(ch.psu)}% · Cool ${Math.round(ch.cooling)}% · Stor ${Math.round(
+              ch.storage
+            )}%${
+              ch.gpus.length > 0
+                ? ` · GPUs [${ch.gpus.map((g) => `${Math.round(g)}%`).join(', ')}]`
+                : ''
+            }`
+          : `  Part Health: Uniform ~${listing.conditionPct}% across all parts`;
+        append([
+          { kind: 'HEAD', text: `USED LISTING PREVIEW #${idx + 1}: ${listing.title}` },
+          {
+            kind: 'PRE',
+            text: [
+              `  Ask Price:   ${formatUsd(listing.listPriceUsd)} (Retail ${formatUsd(listing.retailPriceUsd)})`,
+              `  Condition:   ${listing.conditionPct}% avg (${listing.conditionTier}) · Age ${listing.ageSteps} steps`,
+              partLine,
+              `  Est Output:  ${formatUsd(econ.grossRevPerStepUsd)}/step gross (${listing.config.targetCoin})`,
+              `  Power Draw:  ${econ.powerKw.toFixed(2)} kW (-${formatUsd(econ.powerCostPerStepUsd)}/step)`,
+              `  Est Net:     ${econ.netPerStepUsd >= 0 ? '+' : ''}${formatUsd(econ.netPerStepUsd)}/step · Payback: ${
+                econ.paybackSteps !== null ? `~${econ.paybackSteps} steps` : 'No payback at current price'
+              }`,
+              `  Grid Impact: ${econ.projectedTotalKw.toFixed(2)} / ${econ.facilityCapKw} kW · Est ${econ.equilibriumTempC}°C / ${econ.noiseDba} dBA`,
+            ].join('\n'),
+          },
+          ...(econ.warnings.length > 0
+            ? econ.warnings.map((w) => ({ kind: 'WARN' as const, text: `[!] ${w}` }))
+            : [{ kind: 'OK' as const, text: `Safe fit. Run "usedmarket buy ${idx + 1}" to purchase.` }]),
+        ]);
         return;
       }
       if (arg1 === 'buy') {
@@ -2026,9 +2496,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           : listings
               .map((l, i) => {
                 const savePct = Math.max(0, Math.round((1 - l.listPriceUsd / Math.max(1, l.retailPriceUsd)) * 100));
-                return `  ${i + 1}. ${padRight(l.title, 34)} ${padLeft(formatUsd(l.listPriceUsd), 8)} (Retail ${formatUsd(
-                  l.retailPriceUsd
-                )}, -${savePct}%)  ${l.conditionPct}% cond · Age ${l.ageSteps}st · ${l.config.targetCoin}`;
+                const econ = previewRigEconomics({ ...l.config, name: l.title }, l.listPriceUsd, state);
+                const roi = econ.paybackSteps !== null ? `${econ.paybackSteps}st` : '--';
+                return `  ${i + 1}. ${padRight(l.title, 32)} ${padLeft(formatUsd(l.listPriceUsd), 7)} (-${savePct}%) ${l.conditionPct}% ${l.config.targetCoin}  Net:${padLeft(
+                  `${econ.netPerStepUsd >= 0 ? '+' : ''}${formatUsd(econ.netPerStepUsd)}`,
+                  8
+                )} ROI:${roi}`;
               })
               .join('\n');
 
@@ -2040,7 +2513,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         { kind: 'PRE', text: rows },
         {
           kind: 'TEXT',
-          text: 'Run "usedmarket buy <#> [name]" to purchase, or "usedmarket refresh" ($75 broker fee unless Secondary Brokerage R&D unlocked).',
+          text: 'Run "usedmarket preview <#>", "usedmarket buy <#> [name]", or "usedmarket refresh" ($75 broker fee unless Secondary Brokerage R&D unlocked).',
         },
       ]);
       return;
@@ -2133,19 +2606,20 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         11
       )}`;
       const rows = state.rigs.map((rig, i) => {
-        const modMark = rig.illicitMod ? '*' : '';
+        const modMark = (rig.illicitMod ? '*' : '') + (rig.customAsicSpec ? '[F]' : '');
         const gen = getRigGeneration(rig);
         const condShort = (rig.conditionTier ?? 'NEW').slice(0, 4);
+        const coinLabel = rig.payoutMode === 'HOLD' ? `${rig.targetCoin}/HLD` : `${rig.targetCoin}/${rig.poolMode}`;
         return `  ${padRight(String(i + 1), 2)} ${padRight(rig.name + modMark, 21)} ${padRight(
           rig.status,
           11
-        )} ${padRight(`${rig.targetCoin}/${rig.poolMode}`, 10)} ${padRight(
+        )} ${padRight(coinLabel, 10)} ${padRight(
           `G${gen}/${condShort}`,
           10
         )} ${padLeft(`${Math.round(rig.healthPct)}%`, 5)} ${padLeft(
           `${rig.temperatureC}C`,
           5
-        )} ${padLeft(formatUsd(rig.lastStepUsd), 11)}`;
+        )} ${padLeft(rig.payoutMode === 'HOLD' ? 'VAULTED' : formatUsd(rig.lastStepUsd), 11)}`;
       });
       const avgHealth =
         state.rigs.reduce((s, r) => s + r.healthPct, 0) / Math.max(1, state.rigs.length);
@@ -2175,6 +2649,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         append([{ kind: 'ERR', text: 'Usage: inspect <rig#>' }]);
         return;
       }
+      maybeShowContextualGuide('ctx_inspect');
       const sysBonus = getSysEngineerBonus(state);
       const enabledCount = state.rigs.filter((r) => r.enabled).length;
       const t = computeRigTelemetry(
@@ -2221,7 +2696,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           ch?.name ?? 'Chassis',
           compHealth.chassis,
           getComponentRepairCost(rig, 'chassis', undefined, state)
-        ),
+        ) + (compHealth.chassis < 65 ? '  (Rattle +dBA)' : ''),
         formatCompRow(
           'compute',
           comp?.name ?? 'Compute',
@@ -2251,19 +2726,19 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           stor?.name ?? 'Storage',
           compHealth.storage,
           getComponentRepairCost(rig, 'storage', undefined, state)
-        ),
+        ) + (compHealth.storage < 65 ? '  (-Storage Eff)' : ''),
         formatCompRow(
           'psu',
           psu?.name ?? 'PSU',
           compHealth.psu,
           getComponentRepairCost(rig, 'psu', undefined, state)
-        ),
+        ) + (compHealth.psu < 65 ? '  (+Watts Ripple)' : ''),
         formatCompRow(
           'cooling',
           cool?.name ?? 'Cooling',
           compHealth.cooling,
           getComponentRepairCost(rig, 'cooling', undefined, state)
-        )
+        ) + (compHealth.cooling < 75 ? '  (-Cooling Power)' : '')
       );
 
       append([
@@ -2277,7 +2752,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             `  Lifecycle: Gen ${gen} · Tier: ${rig.conditionTier ?? 'NEW'} · Age: ${rig.ageSteps ?? 0}st · Failures: ${
               rig.failureCount ?? 0
             } · Resale: ${formatUsd(resaleVal)}`,
-            `  Tuning:   Pool ${rig.poolMode} (${POOL_MODE_SPECS[rig.poolMode].feePct}% fee)   Firmware: ${rig.firmwareProfile}   OC: ${rig.overclockPct}%`,
+            `  Tuning:   Pool ${rig.poolMode} (${POOL_MODE_SPECS[rig.poolMode].feePct}% fee)   Firmware: ${rig.firmwareProfile}   OC: ${rig.overclockPct}%   Payout: ${rig.payoutMode ?? 'AUTOSELL'}`,
             `  Thermal:  ${rig.temperatureC}°C (Eq: ${t.equilibriumTempC}°C)   Paste: ${
               rig.pasteStepsRemaining
             }st left (Repaste: ${formatUsd(repasteCost)})`,
@@ -2285,9 +2760,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
               t.effectiveHashrate,
               t.targetAlgo
             )}   Wall: ${t.wallWatts}W   Noise: ${t.noiseDba}dBA`,
-            `  AutoSell: ${formatCoinAmount(rig.lastStepCoins)} ${rig.targetCoin}/st -> ${formatUsd(
-              rig.lastStepUsd
-            )}/st   Solo Wins: ${rig.soloBlocksWon}   Lifetime: ${formatUsd(rig.totalEarnedUsd)}`,
+            `  Compute:  ${rig.customAsicSpec ? `Custom Fab ${rig.customAsicSpec.processNode} "${rig.customAsicSpec.name}" (${rig.customAsicSpec.algo})` : comp?.name ?? rig.computeId}`,
+            `  Payout:   ${formatCoinAmount(rig.lastStepCoins)} ${rig.targetCoin}/st -> ${
+              rig.payoutMode === 'HOLD' ? 'Vaulted to Wallet' : `${formatUsd(rig.lastStepUsd)}/st`
+            }   Solo Wins: ${rig.soloBlocksWon}   Lifetime: ${formatUsd(rig.totalEarnedUsd)}`,
             `  Illicit:  ${modSpec ? `${modSpec.name} (${modSpec.summary})` : 'None (Stock legal ROM)'}`,
             `  OS Kernel: ${os?.name ?? rig.osId}`,
             ``,
@@ -2313,6 +2789,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'repair' || cmd === 'repaste') {
+      maybeShowContextualGuide(cmd === 'repair' ? 'ctx_repair' : 'ctx_repaste');
       if (cmd === 'repair' && arg1 && arg1 !== 'all' && arg2 && arg2 !== 'all') {
         const rigIdx = parseInt(arg1, 10) - 1;
         if (isNaN(rigIdx) || !state.rigs[rigIdx]) {
@@ -2485,8 +2962,47 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         ]);
         return;
       }
+      if (arg2 === 'room') {
+        const roomNum = parseInt(arg3, 10);
+        if (isNaN(roomNum)) {
+          append([{ kind: 'ERR', text: 'Usage: rig <#|all> room <room#>. Run "rooms" to see the ASCII floor-plan.' }]);
+          return;
+        }
+        const res = onMoveRigToRoom(isAll ? 'ALL' : idx, roomNum);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg2 === 'payout') {
+        const mode =
+          arg3 === 'hold' || arg3 === 'vault' || arg3 === 'wallet'
+            ? 'HOLD'
+            : arg3 === 'sell' || arg3 === 'autosell' || arg3 === 'cash'
+            ? 'AUTOSELL'
+            : null;
+        if (!mode) {
+          append([{ kind: 'ERR', text: 'Usage: rig <#|all> payout <hold|sell>' }]);
+          return;
+        }
+        const res = onSetRigPayout(isAll ? 'ALL' : idx, mode);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg2 === 'clone' || arg2 === 'copy') {
+        if (isAll) {
+          append([{ kind: 'ERR', text: 'Specify a single rig to clone: rig <rig#> clone [qty]' }]);
+          return;
+        }
+        const qty = arg3 ? parseInt(arg3, 10) : 1;
+        if (isNaN(qty) || qty < 1) {
+          append([{ kind: 'ERR', text: 'Usage: rig <rig#> clone [1..12]' }]);
+          return;
+        }
+        const res = onCloneRig(idx, qty);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
       if (isAll) {
-        append([{ kind: 'ERR', text: 'Use "rig all pool <...>" or "rig all profile <...>".' }]);
+        append([{ kind: 'ERR', text: 'Use "rig all pool <...>", "rig all profile <...>", "rig all payout <hold|sell>", or "rig all room <#>".' }]);
         return;
       }
       if (arg2 === 'on' || arg2 === 'off') {
@@ -2523,13 +3039,60 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           return;
         }
         onChangeRigCoin(target.id, sym);
-        append([{ kind: 'OK', text: `${target.name} assigned to mine & auto-sell ${sym}.` }]);
+        append([{ kind: 'OK', text: `${target.name} assigned to mine ${sym}.` }]);
         return;
       }
       append([
         {
           kind: 'ERR',
-          text: 'Usage: rig <#|all> <on|off|oc N|coin SYM|pool pps/pplns/solo|profile eco/balanced/turbo>',
+          text: 'Usage: rig <#|all> <on|off|oc N|coin SYM|pool pps/pplns/solo|profile eco/balanced/turbo|payout hold/sell|room #|clone [qty]>',
+        },
+      ]);
+      return;
+    }
+
+    if (cmd === 'move') {
+      const rigIdx = parseInt(arg1, 10) - 1;
+      const roomNum = parseInt(arg2 === 'room' ? arg3 : arg2, 10);
+      if (isNaN(rigIdx) || isNaN(roomNum)) {
+        append([{ kind: 'ERR', text: 'Usage: move <rig#> [room] <room#>' }]);
+        return;
+      }
+      const res = onMoveRigToRoom(rigIdx, roomNum);
+      append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+      return;
+    }
+
+    if (cmd === 'rooms' || cmd === 'floorplan' || cmd === 'room') {
+      if (arg1 === 'expand') {
+        const res = onExpandFacilityRooms();
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      const maybeRoomNum = parseInt(arg1, 10);
+      if (!isNaN(maybeRoomNum)) {
+        const view = formatSingleRoomView(state, maybeRoomNum);
+        if (!view) {
+          const totalRooms = getFacilityRooms(state).length;
+          append([{ kind: 'ERR', text: `Room #${maybeRoomNum} not found (1..${totalRooms}).` }]);
+          return;
+        }
+        append([
+          { kind: 'HEAD', text: `ROOM INSPECTOR — ROOM #${maybeRoomNum}` },
+          { kind: 'PRE', text: view },
+          {
+            kind: 'TEXT',
+            text: `Commands: "rooms" (full floor-plan), "rig <#> room ${maybeRoomNum}", "cool room <cool#> ${maybeRoomNum}", or "room expand".`,
+          },
+        ]);
+        return;
+      }
+      append([
+        { kind: 'HEAD', text: 'FACILITY ROOMS & ASCII FLOOR-PLAN SELECTOR' },
+        { kind: 'PRE', text: formatAsciiFloorPlan(state) },
+        {
+          kind: 'TEXT',
+          text: 'Select a room via "room <#>", move rigs via "rig <#> room <#>", place coolers via "cool room <cool#> <#>", or build wings via "room expand".',
         },
       ]);
       return;
@@ -2857,6 +3420,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'cool') {
+      maybeShowContextualGuide('ctx_cool');
       const units = state.coolingUnits ?? [];
       if (arg1 === 'compare') {
         append([
@@ -2877,17 +3441,21 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           facility,
           state.facilityUpgrades
         );
+        const roomsNow = getFacilityRooms(state);
         const installed =
           units.length === 0
             ? '  (none installed)'
             : units
                 .map((u, i) => {
                   const spec = ROOM_COOLING_UNITS.find((s) => s.id === u.type);
-                  return `  #${i + 1} ${padRight(spec?.name ?? u.type, 30)} [${
+                  const rid = resolveCoolerRoomId(u, roomsNow, i);
+                  const rm = roomsNow.find((r) => r.id === rid);
+                  return `  #${i + 1} ${padRight(spec?.name ?? u.type, 29)} [${
                     u.enabled ? 'ON ' : 'OFF'
-                  }]  -${spec?.coolingPowerC ?? 0}°C  ${spec?.watts ?? 0}W  ${formatUsd(
-                    spec?.maintenancePerCycle ?? 0
-                  )}/cyc`;
+                  }]  -${spec?.coolingPowerC ?? 0}°C  ${spec?.watts ?? 0}W  ${padRight(
+                    rm ? `Rm#${rm.index}` : 'Rm#1',
+                    5
+                  )} ${formatUsd(spec?.maintenancePerCycle ?? 0)}/cyc`;
                 })
                 .join('\n');
         const shortKey: Record<RoomCoolingType, string> = {
@@ -2921,8 +3489,51 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             text: `FACILITY COOLING (-${coolingSummary.effectiveCoolingPerRigC.toFixed(1)}°C/rig relief · +${coolingSummary.facilityCoolingBonusC}°C passive)`,
           },
           { kind: 'PRE', text: `INSTALLED:\n${installed}\n\nCATALOG:\n${shop}` },
-          { kind: 'TEXT', text: 'Run "cool compare" for $/°C & capacity comparison, or "cool toggle <#>" / "cool sell <#>".' },
+          { kind: 'TEXT', text: 'Run "cool compare", "cool add <type> [room <#>]", "cool room <cool#> <room#>", "cool toggle <#>", or "cool sell <#>".' },
         ]);
+        return;
+      }
+      if (arg1 === 'preview') {
+        const map: Record<string, RoomCoolingType> = {
+          fan: 'cool_unit_fan',
+          indfan: 'cool_unit_ind_fan',
+          industrial: 'cool_unit_ind_fan',
+          drum: 'cool_unit_ind_fan',
+          ac: 'cool_unit_ac',
+          liquid: 'cool_unit_liquid',
+          chiller: 'cool_unit_chiller',
+          hvac: 'cool_unit_facility_hvac',
+          cryo: 'cool_unit_facility_hvac',
+        };
+        const type = map[arg2];
+        const prev = type ? previewCoolingUnit(type, state) : null;
+        if (!prev) {
+          append([{ kind: 'ERR', text: 'Usage: cool preview <fan|indfan|ac|liquid|chiller|hvac>' }]);
+          return;
+        }
+        append([
+          { kind: 'HEAD', text: `COOLING PURCHASE PREVIEW: ${prev.name}` },
+          {
+            kind: 'PRE',
+            text: [
+              `  Upfront Cost:    ${formatUsd(prev.costUsd)} (${formatUsd(prev.costPerDegreeUsd)} per °C)`,
+              `  Cooling Power:   -${prev.coolingC}°C · Power Draw: ${prev.powerKw.toFixed(2)} kW (-${formatUsd(prev.stepElecUsd)}/step)`,
+              `  Cycle Upkeep:    ${formatUsd(prev.cycleMaintUsd)}/30-step cycle`,
+              `  Hot Rigs (>=78°C): ${prev.hotRigsAffected} rig(s) currently running warm/hot`,
+            ].join('\n'),
+          },
+        ]);
+        return;
+      }
+      if (arg1 === 'room') {
+        const unitIdx = parseInt(arg2, 10) - 1;
+        const roomNum = parseInt(arg3, 10);
+        if (isNaN(unitIdx) || isNaN(roomNum)) {
+          append([{ kind: 'ERR', text: 'Usage: cool room <cooler#> <room#>' }]);
+          return;
+        }
+        const res = onMoveCoolerToRoom(unitIdx, roomNum);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
         return;
       }
       if (arg1 === 'add') {
@@ -2939,14 +3550,15 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         };
         const type = map[arg2];
         if (!type) {
-          append([{ kind: 'ERR', text: 'Usage: cool add <fan|indfan|ac|liquid|chiller|hvac>' }]);
+          append([{ kind: 'ERR', text: 'Usage: cool add <fan|indfan|ac|liquid|chiller|hvac> [room <#>]' }]);
           return;
         }
-        const ok = onAddCoolingUnit(type);
+        const roomNum = arg3 === 'room' ? parseInt(parts[4] || '', 10) : parseInt(arg3, 10);
+        const ok = onAddCoolingUnit(type, isNaN(roomNum) ? undefined : roomNum);
         const spec = ROOM_COOLING_UNITS.find((u) => u.id === type);
         append([
           ok
-            ? { kind: 'OK', text: `Installed ${spec?.name}.` }
+            ? { kind: 'OK', text: `Installed ${spec?.name}${!isNaN(roomNum) ? ` in Room #${roomNum}` : ''}.` }
             : {
                 kind: 'ERR',
                 text: `Cannot install ${spec?.name ?? type}: check cash, facility stage, or required R&D.`,
@@ -2970,11 +3582,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         }
         return;
       }
-      append([{ kind: 'ERR', text: 'Usage: cool [list|compare|add <fan|indfan|ac|liquid|chiller|hvac>|toggle <#>|sell <#>]' }]);
+      append([{ kind: 'ERR', text: 'Usage: cool [list|compare|preview <type>|add <type> [room #]|room <#> <room#>|toggle <#>|sell <#>]' }]);
       return;
     }
 
     if (cmd === 'power') {
+      maybeShowContextualGuide('ctx_power');
       if (arg1 === 'contract') {
         const idx = parseInt(arg2, 10) - 1;
         const spec = POWER_CONTRACTS[idx];
@@ -3008,9 +3621,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'facilities') {
+      maybeShowContextualGuide('ctx_facilities');
       const rows = FACILITY_TIERS.map((f, i) => {
         const owned = state.ownedFacilityIds.includes(f.id);
         const cur = state.facilityId === f.id;
+        const prof = FACILITY_PROFILES[f.id];
         return `  ${i + 1}. ${padRight(f.name, 27)} ${padLeft(`${f.maxRigs} rigs`, 8)} ${padLeft(
           `${f.maxPowerKw}kW`,
           6
@@ -3019,20 +3634,57 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           8
         )}  Buy:${padLeft(formatUsd(f.buyoutPrice, true), 7)}  ${
           cur ? '[ACTIVE]' : owned ? '[OWNED]' : ''
+        }${
+          prof
+            ? `\n     + Pros: ${prof.pros.join(' | ')}\n     - Cons: ${prof.cons.join(' | ')}`
+            : ''
         }`;
       });
       append([
-        { kind: 'HEAD', text: `FACILITY STAGES (1..${FACILITY_TIERS.length}) & UPGRADES` },
+        { kind: 'HEAD', text: `FACILITY STAGES (1..${FACILITY_TIERS.length}) · PROS, CONS & UPGRADES` },
         { kind: 'PRE', text: rows.join('\n') },
         {
           kind: 'TEXT',
-          text: `Run "facility rent <1..${FACILITY_TIERS.length}>", "facility buy <1..${FACILITY_TIERS.length}>", or "facility upgrade [<1..${FACILITY_UPGRADES.length}>]".`,
+          text: `Run "rooms" (ASCII floor-plan), "facility preview <1..${FACILITY_TIERS.length}> [buy]", "facility <rent|buy> <1..${FACILITY_TIERS.length}>", "facility upgrade [<1..${FACILITY_UPGRADES.length}>]", or "room expand".`,
         },
       ]);
       return;
     }
 
     if (cmd === 'facility') {
+      if (arg1 === 'expand') {
+        const res = onExpandFacilityRooms();
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'preview') {
+        const idx = parseInt(arg2, 10) - 1;
+        const target = FACILITY_TIERS[idx];
+        const act = arg3 === 'buy' ? 'BUY' : 'RENT';
+        const prev = target ? previewFacilityMove(target.id, act, state) : null;
+        if (!prev) {
+          append([{ kind: 'ERR', text: `Usage: facility preview <1..${FACILITY_TIERS.length}> [rent|buy]` }]);
+          return;
+        }
+        append([
+          { kind: 'HEAD', text: `FACILITY MOVE PREVIEW: ${prev.name} (${act})` },
+          {
+            kind: 'PRE',
+            text: [
+              `  Upfront Cost:      ${prev.alreadyOwned ? '$0 (Already Owned)' : formatUsd(prev.upfrontCostUsd)}`,
+              `  Rig Slot Change:   ${prev.slotsDelta >= 0 ? '+' : ''}${prev.slotsDelta} slots`,
+              `  Power Cap Change:  ${prev.powerCapDeltaKw >= 0 ? '+' : ''}${prev.powerCapDeltaKw} kW`,
+              `  Noise Cap Change:  ${prev.noiseDeltaDba >= 0 ? '+' : ''}${prev.noiseDeltaDba} dBA`,
+              `  Cycle Rent Delta:  ${prev.cycleRentDeltaUsd >= 0 ? '+' : '-'}${formatUsd(Math.abs(prev.cycleRentDeltaUsd))}/cycle`,
+              `  Power Rate Delta:  ${prev.newStepElecDeltaUsd >= 0 ? '+' : '-'}${formatUsd(Math.abs(prev.newStepElecDeltaUsd))}/step at current load`,
+            ].join('\n'),
+          },
+          !prev.rigFitOk
+            ? { kind: 'ERR', text: '[!] Current rig count exceeds target facility slot limit.' }
+            : { kind: 'OK', text: `Run "facility ${act.toLowerCase()} ${idx + 1}" to relocate.` },
+        ]);
+        return;
+      }
       if (arg1 === 'upgrade' || arg1 === 'upgrades') {
         if (!arg2) {
           append([
@@ -3058,7 +3710,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const idx = parseInt(arg2, 10) - 1;
       const target = FACILITY_TIERS[idx];
       if (!action || !target) {
-        append([{ kind: 'ERR', text: `Usage: facility <rent|buy> <1..${FACILITY_TIERS.length}> | facility upgrade [1..${FACILITY_UPGRADES.length}]` }]);
+        append([{ kind: 'ERR', text: `Usage: facility <rent|buy|preview> <1..${FACILITY_TIERS.length}> | facility upgrade [1..${FACILITY_UPGRADES.length}]` }]);
         return;
       }
       const ok = onSelectFacility(target.id, action);
@@ -3070,7 +3722,32 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       return;
     }
 
+    if (cmd === 'forecast') {
+      const sym = arg1 ? (arg1.toUpperCase() as CoinSymbol) : undefined;
+      if (sym && !state.coins[sym]) {
+        append([{ kind: 'ERR', text: `Unknown coin "${arg1}". Usage: forecast [BTC|LTC|DOGE|XMR|ETH|XCH]` }]);
+        return;
+      }
+      append([
+        { kind: 'HEAD', text: sym ? `MARKET FORECAST BRIEF: ${sym}` : 'CRYPTO MARKET TECHNICAL FORECAST' },
+        { kind: 'PRE', text: formatMarketForecastReport(state, sym) },
+      ]);
+      return;
+    }
+
     if (cmd === 'market' || cmd === 'coins') {
+      if (arg1 === 'forecast' || arg1 === 'intel' || arg1 === 'analysis') {
+        const sym = arg2 ? (arg2.toUpperCase() as CoinSymbol) : undefined;
+        if (sym && !state.coins[sym]) {
+          append([{ kind: 'ERR', text: `Unknown coin "${arg2}". Usage: market forecast [BTC|LTC|DOGE|XMR|ETH|XCH]` }]);
+          return;
+        }
+        append([
+          { kind: 'HEAD', text: sym ? `MARKET FORECAST BRIEF: ${sym}` : 'CRYPTO MARKET TECHNICAL FORECAST' },
+          { kind: 'PRE', text: formatMarketForecastReport(state, sym) },
+        ]);
+        return;
+      }
       const reg = MARKET_REGIME_SPECS[state.marketRegime];
       const header = `  ${padRight('TIER', 5)} ${padRight('COIN', 6)} ${padRight(
         'NAME',
@@ -3114,7 +3791,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         { kind: 'PRE', text: [header, '-'.repeat(header.length), ...rows].join('\n') },
         {
           kind: 'TEXT',
-          text: 'Commands: "unlock <COIN>", "chart <COIN>", "usedmarket", "pr launch <1..5> <COIN>".',
+          text: 'Commands: "market forecast [COIN]", "unlock <COIN>", "chart <COIN>", "usedmarket", "pr launch <1..5> <COIN>".',
         },
       ]);
       return;
@@ -3148,10 +3825,30 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'chart') {
+      const metricKey = (arg1 || 'portfolio').toLowerCase();
+      if (
+        metricKey === 'portfolio' ||
+        metricKey === 'cash' ||
+        metricKey === 'valuation' ||
+        metricKey === 'profit' ||
+        metricKey === 'hashrate' ||
+        metricKey === 'power'
+      ) {
+        append([
+          { kind: 'HEAD', text: `ASCII PERFORMANCE ANALYTICS (${metricKey.toUpperCase()})` },
+          { kind: 'PRE', text: formatPortfolioChart(state, metricKey as PortfolioChartMetric) },
+        ]);
+        return;
+      }
       const sym = arg1.toUpperCase() as CoinSymbol;
       const c = state.coins[sym];
       if (!c) {
-        append([{ kind: 'ERR', text: `Unknown coin "${arg1 || '?'}".` }]);
+        append([
+          {
+            kind: 'ERR',
+            text: `Unknown chart "${arg1}". Use: chart <BTC|ETH|...> or chart <portfolio|cash|valuation|profit|hashrate|power>.`,
+          },
+        ]);
         return;
       }
       const sliceCount = arg2 === '30' || arg2 === '30s' ? 30 : arg2 === 'all' ? 9999 : 90;
@@ -3198,7 +3895,178 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       return;
     }
 
+    if (cmd === 'wallet') {
+      append([
+        { kind: 'HEAD', text: 'CRYPTO TREASURY WALLET & EXCHANGE DESK' },
+        { kind: 'PRE', text: formatWalletAndExchangeReport(state) },
+      ]);
+      return;
+    }
+
+    if (cmd === 'exchange' || cmd === 'trade') {
+      if (!arg1 || arg1 === 'status' || arg1 === 'book') {
+        append([
+          { kind: 'HEAD', text: 'CRYPTO EXCHANGE DESK' },
+          { kind: 'PRE', text: formatWalletAndExchangeReport(state) },
+        ]);
+        return;
+      }
+      if (arg1 === 'buy') {
+        const sym = arg2.toUpperCase() as CoinSymbol;
+        const usd = parseFloat(arg3);
+        if (!sym || isNaN(usd)) {
+          append([{ kind: 'ERR', text: 'Usage: exchange buy <COIN> <usdAmount>' }]);
+          return;
+        }
+        const res = onExchangeBuy(sym, usd);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'sell') {
+        const sym = arg2.toUpperCase() as CoinSymbol;
+        const qtyOrAll: number | 'ALL' =
+          arg3 === 'all' ? 'ALL' : parseFloat(arg3);
+        if (!sym || (qtyOrAll !== 'ALL' && isNaN(qtyOrAll))) {
+          append([{ kind: 'ERR', text: 'Usage: exchange sell <COIN> <qty|all>' }]);
+          return;
+        }
+        const res = onExchangeSell(sym, qtyOrAll);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'limit') {
+        const sideRaw = arg2.toUpperCase();
+        const side = sideRaw === 'BUY' || sideRaw === 'SELL' ? sideRaw : null;
+        const sym = (arg3 || '').toUpperCase() as CoinSymbol;
+        const targetPx = parseFloat(parts[4] || '');
+        const amt = parseFloat(parts[5] || '');
+        if (!side || !sym || isNaN(targetPx) || isNaN(amt)) {
+          append([{ kind: 'ERR', text: 'Usage: exchange limit <buy|sell> <COIN> <targetPriceUsd> <usdOrCoinAmt>' }]);
+          return;
+        }
+        const res = onPlaceLimitOrder(side, sym, targetPx, amt);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'cancel') {
+        const idx = parseInt(arg2, 10) - 1;
+        if (isNaN(idx)) {
+          append([{ kind: 'ERR', text: 'Usage: exchange cancel <order#>' }]);
+          return;
+        }
+        const res = onCancelLimitOrder(idx);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'short') {
+        const sym = arg2.toUpperCase() as CoinSymbol;
+        const usd = parseFloat(arg3);
+        if (!sym || isNaN(usd)) {
+          append([{ kind: 'ERR', text: 'Usage: exchange short <COIN> <collateralUsd>' }]);
+          return;
+        }
+        const res = onOpenShort(sym, usd);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'close') {
+        const idx = parseInt(arg2, 10) - 1;
+        if (isNaN(idx)) {
+          append([{ kind: 'ERR', text: 'Usage: exchange close <short#>' }]);
+          return;
+        }
+        const res = onCloseShort(idx);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      append([
+        {
+          kind: 'ERR',
+          text: 'Usage: exchange [buy <COIN> <usd> | sell <COIN> <qty|all> | limit <buy|sell> <COIN> <px> <amt> | cancel <#> | short <COIN> <usd> | close <#>]',
+        },
+      ]);
+      return;
+    }
+
+    if (cmd === 'fab' || cmd === 'foundry') {
+      if (!arg1 || arg1 === 'status' || arg1 === 'list') {
+        append([
+          { kind: 'HEAD', text: 'SEMICONDUCTOR & PROPRIETARY ASIC FOUNDRY' },
+          { kind: 'PRE', text: formatFabStatusReport(state) },
+        ]);
+        return;
+      }
+      if (arg1 === 'line' && arg2 === 'build') {
+        const res = onBuildFabLine();
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'design') {
+        const rawTokens = trimmed.split(/\s+/).slice(1);
+        const bpName = rawTokens[0];
+        const algoRaw = (rawTokens[1] || '').toUpperCase() as MiningAlgorithm;
+        const nodeRaw = (rawTokens[2] || '').toLowerCase() as ChipProcessNode;
+        const validAlgos: MiningAlgorithm[] = ['SHA256', 'SCRYPT', 'RANDOMX', 'ETHASH', 'POST'];
+        const validNodes: ChipProcessNode[] = ['7nm', '5nm', '3nm', '2nm'];
+        if (!bpName || !validAlgos.includes(algoRaw) || !validNodes.includes(nodeRaw)) {
+          append([
+            {
+              kind: 'ERR',
+              text: 'Usage: fab design <SingleWordName> <sha256|scrypt|randomx|ethash|post> <7nm|5nm|3nm|2nm>',
+            },
+          ]);
+          return;
+        }
+        const res = onDesignCustomChip(bpName, algoRaw, nodeRaw);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'produce') {
+        const bpIdx = parseInt(arg2, 10) - 1;
+        const qty = parseInt(arg3 || '1', 10);
+        if (isNaN(bpIdx) || isNaN(qty)) {
+          append([{ kind: 'ERR', text: 'Usage: fab produce <blueprint#> <qty>' }]);
+          return;
+        }
+        const res = onQueueFabProduction(bpIdx, qty);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'deploy') {
+        const invIdx = parseInt(arg2, 10) - 1;
+        const rigIdx = parseInt(arg3, 10) - 1;
+        if (isNaN(invIdx) || isNaN(rigIdx)) {
+          append([{ kind: 'ERR', text: 'Usage: fab deploy <inventory#> <rig#>' }]);
+          return;
+        }
+        const res = onDeployCustomAsic(invIdx, rigIdx);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'sell') {
+        const invIdx = parseInt(arg2, 10) - 1;
+        const qtyOrAll: number | 'ALL' =
+          arg3 === 'all' ? 'ALL' : parseInt(arg3 || '1', 10);
+        if (isNaN(invIdx) || (qtyOrAll !== 'ALL' && isNaN(qtyOrAll))) {
+          append([{ kind: 'ERR', text: 'Usage: fab sell <inventory#> <qty|all>' }]);
+          return;
+        }
+        const res = onSellCustomAsic(invIdx, qtyOrAll);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      append([
+        {
+          kind: 'ERR',
+          text: 'Usage: fab [line build | design <name> <algo> <7nm|5nm|3nm|2nm> | produce <bp#> <qty> | deploy <inv#> <rig#> | sell <inv#> <qty|all>]',
+        },
+      ]);
+      return;
+    }
+
     if (cmd === 'contracts') {
+      if (!checkSystemUnlocked('contracts', 'Enterprise Contracts')) return;
+      maybeShowContextualGuide('ctx_contracts');
       const progressFmt = (c: NonNullable<GameState['activeContract']>) =>
         c.type === 'LOW_NOISE_RUN' || c.type === 'MAINTENANCE_SLA'
           ? `${c.progress}/${c.targetAmount} steps`
@@ -3241,6 +4109,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'contract') {
+      if (!checkSystemUnlocked('contracts', 'Enterprise Contracts')) return;
       if (arg1 === 'accept') {
         const idx = parseInt(arg2, 10) - 1;
         const target = state.availableContracts[idx];
@@ -3270,6 +4139,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'rivals') {
+      if (!checkSystemUnlocked('rivals', 'Rival Syndicates')) return;
+      maybeShowContextualGuide('ctx_rivals');
       if (arg1 === 'compare' || arg1 === 'rank' || arg1 === 'leaderboard') {
         append([
           { kind: 'HEAD', text: 'INDUSTRY BENCHMARK & MARKET SHARE COMPARISON' },
@@ -3277,15 +4148,29 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         ]);
         return;
       }
+      if (arg1 === 'investigate' || arg1 === 'scout' || arg1 === 'intel') {
+        const idx = parseInt(arg2, 10) - 1;
+        if (isNaN(idx) || !state.rivals[idx]) {
+          append([{ kind: 'ERR', text: `Usage: rivals investigate <1..${state.rivals.length}>` }]);
+          return;
+        }
+        const res = onInvestigateRival(idx);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
       const header = `  #  ${padRight('SYNDICATE', 24)} ${padRight('COIN', 5)} ${padRight(
         'STRATEGY',
         21
       )} ${padLeft('HASH IDX', 9)} ${padLeft('SHARE', 7)}  STATUS / MOVE`;
       const rows = state.rivals.map((rv, i) => {
+        const reconNote =
+          (rv.intelRevealedUntilStep ?? 0) >= state.stepCount
+            ? ` [Res:${formatUsd(rv.cashReserveUsd, true)} Rigs:${rv.rigCount}]`
+            : '';
         const st =
           rv.disruptedSteps > 0
             ? `[DISRUPTED ${rv.disruptedSteps}st]`
-            : rv.lastActionSummary;
+            : `${rv.lastActionSummary}${reconNote}`;
         return `  ${padRight(String(i + 1), 2)} ${padRight(rv.name, 24)} ${padRight(
           rv.specialtyCoin,
           5
@@ -3294,18 +4179,21 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           9
         )} ${padLeft(`${rv.marketSharePct.toFixed(1)}%`, 7)}  ${st}`;
       });
+      const sampleRecon = state.rivals[0] ? formatUsd(getRivalInvestigateCost(state, state.rivals[0])) : '$220';
       append([
         { kind: 'HEAD', text: 'RIVAL MINING SYNDICATES' },
         { kind: 'PRE', text: [header, '-'.repeat(header.length + 14), ...rows].join('\n') },
         {
           kind: 'TEXT',
-          text: 'Run "rivals compare" for head-to-head ranking vs your operation, or disrupt via "ops sabotage <#>".',
+          text: `Commands: "rivals compare", "rivals investigate <1..${state.rivals.length}>" (from ${sampleRecon}, +4 RP & reserve intel), or "ops sabotage <#>".`,
         },
       ]);
       return;
     }
 
     if (cmd === 'ops') {
+      if (!checkSystemUnlocked('ops', 'Covert Operations')) return;
+      maybeShowContextualGuide('ctx_ops');
       if (arg1 === 'siphon') {
         if (arg2 !== 'on' && arg2 !== 'off') {
           append([{ kind: 'ERR', text: 'Usage: ops siphon <on|off>' }]);
@@ -3389,6 +4277,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const heat = Math.round(state.regulatoryScrutiny);
       const heatZone =
         heat >= 75 ? 'CRITICAL (High Raid Risk)' : heat >= 50 ? 'ELEVATED (Audit Watch)' : 'LOW';
+      const raidRiskPct =
+        state.underground.bribeProtectionSteps > 0
+          ? '0% (Bribe Shield Active)'
+          : heat >= 75
+          ? '~18%/step (14-26% cash fine + illicit rig seizure)'
+          : heat >= 50
+          ? '~6%/step audit risk'
+          : '<1%/step';
       const botnetLine =
         state.underground.botnetStepsRemaining > 0
           ? `ACTIVE (${state.underground.botnetCoin}, ${state.underground.botnetStepsRemaining}st left)`
@@ -3403,19 +4299,20 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           kind: 'PRE',
           text: [
             `  Heat / Scrutiny: [${renderAsciiBar(heat, 16)}] ${heat}/100  (${heatZone})`,
+            `  Enforcement Risk:${' '}${raidRiskPct}`,
             `  Audit Shield:    ${state.underground.bribeProtectionSteps > 0 ? `${state.underground.bribeProtectionSteps} steps remaining` : 'None'}`,
             `  Power Siphon:    ${state.underground.powerSiphonActive ? 'ON (-65% electricity, +25% breaker, +1.7 Heat/st)' : 'OFF'}`,
             `  Shadow Botnet:   ${botnetLine}`,
             `  Raids Survived:  ${state.stats.raidsSurvived}   Covert Ops Run: ${state.stats.covertOpsCount}`,
             ``,
             `  ACTIONS:`,
-            `    ops siphon <on|off>   Toggle bypassed power meter`,
-            `    ops botnet <COIN>     Lease zero-watt shadow hash for 8 steps`,
-            `    ops wash <COIN>       Spike coin spot price +26% via dark pools`,
-            `    ops sabotage <1..3>   DDoS & disrupt a rival syndicate for 10 steps`,
+            `    ops siphon <on|off>   Toggle bypassed power meter (+1.7 Heat/step)`,
+            `    ops botnet <COIN>     Lease zero-watt shadow hash for 8 steps (+18 Heat)`,
+            `    ops wash <COIN>       Spike coin spot price +26% via dark pools (+20 Heat, -5 Rep)`,
+            `    ops sabotage <1..4>   DDoS & disrupt a rival syndicate for 10 steps (+18 Heat)`,
             `    ops launder           Route funds through mixers (-24 Heat)`,
             `    ops bribe             Pay utility inspectors (-16 Heat + 12-step raid shield)`,
-            `    blackmarket           Browse smuggled discounted rigs & illicit ROM mods`,
+            `    blackmarket           Browse smuggled rigs (~22% lemon risk) & illicit ROM mods`,
           ].join('\n'),
         },
       ]);
@@ -3423,6 +4320,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'blackmarket' || cmd === 'bm') {
+      if (!checkSystemUnlocked('blackmarket', 'Black Market')) return;
+      maybeShowContextualGuide('ctx_blackmarket');
       if (arg1 === 'buy') {
         const idx = parseInt(arg2, 10) - 1;
         const listing = state.underground.blackMarketListings[idx];
@@ -3456,18 +4355,45 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'staff') {
+      if (!checkSystemUnlocked('staff', 'Employee Management')) return;
+      maybeShowContextualGuide('ctx_staff');
+      if (arg1 === 'bonus') {
+        if (!arg2) {
+          append([{ kind: 'ERR', text: 'Usage: staff bonus <staff#|all>' }]);
+          return;
+        }
+        const target = arg2 === 'all' ? 'ALL' : parseInt(arg2, 10) - 1;
+        if (target !== 'ALL' && isNaN(target)) {
+          append([{ kind: 'ERR', text: 'Usage: staff bonus <staff#|all>' }]);
+          return;
+        }
+        const res = onBonusStaff(target);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'negotiate' || arg1 === 'settle') {
+        const res = onNegotiateStrike();
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+
       const facIdx = FACILITY_TIERS.findIndex((f) => f.id === state.facilityId);
+      const wl = computeWorkloadSummary(state);
+      const totals = getFacilityTotals(state);
+      const strike = state.strikeStepsRemaining ?? 0;
+
       const roster =
         state.employees.length === 0
           ? '  (none hired)'
           : state.employees
-              .map(
-                (e, i) =>
-                  `  #${i + 1} ${padRight(e.name, 18)} ${padRight(e.role, 14)} Lv${e.skillLevel ?? 1} (${e.experienceXp ?? 0}XP)  ${padRight(
-                    e.shift,
-                    13
-                  )} ${e.priority}`
-              )
+              .map((e, i) => {
+                const eff = Math.round(getEmployeeEfficiencyMult(e, strike) * 100);
+                const morale = Math.round(e.morale ?? 85);
+                return `  #${i + 1} ${padRight(e.name, 16)} ${padRight(e.role, 13)} Lv${e.skillLevel ?? 1} Morale:${padLeft(
+                  `${morale}%`,
+                  4
+                )} Eff:${padLeft(`${eff}%`, 4)} ${padRight(e.shift, 13)} ${e.priority}`;
+              })
               .join('\n');
       const keyMap: Record<EmployeeRole, string> = {
         TECHNICIAN: 'tech',
@@ -3488,14 +4414,31 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         }\n      ${s.summary}`;
       }).join('\n');
       append([
-        { kind: 'HEAD', text: 'STAFF ROSTER, TRAINING & RECRUITMENT' },
-        { kind: 'PRE', text: `ACTIVE CREW:\n${roster}\n\nRECRUIT:\n${catalog}` },
-        { kind: 'TEXT', text: 'Commands: "hire <tech|elec|mgr|eng|res|pr|analyst>", "train <staff#>", "shift <#> <day|night|24/7>", "priority <#> <thermal|care|hash|research>", "fire <#>".' },
+        {
+          kind: wl.strikeActive ? 'ERR' : wl.workloadPct > 125 ? 'WARN' : 'HEAD',
+          text: `STAFF ROSTER · WORKLOAD: ${wl.workloadPct}% (${wl.statusLabel}) · AVG MORALE: ${wl.avgMorale}% · PAYROLL: ${formatUsd(
+            totals.cyclePayrollUsd
+          )}/cyc`,
+        },
+        ...(wl.strikeActive
+          ? [
+              {
+                kind: 'ERR' as const,
+                text: `[!] ACTIVE LABOR STRIKE (${wl.strikeStepsRemaining} steps left): -35% mining output, 0% crew bonuses! Run "staff negotiate" to settle.`,
+              },
+            ]
+          : []),
+        { kind: 'PRE', text: `ACTIVE CREW (Cap ${wl.capacityUnits} vs Demand ${wl.demandUnits}):\n${roster}\n\nRECRUIT:\n${catalog}` },
+        {
+          kind: 'TEXT',
+          text: 'Commands: "hire <role>", "train <#>", "staff bonus <#|all>", "staff negotiate", "shift <#> <day|night|24/7>", "priority <#> <thermal|care|hash|research>", "fire <#>".',
+        },
       ]);
       return;
     }
 
     if (cmd === 'hire') {
+      if (!checkSystemUnlocked('staff', 'Employee Management')) return;
       const roleMap: Record<string, EmployeeRole> = {
         tech: 'TECHNICIAN',
         technician: 'TECHNICIAN',
@@ -3586,6 +4529,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'research') {
+      maybeShowContextualGuide('ctx_research');
       if (arg1 === 'done' || arg1 === 'completed') {
         const completed = RESEARCH_NODES.filter((n) => state.unlockedResearch.includes(n.id));
         const doneRows =
@@ -3656,10 +4600,33 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       return;
     }
 
+    if (cmd === 'valuation') {
+      append([
+        { kind: 'HEAD', text: 'COMPANY VALUATION & FLEET ROI AUDIT' },
+        { kind: 'PRE', text: formatValuationReport(state) },
+      ]);
+      return;
+    }
+
     if (cmd === 'stats' || cmd === 'analytics') {
+      if (arg1 === 'chart' || arg1 === 'charts') {
+        append([
+          { kind: 'HEAD', text: 'ASCII HISTORICAL PERFORMANCE CHARTS' },
+          { kind: 'PRE', text: formatPortfolioChart(state, 'portfolio') },
+        ]);
+        return;
+      }
+      if (arg1 === 'valuation' || arg1 === 'roi' || arg1 === 'value') {
+        append([
+          { kind: 'HEAD', text: 'COMPANY VALUATION & FLEET ROI AUDIT' },
+          { kind: 'PRE', text: formatValuationReport(state) },
+        ]);
+        return;
+      }
       append([
         { kind: 'HEAD', text: 'COMPANY FINANCIAL & OPERATIONAL ANALYTICS' },
         { kind: 'PRE', text: formatStatsReport(state) },
+        { kind: 'TEXT', text: 'Tips: Run "valuation" (or "stats roi") for asset breakdown & ROI, or "chart portfolio" for ASCII trends.' },
       ]);
       return;
     }
@@ -3677,13 +4644,17 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         research: 'RESEARCH',
         event: 'EVENT',
         reward: 'REWARD',
+        exchange: 'EXCHANGE',
+        trade: 'EXCHANGE',
+        fab: 'FAB',
+        foundry: 'FAB',
       };
       const filterCat = arg1 ? catMap[arg1] : undefined;
       if (arg1 && !filterCat && arg1 !== 'all') {
         append([
           {
             kind: 'ERR',
-            text: 'Filter options: hardware, sale, repair, facility, power, staff, contract, research, event, reward',
+            text: 'Filter options: hardware, sale, repair, facility, power, staff, contract, research, event, reward, exchange, fab',
           },
         ]);
         return;
@@ -3702,7 +4673,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       append([
         {
           kind: 'HEAD',
-          text: `COMPANY MILESTONES (${(state.unlockedMilestones ?? []).length}/${10})`,
+          text: `COMPANY MILESTONES (${(state.unlockedMilestones ?? []).length}/${MILESTONES.length})`,
         },
         { kind: 'PRE', text: formatMilestonesReport(state) },
       ]);
@@ -3713,7 +4684,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       append([
         {
           kind: 'HEAD',
-          text: `CAREER ACHIEVEMENTS (${(state.unlockedAchievements ?? []).length}/${9})`,
+          text: `CAREER ACHIEVEMENTS (${(state.unlockedAchievements ?? []).length}/${ACHIEVEMENTS.length})`,
         },
         { kind: 'PRE', text: formatAchievementsReport(state) },
       ]);
@@ -3778,6 +4749,13 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (cmd === 'ledger') {
+      if (arg1 === 'chart' || arg1 === 'charts') {
+        append([
+          { kind: 'HEAD', text: 'LEDGER PERFORMANCE CHARTS' },
+          { kind: 'PRE', text: formatPortfolioChart(state, 'profit') },
+        ]);
+        return;
+      }
       if (state.ledger.length === 0) {
         append([
           {
@@ -3803,11 +4781,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       append([
         { kind: 'HEAD', text: '30-STEP CYCLE FINANCIAL LEDGER' },
         { kind: 'PRE', text: [header, '-'.repeat(header.length), ...rows].join('\n') },
+        { kind: 'TEXT', text: 'Tip: Run "ledger chart" or "chart cash" for historical trends.' },
       ]);
       return;
     }
 
     if (cmd === 'pr') {
+      if (!checkSystemUnlocked('pr', 'PR Campaigns')) return;
+      maybeShowContextualGuide('ctx_pr');
       if (arg1 === 'launch' && arg2 && arg3) {
         const idx = parseInt(arg2, 10) - 1;
         const tpl = PR_CAMPAIGNS[idx];
@@ -4141,16 +5122,25 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       {/* Inline Terminal Status Strip */}
       <div className="relative z-10 px-4 py-2 bg-[#041108]/92 border-b border-green-500/25 font-mono text-[11px] text-green-300/75 flex flex-wrap items-center justify-between gap-2 select-none">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span className="text-green-400 font-semibold matrix-glow">{facility.name}</span>
+          <span
+            className="text-green-400 font-semibold matrix-glow"
+            title="Current facility stage (run 'facilities' to inspect/upgrade)"
+          >
+            {facility.name}
+          </span>
           <span className="text-green-700">·</span>
-          <span className="tabular-nums text-green-200/90">
+          <span
+            className="tabular-nums text-green-200/90"
+            title="Active & installed rigs / facility slot capacity"
+          >
             Rigs {totals.rigCount}/{maxRigs}
           </span>
           <span className="text-green-700">·</span>
           <span
+            title="Total fleet + cooling kW draw vs facility breaker limit (overload trips breakers)"
             className={
               totals.totalPowerKw > effectiveCap
-                ? 'text-rose-400 tabular-nums'
+                ? 'text-rose-400 tabular-nums font-semibold'
                 : 'tabular-nums text-green-200/90'
             }
           >
@@ -4158,22 +5148,32 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           </span>
           <span className="text-green-700">·</span>
           <span
+            title="Peak acoustic output vs zoning limit (exceeding triggers fines every 5 steps)"
             className={
               totals.maxNoiseDba > facility.noiseLimitDba
-                ? 'text-rose-400 tabular-nums'
+                ? 'text-rose-400 tabular-nums font-semibold'
                 : 'tabular-nums text-green-200/90'
             }
           >
             Noise {totals.maxNoiseDba}/{facility.noiseLimitDba} dBA
           </span>
           <span className="text-green-700">·</span>
-          <span className="text-emerald-300 tabular-nums">
+          <span
+            className="text-emerald-300 tabular-nums"
+            title="Combined room cooling & ventilation offset per active rig"
+          >
             Cool -{coolingSummary.effectiveCoolingPerRigC.toFixed(1)}°C/rig
           </span>
           <span className="text-green-700">·</span>
-          <span className="text-green-300 tabular-nums">{state.researchPoints.toFixed(1)} RP</span>
+          <span
+            className="text-green-300 tabular-nums"
+            title="Research Points spent in 'research' to unlock new hardware & upgrades"
+          >
+            {state.researchPoints.toFixed(1)} RP
+          </span>
           <span className="text-green-700">·</span>
           <span
+            title="Regulatory Scrutiny (0-100): >=55 increases audit & raid risk"
             className={
               heat >= 70
                 ? 'text-rose-400 font-semibold tabular-nums'
@@ -4254,6 +5254,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             <button
               key={chip.cmd}
               type="button"
+              title={`Execute "${chip.cmd}"`}
               onClick={(e) => {
                 e.stopPropagation();
                 executeCommand(chip.cmd);

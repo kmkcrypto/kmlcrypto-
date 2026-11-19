@@ -76,7 +76,12 @@ export function computeAverageRigHealth(comp: RigComponentHealth): number {
   return Number(Math.max(20, Math.min(100, avg)).toFixed(1));
 }
 
-export function getRigGeneration(config: RigBuildConfig): HardwareGen {
+export function getRigGeneration(config: RigBuildConfig & { customAsicSpec?: MiningRig['customAsicSpec'] }): HardwareGen {
+  if (config.customAsicSpec) {
+    if (config.customAsicSpec.processNode === '2nm') return 5;
+    if (config.customAsicSpec.processNode === '3nm' || config.customAsicSpec.processNode === '5nm') return 4;
+    return 3;
+  }
   const ch = CHASSIS_PARTS.find((c) => c.id === config.chassisId);
   const comp = COMPUTE_PARTS.find((c) => c.id === config.computeId);
   const gpus = config.gpuIds
@@ -87,9 +92,18 @@ export function getRigGeneration(config: RigBuildConfig): HardwareGen {
   return g;
 }
 
-export function getGlobalHardwarePriceMult(state: Pick<GameState, 'activeMarketModifiers'>): number {
+export function getGlobalHardwarePriceMult(
+  state: Pick<GameState, 'activeMarketModifiers'> & { marketRegime?: GameState['marketRegime'] }
+): number {
   const mods = state.activeMarketModifiers ?? [];
-  return mods.reduce((m, item) => m * item.hardwarePriceMult, 1.0);
+  const modMult = mods.reduce((m, item) => m * item.hardwarePriceMult, 1.0);
+  const regimeMult =
+    state.marketRegime === 'MANIA_PEAK'
+      ? 1.08
+      : state.marketRegime === 'CRYPTO_WINTER'
+      ? 0.92
+      : 1.0;
+  return Number((modMult * regimeMult).toFixed(4));
 }
 
 export function getGlobalResaleValueMult(
@@ -239,6 +253,29 @@ export function generateUsedMarketListings(
       overclockPct: 100,
     };
 
+    const spread =
+      conditionTier === 'NEW'
+        ? 0
+        : conditionTier === 'REFURBISHED'
+        ? 10
+        : conditionTier === 'USED'
+        ? 24
+        : 28;
+    const vary = (bias = 0) => {
+      if (conditionTier === 'NEW') return 100;
+      const v = conditionPct + bias + (rng() - 0.5) * spread;
+      return Number(Math.max(22, Math.min(99, v)).toFixed(1));
+    };
+    const compHealth: RigComponentHealth = {
+      chassis: vary(8),
+      compute: vary(-2),
+      gpus: Array.from({ length: gpuCount }, (_, gi) => vary(gi === 0 ? -4 : -10)),
+      storage: vary(5),
+      psu: vary(conditionTier === 'DAMAGED' ? -12 : -3),
+      cooling: vary(-5),
+    };
+    const avgConditionPct = Math.round(computeAverageRigHealth(compHealth));
+
     const retailPriceUsd = Math.round(calculateBaseRigPartsCost({ ...cfg, name: 'Tmp' }) * hwMult);
     const listPriceUsd = Math.max(45, Math.round(retailPriceUsd * priceFactor));
     const generation = getRigGeneration({ ...cfg, name: 'Tmp' });
@@ -251,13 +288,14 @@ export function generateUsedMarketListings(
       id: `used_${state.stepCount}_${i}_${Math.random().toString(36).slice(2, 5)}`,
       title,
       conditionTier,
-      conditionPct,
+      conditionPct: avgConditionPct,
       ageSteps,
       generation,
       listPriceUsd,
       retailPriceUsd,
       config: cfg,
-      summary: `${conditionPct}% cond · Age ${ageSteps}st · ${targetCoin} · Save ${Math.max(
+      componentHealth: compHealth,
+      summary: `${avgConditionPct}% cond · Age ${ageSteps}st · ${targetCoin} · Save ${Math.max(
         0,
         Math.round((1 - listPriceUsd / Math.max(1, retailPriceUsd)) * 100)
       )}% vs retail`,

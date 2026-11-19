@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  COMPUTE_PARTS,
   FACILITY_TIERS,
   FACILITY_UPGRADES,
   POWER_CONTRACTS,
@@ -8,32 +9,52 @@ import {
   ROOM_COOLING_UNITS,
 } from '../src/data/catalog';
 import { generateContractBoard } from '../src/engine/contracts';
-import { evaluateProgression } from '../src/engine/milestones';
-import { getPlayerRivalComparison, stepRivalSyndicates } from '../src/engine/rivals';
+import { computeValuationBreakdown, evaluateProgression } from '../src/engine/milestones';
+import {
+  getPlayerRivalComparison,
+  investigateRivalSyndicate,
+  stepRivalSyndicates,
+} from '../src/engine/rivals';
+import { analyzeCoinForecast, formatMarketForecastReport } from '../src/engine/marketForecast';
 import {
   hydrateSavedState,
   serializeSaveEnvelope,
   validateAndParseImportedSave,
 } from '../src/engine/saveSystem';
+import { CODEX_ENTRIES, getUnlockedSystems, TUTORIAL_TOPICS } from '../src/data/onboarding';
+import {
+  previewCoolingUnit,
+  previewFacilityMove,
+  previewPowerContract,
+  previewRigEconomics,
+} from '../src/engine/previews';
+import { formatPortfolioChart } from '../src/components/terminal/reports';
 import {
   advanceOneStep,
+  claimCompletedObjectives,
   computeAverageRigHealth,
   computeFacilityCoolingSummary,
   computeRigTelemetry,
+  computeWorkloadSummary,
   createInitialComponentHealth,
   createNewGameState,
   ensureRigComponentHealth,
+  formatAsciiFloorPlan,
+  formatSingleRoomView,
+  generateInteractiveEvent,
   getComponentRepairCost,
   getEffectiveElectricityRate,
   getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
   getElectricianBonuses,
   getFacility,
+  getFacilityRooms,
   getFacilityTotals,
   getFacilityUpgradeCost,
   getManagerBonuses,
   getRigRepairCost,
   getTechnicianBonuses,
+  resolvePendingEvent,
 } from '../src/engine/simulation';
 import {
   calculateRigResaleValue,
@@ -372,5 +393,313 @@ describe('Blockworks Tycoon 2.0 Simulation Engine', () => {
       computeAverageRigHealth(steppedRig.componentHealth),
       'Rig healthPct must equal the average of all individual components'
     );
+  });
+
+  it('12. Guided vs Veteran onboarding gates, topic tutorials, Codex, and early objective rewards work', () => {
+    const guided = createNewGameState('STANDARD', false, 'TEST_GUIDE', undefined, null, 'GUIDED');
+    const veteran = createNewGameState('STANDARD', false, 'TEST_VET', undefined, null, 'VETERAN');
+
+    assert.equal(guided.onboardingMode, 'GUIDED');
+    assert.equal(guided.tutorialStep, 1);
+    assert.equal(veteran.onboardingMode, 'VETERAN');
+    assert.equal(veteran.tutorialStep, 0);
+
+    const guidedStartLocks = getUnlockedSystems(guided);
+    assert.equal(guidedStartLocks.contracts, false, 'Contracts locked at Step 0 in Guided mode');
+    assert.equal(guidedStartLocks.staff, false, 'Staff locked at Step 0 in Guided mode');
+    assert.equal(guidedStartLocks.ops, false, 'Ops locked at Step 0 in Guided mode');
+
+    const vetLocks = getUnlockedSystems(veteran);
+    assert.equal(vetLocks.contracts, true, 'Veteran mode starts with contracts unlocked');
+    assert.equal(vetLocks.staff, true, 'Veteran mode starts with staff unlocked');
+    assert.equal(vetLocks.ops, true, 'Veteran mode starts with ops unlocked');
+
+    // Advancing 3 steps unlocks contracts and awards early objective bonuses
+    let s = guided;
+    for (let i = 0; i < 3; i++) {
+      s = advanceOneStep({ ...s, pendingEvent: null }).nextState;
+    }
+    assert.equal(getUnlockedSystems(s).contracts, true, 'Step 3 should unlock Contracts in Guided mode');
+    const claimed = claimCompletedObjectives(s);
+    assert.ok((claimed.nextState.claimedObjectives ?? []).includes('obj_advance_steps'));
+    assert.ok(Object.keys(TUTORIAL_TOPICS).length >= 7);
+    assert.ok(CODEX_ENTRIES.length >= 8);
+  });
+
+  it('13. Purchase payback previews and performance history ASCII charts operate accurately', () => {
+    let s = createNewGameState('STANDARD', false, 'TEST_PREVIEWS', undefined, null, 'VETERAN');
+    const preview = previewRigEconomics(
+      {
+        name: 'Preview Rig',
+        chassisId: s.rigs[0].chassisId,
+        computeId: s.rigs[0].computeId,
+        gpuIds: s.rigs[0].gpuIds,
+        storageId: s.rigs[0].storageId,
+        psuId: s.rigs[0].psuId,
+        coolingId: s.rigs[0].coolingId,
+        osId: s.rigs[0].osId,
+        targetCoin: 'BTC',
+        overclockPct: 100,
+      },
+      300,
+      s
+    );
+    assert.ok(preview.powerKw > 0);
+    assert.ok(preview.grossRevPerStepUsd >= 0);
+
+    const facPreview = previewFacilityMove('fac_garage', 'RENT', s);
+    assert.ok(facPreview && facPreview.slotsDelta > 0);
+
+    const coolPreview = previewCoolingUnit('cool_unit_fan', s);
+    assert.ok(coolPreview && coolPreview.coolingC > 0);
+
+    const pwrPreview = previewPowerContract('contract_budget', s);
+    assert.ok(pwrPreview && typeof pwrPreview.netCycleDeltaUsd === 'number');
+
+    for (let i = 0; i < 4; i++) {
+      s = advanceOneStep({ ...s, pendingEvent: null }).nextState;
+    }
+    assert.equal(s.performanceHistory?.length, 4);
+    const chartText = formatPortfolioChart(s, 'portfolio');
+    assert.ok(chartText.includes('NET OPERATING PROFIT PER STEP'));
+    assert.ok(chartText.includes('COMPANY VALUATION'));
+  });
+
+  it('14. Employee workload, graduated morale drain, 10-staff strike escalation, and settlement work', () => {
+    const base = createNewGameState('STANDARD', false, 'TEST_STRIKE', undefined, null, 'VETERAN');
+    const tenLowMorale = Array.from({ length: 10 }, (_, idx) => ({
+      id: `emp_${idx}`,
+      name: `Worker ${idx + 1}`,
+      role: (idx === 0 ? 'TECHNICIAN' : 'SYS_ENGINEER') as 'TECHNICIAN' | 'SYS_ENGINEER',
+      shift: 'ROTATION_24_7' as const,
+      priority: 'HASHRATE_TUNING' as const,
+      morale: 32,
+      skillLevel: 2,
+      experienceXp: 0,
+      hiredStep: 0,
+    }));
+
+    const strainedState = {
+      ...base,
+      facilityId: 'fac_industrial',
+      cash: -200,
+      employees: tenLowMorale,
+    };
+
+    const wl = computeWorkloadSummary(strainedState);
+    assert.equal(wl.lowMoraleCount, 10);
+
+    const stepped = advanceOneStep(strainedState);
+    assert.ok((stepped.nextState.strikeStepsRemaining ?? 0) > 0, '10 low-morale staff must trigger a labor strike');
+    assert.equal(stepped.nextState.pendingEvent?.category, 'EMPLOYEE');
+    assert.equal(
+      getTechnicianBonuses(stepped.nextState).repairDiscount,
+      0,
+      'Active strike must zero out employee bonuses'
+    );
+
+    const settled = resolvePendingEvent(
+      { ...stepped.nextState, cash: 5000 },
+      '1'
+    );
+    assert.equal(settled.ok, true);
+    assert.equal(settled.nextState.strikeStepsRemaining, 0);
+    assert.ok(getTechnicianBonuses(settled.nextState).repairDiscount > 0);
+  });
+
+  it('15. Dynamic events depend on facility, employee skills, component wear, and macro industry shifts', () => {
+    const base = createNewGameState('STANDARD', false, 'TEST_DYN_EVT', undefined, null, 'VETERAN');
+    const facEvt = generateInteractiveEvent({ ...base, facilityId: 'fac_warehouse' }, 'FACILITY');
+    assert.equal(facEvt.category, 'FACILITY');
+    assert.ok(facEvt.title.includes('Warehouse'));
+
+    const indEvt = generateInteractiveEvent(base, 'INDUSTRY');
+    assert.equal(indEvt.category, 'INDUSTRY');
+    const indResolved = resolvePendingEvent({ ...base, cash: 5000, pendingEvent: indEvt }, '1');
+    assert.equal(indResolved.ok, true);
+    assert.ok((indResolved.nextState.activeMarketModifiers ?? []).length > 0);
+
+    const hwLowTech = generateInteractiveEvent(base, 'HARDWARE');
+    const hwWithTech = generateInteractiveEvent(
+      {
+        ...base,
+        employees: [
+          {
+            id: 't_expert',
+            name: 'Lead Tech',
+            role: 'TECHNICIAN',
+            shift: 'DAY',
+            priority: 'HARDWARE_CARE',
+            morale: 95,
+            skillLevel: 4,
+            experienceXp: 600,
+            hiredStep: 0,
+          },
+        ],
+      },
+      'HARDWARE'
+    );
+    assert.ok(
+      (hwWithTech.options[0].costUsd ?? 0) < (hwLowTech.options[0].costUsd ?? 0),
+      'Technician skill level must reduce hardware event repair cost'
+    );
+  });
+
+  it('16. Rooms floor-plan placement, facility wing expansion, Gen 5 hardware, and part wear penalties work', () => {
+    const base = createNewGameState('STANDARD', false, 'TEST_ROOMS', undefined, null, 'VETERAN');
+    const whState = {
+      ...base,
+      facilityId: 'fac_warehouse',
+    };
+    const rooms = getFacilityRooms(whState);
+    assert.ok(rooms.length >= 4, 'Warehouse should have 4 distinct thermal rooms');
+
+    const baseCap = getEffectiveFacilityMaxRigs(whState);
+    const expanded = { ...whState, facilityExtraRooms: 1 };
+    const expandedRooms = getFacilityRooms(expanded);
+    assert.equal(expandedRooms.length, rooms.length + 1);
+    assert.ok(getEffectiveFacilityMaxRigs(expanded) > baseCap, 'Expansion wing should add rig capacity');
+
+    const whFac = getFacility('fac_warehouse');
+    const coldRoom = rooms.find((r) => r.zoneType === 'COLD_AISLE') ?? rooms[0];
+    const hotRoom = rooms.find((r) => r.zoneType === 'HOT_AISLE') ?? rooms[rooms.length - 1];
+    const rigBase = whState.rigs[0];
+
+    const cooler = [
+      {
+        id: 'c_local',
+        type: 'cool_unit_ac' as const,
+        gridX: 0,
+        gridY: 0,
+        roomId: coldRoom.id,
+        enabled: true,
+      },
+    ];
+    const coldTel = computeRigTelemetry(
+      { ...rigBase, roomId: coldRoom.id },
+      whFac,
+      [],
+      0,
+      cooler,
+      1
+    );
+    const hotTel = computeRigTelemetry(
+      { ...rigBase, roomId: hotRoom.id },
+      whFac,
+      [],
+      0,
+      cooler,
+      1
+    );
+    assert.ok(
+      coldTel.equilibriumTempC < hotTel.equilibriumTempC,
+      'Cold aisle with localized room cooler must run cooler than hot aisle'
+    );
+
+    // Component-specific degradation effects
+    const wornTel = computeRigTelemetry(
+      {
+        ...rigBase,
+        roomId: coldRoom.id,
+        componentHealth: {
+          chassis: 40,
+          compute: 85,
+          gpus: [],
+          storage: 40,
+          psu: 35,
+          cooling: 40,
+        },
+      },
+      whFac,
+      [],
+      0
+    );
+    const mintTel = computeRigTelemetry(
+      {
+        ...rigBase,
+        roomId: coldRoom.id,
+        componentHealth: createInitialComponentHealth(0, 100),
+      },
+      whFac,
+      [],
+      0
+    );
+    assert.ok(wornTel.wallWatts > mintTel.wallWatts, 'Worn PSU should increase wall power ripple');
+    assert.ok(wornTel.equilibriumTempC > mintTel.equilibriumTempC, 'Worn cooling should raise equilibrium temperature');
+    assert.ok(wornTel.noiseDba > mintTel.noiseDba, 'Worn chassis should raise acoustic rattle dBA');
+
+    // ASCII floor-plan & room detail renders cleanly
+    const floorAscii = formatAsciiFloorPlan({ ...whState, coolingUnits: cooler });
+    assert.ok(floorAscii.includes('FLOOR-PLAN BLUEPRINT'));
+    assert.ok(floorAscii.includes('North Cold Aisle'));
+    const roomView = formatSingleRoomView({ ...whState, coolingUnits: cooler }, 1);
+    assert.ok(roomView && roomView.includes('ASCII BAY LAYOUT'));
+
+    // Gen 5 hardware & Used Market component health breakdown
+    assert.ok(RESEARCH_NODES.some((n) => n.id === 'res_gen5_exascale'));
+    assert.ok(COMPUTE_PARTS.some((p) => p.generation === 5));
+    const used = generateUsedMarketListings(base);
+    assert.ok(used.length > 0 && used.every((u) => Boolean(u.componentHealth)));
+  });
+
+  it('17. Market forecasting, regime hardware pricing, rival intel/pivots, expanded contracts & valuation breakdown work', () => {
+    let state = createNewGameState('STANDARD', false, 'PHASE5-TEST', undefined, null, 'VETERAN');
+    state.cash = 10000;
+    for (let i = 0; i < 6; i++) {
+      state = advanceOneStep(state).nextState;
+    }
+
+    // Market forecast technical analysis & formatted report
+    const btcForecast = analyzeCoinForecast(state.coins.BTC, state);
+    assert.ok(btcForecast.rsi14 >= 5 && btcForecast.rsi14 <= 95);
+    assert.ok(btcForecast.supportUsd < btcForecast.resistanceUsd);
+    const forecastTxt = formatMarketForecastReport(state, 'BTC');
+    assert.ok(forecastTxt.includes('TECHNICAL & FUNDAMENTAL BRIEF: Bitcoin (BTC)'));
+
+    // Hardware pricing tied to market regime
+    const maniaMult = getGlobalHardwarePriceMult({ activeMarketModifiers: [], marketRegime: 'MANIA_PEAK' });
+    const winterMult = getGlobalHardwarePriceMult({ activeMarketModifiers: [], marketRegime: 'CRYPTO_WINTER' });
+    assert.ok(maniaMult > winterMult, 'Mania Peak hardware multiplier must exceed Crypto Winter');
+
+    // Rival investigation & strategy pivot on step 15
+    const recon = investigateRivalSyndicate(state, 0);
+    assert.ok(recon.ok && recon.nextState.cash < state.cash);
+    assert.ok(recon.nextState.researchPoints === state.researchPoints + 4);
+    assert.ok((recon.nextState.rivals[0].intelRevealedUntilStep ?? 0) > state.stepCount);
+
+    const rapidRival = { ...state.rivals[0], strategy: 'RAPID_EXPANSION' as const };
+    const pivoted = stepRivalSyndicates([rapidRival], 15, 'CRYPTO_WINTER', 50, 1.0, 'PIVOT', 1.0);
+    assert.equal(pivoted[0].strategy, 'LOW_OVERHEAD');
+
+    // Expanded contracts (UPTIME_STREAK & EFFICIENCY_CAP) advance cleanly
+    let streakState = {
+      ...state,
+      pendingEvent: null,
+      activeContract: {
+        id: 'ctr_streak',
+        title: 'Zero-Fault Uptime Streak',
+        clientName: 'Test Client',
+        type: 'UPTIME_STREAK' as const,
+        targetAmount: 3,
+        minReputation: 0,
+        progress: 0,
+        durationSteps: 6,
+        stepsRemaining: 6,
+        rewardCash: 900,
+        rewardRp: 12,
+        penaltyCredibility: 4,
+        penaltyCash: 100,
+        description: 'Run 3 consecutive fault-free steps.',
+      },
+    };
+    const s1 = advanceOneStep(streakState).nextState;
+    assert.ok(s1.activeContract === null || s1.activeContract.progress >= 1);
+
+    // Itemized valuation breakdown & Phase 5 R&D nodes
+    const val = computeValuationBreakdown(state);
+    assert.ok(val.totalUsd >= val.cashUsd + val.activeFleetUsd);
+    assert.ok(RESEARCH_NODES.some((n) => n.id === 'res_wafer_lithography'));
+    assert.ok(RESEARCH_NODES.some((n) => n.id === 'res_quant_forecasting'));
+    assert.ok(RESEARCH_NODES.some((n) => n.id === 'res_bulk_procurement'));
   });
 });

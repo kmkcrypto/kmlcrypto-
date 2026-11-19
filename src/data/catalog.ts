@@ -20,6 +20,7 @@ import {
   ResearchNode,
   RigBuildConfig,
   RoomCoolingSpec,
+  RoomZoneType,
   StoragePart,
   TechEra,
 } from '../types/game';
@@ -158,6 +159,23 @@ export const CHASSIS_PARTS: ChassisPart[] = [
     coolingBonus: 36,
     noiseModifier: -2,
     description: 'Liquid-jacketed ASIC enclosure slashing operating temps and exhaust acoustics.',
+  },
+  {
+    id: 'chassis_cryo_monolith',
+    name: 'Gen-5 Immersion Pod Chassis',
+    category: 'chassis',
+    era: 'ASIC',
+    generation: 5,
+    researchRequired: 'res_gen5_exascale',
+    cost: 2450,
+    maxGpus: 0,
+    maxStorage: 12,
+    isAsicRack: true,
+    maxAsics: 1,
+    baseWatts: 95,
+    coolingBonus: 52,
+    noiseModifier: -8,
+    description: 'Hermetic Gen-5 immersion pod dissipating extreme multi-kW blade thermal flux.',
   },
 ];
 
@@ -411,6 +429,51 @@ export const COMPUTE_PARTS: ComputePart[] = [
     hashrates: { SHA256: 460_000_000 },
     description: 'Next-gen 3nm silicon blade delivering ultra-low J/TH efficiency for mega complexes.',
   },
+  {
+    id: 'cpu_epyc_turin192',
+    name: 'EPYC Turin 192-Core Zen5 Node',
+    category: 'compute',
+    kind: 'CPU',
+    era: 'ASIC',
+    generation: 5,
+    researchRequired: 'res_gen5_exascale',
+    cost: 7600,
+    watts: 420,
+    heatC: 44,
+    noiseDba: 16,
+    hashrates: { RANDOMX: 0.145, SHA256: 0.28 },
+    description: 'Gen-5 server CPU titan flooding RandomX L3 cache lanes at peak efficiency.',
+  },
+  {
+    id: 'asic_titan_scrypt5',
+    name: 'Titan-X2 2nm Scrypt Pod (32 GH/s)',
+    category: 'compute',
+    kind: 'ASIC',
+    era: 'ASIC',
+    generation: 5,
+    researchRequired: 'res_gen5_exascale',
+    cost: 9200,
+    watts: 3850,
+    heatC: 66,
+    noiseDba: 36,
+    hashrates: { SCRYPT: 32_000 },
+    description: 'Gen-5 Scrypt powerhouse doubling LTC/DOGE throughput per rack bay.',
+  },
+  {
+    id: 'asic_chronos_2nm',
+    name: 'Chronos 2nm ExaBlade (680 TH/s)',
+    category: 'compute',
+    kind: 'ASIC',
+    era: 'ASIC',
+    generation: 5,
+    researchRequired: 'res_gen5_exascale',
+    cost: 19800,
+    watts: 6200,
+    heatC: 76,
+    noiseDba: 30,
+    hashrates: { SHA256: 680_000_000 },
+    description: 'Apex 2nm GAAFET blade built for industrial complexes with HVDC power.',
+  },
 ];
 
 export const GPU_PARTS: GpuPart[] = [
@@ -567,6 +630,20 @@ export const GPU_PARTS: GpuPart[] = [
     noiseDba: 17,
     hashrates: { ETHASH: 155, RANDOMX: 0.0044, SCRYPT: 2.3 },
     description: 'Ada Lovelace pinnacle card tearing through Ethash and multi-algo workloads.',
+  },
+  {
+    id: 'gpu_rtx5090',
+    name: 'GeForce RTX 5090 Blackwell (32 GB)',
+    category: 'gpu',
+    era: 'ASIC',
+    generation: 5,
+    researchRequired: 'res_gen5_exascale',
+    cost: 2950,
+    watts: 495,
+    heatC: 45,
+    noiseDba: 17,
+    hashrates: { ETHASH: 235, RANDOMX: 0.0062, SCRYPT: 3.4 },
+    description: 'Gen-5 GDDR7 memory monster pushing Ethash & multi-algo density to record highs.',
   },
 ];
 
@@ -786,6 +863,19 @@ export const PSU_PARTS: PsuPart[] = [
     noiseDba: 13,
     description: 'Three-phase industrial busbar rated for flagship Hydro ASICs at 150% OC.',
   },
+  {
+    id: 'psu_9000w_hvdc',
+    name: '9000W 48V HVDC Substation Shelf',
+    category: 'psu',
+    era: 'ASIC',
+    generation: 5,
+    researchRequired: 'res_gen5_exascale',
+    cost: 1550,
+    maxWatts: 9000,
+    efficiency: 0.985,
+    noiseDba: 11,
+    description: '98.5% high-voltage DC shelf engineered for Gen-5 ExaBlades under heavy OC.',
+  },
 ];
 
 export const COOLING_PARTS: CoolingPart[] = [
@@ -889,6 +979,19 @@ export const COOLING_PARTS: CoolingPart[] = [
     noiseDba: 12,
     description: 'Active phase-change chiller engineered to sustain 140-150% extreme overclock runs.',
   },
+  {
+    id: 'cool_two_phase_immersion',
+    name: 'Two-Phase Fluorinert Vapor Tank',
+    category: 'cooling',
+    era: 'ASIC',
+    generation: 5,
+    researchRequired: 'res_gen5_exascale',
+    cost: 4200,
+    coolingPowerC: 240,
+    watts: 180,
+    noiseDba: 3,
+    description: 'Gen-5 boiling-condenser tank keeping Chronos 2nm ExaBlades whisper-quiet & icy.',
+  },
 ];
 
 export const OS_PARTS: OsPart[] = [
@@ -966,6 +1069,19 @@ export const OS_PARTS: OsPart[] = [
     powerMultiplier: 1.06,
     stabilityBonus: 0.15,
     description: 'Uncapped microcode scheduler (+22% hash, +6% draw) built for max-OC farms.',
+  },
+  {
+    id: 'os_quantum_stratum',
+    name: 'ExaOS Zero-Jitter Stratum',
+    category: 'os',
+    era: 'ASIC',
+    generation: 5,
+    researchRequired: 'res_gen5_exascale',
+    cost: 680,
+    hashrateMultiplier: 1.28,
+    powerMultiplier: 0.94,
+    stabilityBonus: 0.4,
+    description: 'Gen-5 deterministic ASIC kernel (+28% hash, -6% draw, +40% fault stability).',
   },
 ];
 
@@ -1073,6 +1189,256 @@ export const FACILITY_TIERS: FacilityTier[] = [
     description: 'Substation-direct wholesale electricity, hydro cooling towers, and institutional scale.',
   },
 ];
+
+export interface FacilityRoomTemplate {
+  name: string;
+  zoneType: RoomZoneType;
+  slotSharePct: number;
+  ambientTempDeltaC: number;
+  airflowFactor: number;
+  noiseBaffleDba: number;
+}
+
+export interface FacilityProfileSpec {
+  pros: string[];
+  cons: string[];
+  expansionCostUsd: number;
+  expansionSlots: number;
+  expansionUpkeepPerCycle: number;
+  maxExpansions: number;
+  defaultRooms: FacilityRoomTemplate[];
+}
+
+export const FACILITY_PROFILES: Record<string, FacilityProfileSpec> = {
+  fac_bedroom: {
+    pros: ['$0 cycle rent & zero upfront lease', 'Clean indoor climate (24°C ambient)'],
+    cons: ['Tiny 15A 1.8kW breaker trips easily', 'Strict 56 dBA residential noise ordinance'],
+    expansionCostUsd: 420,
+    expansionSlots: 1,
+    expansionUpkeepPerCycle: 40,
+    maxExpansions: 1,
+    defaultRooms: [
+      {
+        name: 'Bedroom Desk Corner',
+        zoneType: 'RESIDENTIAL',
+        slotSharePct: 1.0,
+        ambientTempDeltaC: 0,
+        airflowFactor: 0.95,
+        noiseBaffleDba: 1,
+      },
+    ],
+  },
+  fac_garage: {
+    pros: ['240V subpanel (8.5kW) & higher 72 dBA tolerance', 'Cheap early workforce hiring unlocked'],
+    cons: ['Warm uninsulated workshop (+25°C ambient)', '$460/cycle lease until bought out'],
+    expansionCostUsd: 1650,
+    expansionSlots: 2,
+    expansionUpkeepPerCycle: 120,
+    maxExpansions: 2,
+    defaultRooms: [
+      {
+        name: 'Main Garage Bay',
+        zoneType: 'WORKSHOP',
+        slotSharePct: 0.55,
+        ambientTempDeltaC: 0,
+        airflowFactor: 1.05,
+        noiseBaffleDba: 0,
+      },
+      {
+        name: '240V Tool Alcove',
+        zoneType: 'WORKSHOP',
+        slotSharePct: 0.45,
+        ambientTempDeltaC: 1,
+        airflowFactor: 0.96,
+        noiseBaffleDba: 3,
+      },
+    ],
+  },
+  fac_commercial: {
+    pros: ['3-phase 22kW grid feed & $0.088/kWh tariff', 'Dedicated server suites & senior staff access'],
+    cons: ['Commercial zoning & $1,350/cycle rent', 'Hot exhaust aisle requires room cooling balancing'],
+    expansionCostUsd: 4200,
+    expansionSlots: 3,
+    expansionUpkeepPerCycle: 280,
+    maxExpansions: 2,
+    defaultRooms: [
+      {
+        name: 'Front Server Suite',
+        zoneType: 'COLD_AISLE',
+        slotSharePct: 0.34,
+        ambientTempDeltaC: -2,
+        airflowFactor: 1.12,
+        noiseBaffleDba: 4,
+      },
+      {
+        name: 'Central Exhaust Bay',
+        zoneType: 'HOT_AISLE',
+        slotSharePct: 0.36,
+        ambientTempDeltaC: 2,
+        airflowFactor: 1.02,
+        noiseBaffleDba: 1,
+      },
+      {
+        name: 'Acoustic Partition Room',
+        zoneType: 'CLEANROOM',
+        slotSharePct: 0.3,
+        ambientTempDeltaC: -1,
+        airflowFactor: 1.05,
+        noiseBaffleDba: 7,
+      },
+    ],
+  },
+  fac_warehouse: {
+    pros: ['Industrial 56kW grid & low $0.072/kWh power', 'High-bay ceiling (+10°C passive cooling)'],
+    cons: ['Heavy $3,200/cycle rent & $780 upkeep', 'Needs multi-room cooling placement for dense ASIC rows'],
+    expansionCostUsd: 9800,
+    expansionSlots: 5,
+    expansionUpkeepPerCycle: 620,
+    maxExpansions: 2,
+    defaultRooms: [
+      {
+        name: 'North Cold Aisle',
+        zoneType: 'COLD_AISLE',
+        slotSharePct: 0.28,
+        ambientTempDeltaC: -3,
+        airflowFactor: 1.18,
+        noiseBaffleDba: 2,
+      },
+      {
+        name: 'South ASIC Gallery',
+        zoneType: 'INDUSTRIAL_BAY',
+        slotSharePct: 0.28,
+        ambientTempDeltaC: 1,
+        airflowFactor: 1.08,
+        noiseBaffleDba: 1,
+      },
+      {
+        name: 'Mezzanine Loft',
+        zoneType: 'HOT_AISLE',
+        slotSharePct: 0.22,
+        ambientTempDeltaC: 3,
+        airflowFactor: 0.98,
+        noiseBaffleDba: 3,
+      },
+      {
+        name: 'Sub-Panel Annex',
+        zoneType: 'CLEANROOM',
+        slotSharePct: 0.22,
+        ambientTempDeltaC: -1,
+        airflowFactor: 1.1,
+        noiseBaffleDba: 6,
+      },
+    ],
+  },
+  fac_industrial: {
+    pros: ['140kW transformer feed at $0.056/kWh', 'Hot/cold containment & 104 dBA industrial zone'],
+    cons: ['High $7,600/cycle rent + $1,850/cycle upkeep', 'Demands active staff/HVAC to avoid high workload'],
+    expansionCostUsd: 24000,
+    expansionSlots: 8,
+    expansionUpkeepPerCycle: 1450,
+    maxExpansions: 2,
+    defaultRooms: [
+      {
+        name: 'Cold Containment Aisle A',
+        zoneType: 'COLD_AISLE',
+        slotSharePct: 0.24,
+        ambientTempDeltaC: -4,
+        airflowFactor: 1.24,
+        noiseBaffleDba: 3,
+      },
+      {
+        name: 'Cold Containment Aisle B',
+        zoneType: 'COLD_AISLE',
+        slotSharePct: 0.22,
+        ambientTempDeltaC: -3,
+        airflowFactor: 1.2,
+        noiseBaffleDba: 3,
+      },
+      {
+        name: 'Transformer Hall',
+        zoneType: 'INDUSTRIAL_BAY',
+        slotSharePct: 0.2,
+        ambientTempDeltaC: 1,
+        airflowFactor: 1.08,
+        noiseBaffleDba: 2,
+      },
+      {
+        name: 'Hydro Manifold Wing',
+        zoneType: 'CLEANROOM',
+        slotSharePct: 0.18,
+        ambientTempDeltaC: -2,
+        airflowFactor: 1.16,
+        noiseBaffleDba: 7,
+      },
+      {
+        name: 'High-Density Surge Bay',
+        zoneType: 'HOT_AISLE',
+        slotSharePct: 0.16,
+        ambientTempDeltaC: 2,
+        airflowFactor: 1.02,
+        noiseBaffleDba: 2,
+      },
+    ],
+  },
+  fac_megafarm: {
+    pros: ['Substation PPA $0.042/kWh & 360kW capacity', '16°C chilled intake + 116 dBA campus zoning'],
+    cons: ['$1.35M buyout or $16,500/cycle rent', '$4,200/cycle baseline maintenance overhead'],
+    expansionCostUsd: 54000,
+    expansionSlots: 14,
+    expansionUpkeepPerCycle: 3100,
+    maxExpansions: 2,
+    defaultRooms: [
+      {
+        name: 'Substation Hall Alpha',
+        zoneType: 'INDUSTRIAL_BAY',
+        slotSharePct: 0.2,
+        ambientTempDeltaC: -2,
+        airflowFactor: 1.22,
+        noiseBaffleDba: 3,
+      },
+      {
+        name: 'Substation Hall Beta',
+        zoneType: 'INDUSTRIAL_BAY',
+        slotSharePct: 0.2,
+        ambientTempDeltaC: -2,
+        airflowFactor: 1.22,
+        noiseBaffleDba: 3,
+      },
+      {
+        name: 'Cryo Spine North',
+        zoneType: 'COLD_AISLE',
+        slotSharePct: 0.16,
+        ambientTempDeltaC: -5,
+        airflowFactor: 1.3,
+        noiseBaffleDba: 5,
+      },
+      {
+        name: 'Cryo Spine South',
+        zoneType: 'COLD_AISLE',
+        slotSharePct: 0.16,
+        ambientTempDeltaC: -5,
+        airflowFactor: 1.3,
+        noiseBaffleDba: 5,
+      },
+      {
+        name: 'Immersion Vault',
+        zoneType: 'CLEANROOM',
+        slotSharePct: 0.14,
+        ambientTempDeltaC: -4,
+        airflowFactor: 1.25,
+        noiseBaffleDba: 10,
+      },
+      {
+        name: 'Silicon Test Annex',
+        zoneType: 'CLEANROOM',
+        slotSharePct: 0.14,
+        ambientTempDeltaC: -1,
+        airflowFactor: 1.15,
+        noiseBaffleDba: 8,
+      },
+    ],
+  },
+};
 
 export const FACILITY_UPGRADES: FacilityUpgradeSpec[] = [
   {
@@ -1522,6 +1888,56 @@ export const RESEARCH_NODES: ResearchNode[] = [
     effectSummary: 'Increases contract payout rewards by +22% across all new agreements.',
     category: 'BUSINESS',
   },
+  {
+    id: 'res_gen5_exascale',
+    name: 'Gen-5 2nm GAAFET & Two-Phase Cryo',
+    era: 'ASIC',
+    costRp: 290,
+    costCash: 22000,
+    prereqIds: ['res_gen4_hyperhash', 'res_cryo_cooling'],
+    effectSummary: 'Unlocks Chronos 2nm (680 TH/s), Titan Scrypt-X, RTX 5090, 9kW HVDC & Two-Phase Immersion.',
+    category: 'HARDWARE',
+  },
+  {
+    id: 'res_quant_forecasting',
+    name: 'Quant Market Telemetry & Forecasting',
+    era: 'FPGA',
+    costRp: 72,
+    costCash: 1950,
+    prereqIds: ['res_secondary_broker'],
+    effectSummary: 'Unlocks deeper RSI/momentum market forecast bands & cuts spot exchange fees by 25%.',
+    category: 'BUSINESS',
+  },
+  {
+    id: 'res_bulk_procurement',
+    name: 'Wholesale Fleet Procurement',
+    era: 'FPGA',
+    costRp: 84,
+    costCash: 2600,
+    prereqIds: ['res_secondary_broker'],
+    effectSummary: 'Applies -10% bulk discount on multi-rig cloning ("rig clone") & -8% cooling unit CapEx.',
+    category: 'BUSINESS',
+  },
+  {
+    id: 'res_room_automation',
+    name: 'Smart Thermal Louver Automation',
+    era: 'ASIC',
+    costRp: 96,
+    costCash: 3400,
+    prereqIds: ['res_predictive_telemetry', 'res_vapor_chambers'],
+    effectSummary: 'Automatically balances intake dampers across facility rooms (+4°C effective room cooling).',
+    category: 'COOLING',
+  },
+  {
+    id: 'res_wafer_lithography',
+    name: 'Semiconductor Wafer Lithography',
+    era: 'ASIC',
+    costRp: 185,
+    costCash: 9800,
+    prereqIds: ['res_asic_tapeout', 'res_gen3_silicon'],
+    effectSummary: 'Unlocks proprietary Chip & ASIC Manufacturing Foundry lines ("fab") and improves wafer yield.',
+    category: 'HARDWARE',
+  },
 ];
 
 export const PR_CAMPAIGNS: PRCampaignTemplate[] = [
@@ -1966,6 +2382,30 @@ export const MILESTONES: MilestoneSpec[] = [
     rewardRp: 50,
     rewardReputation: 10,
   },
+  {
+    id: 'ms_clean_operator',
+    title: 'Trusted Enterprise Partner',
+    description: 'Complete 5+ enterprise contracts while holding >= 70 Media Credibility.',
+    rewardCash: 4200,
+    rewardRp: 35,
+    rewardReputation: 8,
+  },
+  {
+    id: 'ms_shadow_operator',
+    title: 'Underground Broker',
+    description: 'Execute 5+ covert operations or black market acquisitions and stay solvent.',
+    rewardCash: 3200,
+    rewardRp: 25,
+    rewardReputation: 0,
+  },
+  {
+    id: 'ms_millionaire_valuation',
+    title: 'Seven-Figure Mining Syndicate',
+    description: 'Grow total Company Valuation past $1,000,000.',
+    rewardCash: 25000,
+    rewardRp: 120,
+    rewardReputation: 12,
+  },
 ];
 
 export const ACHIEVEMENTS: AchievementSpec[] = [
@@ -2022,6 +2462,24 @@ export const ACHIEVEMENTS: AchievementSpec[] = [
     title: 'Challenge Victor',
     description: 'Complete at least one optional operational challenge.',
     category: 'EMPIRE',
+  },
+  {
+    id: 'ach_contract_titan',
+    title: 'Enterprise Titan',
+    description: 'Successfully complete 10 enterprise contracts.',
+    category: 'ECONOMY',
+  },
+  {
+    id: 'ach_overclock_king',
+    title: 'Silicon Overclock Virtuoso',
+    description: 'Mine profitably with an active rig tuned to 135% overclock or higher.',
+    category: 'HARDWARE',
+  },
+  {
+    id: 'ach_full_house',
+    title: 'R&D Hegemony',
+    description: 'Unlock 12 or more technologies across the research tree.',
+    category: 'RESEARCH',
   },
 ];
 

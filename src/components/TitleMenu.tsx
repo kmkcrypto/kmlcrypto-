@@ -17,6 +17,7 @@ import {
   ChallengeId,
   DifficultyLevel,
   MarketRegime,
+  OnboardingMode,
   SandboxConfig,
 } from '../types/game';
 import { formatUsd } from '../utils/format';
@@ -33,7 +34,8 @@ interface TitleMenuProps {
     devMode?: boolean,
     runSeed?: string,
     sandboxConfig?: SandboxConfig,
-    challengeId?: ChallengeId | null
+    challengeId?: ChallengeId | null,
+    onboardingMode?: OnboardingMode
   ) => void;
   onResume: () => void;
   onResumeSandbox: () => void;
@@ -61,6 +63,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
   onReturnToStudy,
 }) => {
   const [difficulty, setDifficulty] = useState<DifficultyLevel>('STANDARD');
+  const [onboardingMode, setOnboardingMode] = useState<OnboardingMode>('GUIDED');
   const [runSeed, setRunSeed] = useState<string>(() => generateRandomSeed());
   const [selectedChallenge, setSelectedChallenge] = useState<ChallengeId | ''>('');
   const [panelView, setPanelView] = useState<'NONE' | 'SANDBOX' | 'SAVES'>('NONE');
@@ -215,7 +218,8 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
                 false,
                 runSeed,
                 undefined,
-                selectedChallenge ? selectedChallenge : null
+                selectedChallenge ? selectedChallenge : null,
+                onboardingMode
               )
             }
             className={`w-full px-4 py-3 rounded-lg font-semibold text-sm flex items-center justify-between gap-3 transition-colors ${
@@ -564,6 +568,40 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
                   </div>
                 </button>
               ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs font-medium text-green-300/80 mb-1.5">Experience Mode</div>
+            <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-[#020704] border border-green-500/20">
+              <button
+                type="button"
+                onClick={() => setOnboardingMode('GUIDED')}
+                className={`py-2 px-2.5 rounded-md text-left transition-colors ${
+                  onboardingMode === 'GUIDED'
+                    ? 'bg-green-500/20 text-green-50 border border-green-400/50'
+                    : 'text-green-200/70 hover:text-green-100 border border-transparent'
+                }`}
+              >
+                <div className="text-xs font-semibold leading-tight">Guided Mode</div>
+                <div className="text-[10px] font-mono text-green-400/90 mt-0.5">
+                  Gradual unlocks + objectives
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setOnboardingMode('VETERAN')}
+                className={`py-2 px-2.5 rounded-md text-left transition-colors ${
+                  onboardingMode === 'VETERAN'
+                    ? 'bg-green-500/20 text-green-50 border border-green-400/50'
+                    : 'text-green-200/70 hover:text-green-100 border border-transparent'
+                }`}
+              >
+                <div className="text-xs font-semibold leading-tight">Veteran Mode</div>
+                <div className="text-[10px] font-mono text-green-400/90 mt-0.5">
+                  All systems open at Step 0
+                </div>
+              </button>
             </div>
           </div>
 

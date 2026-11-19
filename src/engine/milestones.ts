@@ -6,20 +6,67 @@ import {
   TransactionEntry,
 } from '../types/game';
 import { formatStepLabel, formatUsd } from '../utils/format';
+import { getShortPositionsEquityUsd, getWalletMarketValueUsd } from './exchange';
+import { getFabInventoryValueUsd } from './fab';
 import { calculateRigResaleValue } from './usedMarket';
 
-export function computeCompanyValuation(state: GameState): number {
-  const rigsValue = state.rigs.reduce((s, r) => s + calculateRigResaleValue(r, state), 0);
-  const backupValue = (state.backupRigs ?? []).reduce(
-    (s, r) => s + calculateRigResaleValue(r, state),
-    0
+export interface ValuationBreakdown {
+  cashUsd: number;
+  walletValueUsd: number;
+  activeFleetUsd: number;
+  backupVaultUsd: number;
+  facilityEquityUsd: number;
+  expansionWingsUsd: number;
+  researchIpUsd: number;
+  fabInventoryUsd: number;
+  totalUsd: number;
+}
+
+export function computeValuationBreakdown(state: GameState): ValuationBreakdown {
+  const cashUsd = Math.round(state.cash);
+  const walletValueUsd = Math.round(
+    getWalletMarketValueUsd(state) + getShortPositionsEquityUsd(state)
   );
-  const facilityEquity = state.ownedFacilityIds.reduce((s, fid) => {
-    const f = FACILITY_TIERS.find((x) => x.id === fid);
-    return s + (f?.buyoutPrice ?? 0);
-  }, 0);
-  const researchValue = state.unlockedResearch.length * 1400;
-  return Math.round(state.cash + rigsValue + backupValue + facilityEquity + researchValue);
+  const activeFleetUsd = Math.round(
+    state.rigs.reduce((s, r) => s + calculateRigResaleValue(r, state), 0)
+  );
+  const backupVaultUsd = Math.round(
+    (state.backupRigs ?? []).reduce((s, r) => s + calculateRigResaleValue(r, state), 0)
+  );
+  const facilityEquityUsd = Math.round(
+    state.ownedFacilityIds.reduce((s, fid) => {
+      const f = FACILITY_TIERS.find((x) => x.id === fid);
+      return s + (f?.buyoutPrice ?? 0);
+    }, 0)
+  );
+  const expansionWingsUsd = Math.round((state.facilityExtraRooms ?? 0) * 1800);
+  const researchIpUsd = state.unlockedResearch.length * 1400;
+  const fabInventoryUsd = Math.round(getFabInventoryValueUsd(state.fab));
+  const totalUsd = Math.round(
+    cashUsd +
+      walletValueUsd +
+      activeFleetUsd +
+      backupVaultUsd +
+      facilityEquityUsd +
+      expansionWingsUsd +
+      researchIpUsd +
+      fabInventoryUsd
+  );
+  return {
+    cashUsd,
+    walletValueUsd,
+    activeFleetUsd,
+    backupVaultUsd,
+    facilityEquityUsd,
+    expansionWingsUsd,
+    researchIpUsd,
+    fabInventoryUsd,
+    totalUsd,
+  };
+}
+
+export function computeCompanyValuation(state: GameState): number {
+  return computeValuationBreakdown(state).totalUsd;
 }
 
 export function evaluateProgression(
@@ -112,6 +159,13 @@ export function evaluateProgression(
   if (state.unlockedResearch.length >= 5) triggerMs('ms_research_breakthrough');
   if ((state.stats.maxPowerKwObserved ?? 0) >= 20) triggerMs('ms_power_level');
   if (rivalsBeaten >= Math.ceil(state.rivals.length / 2)) triggerMs('ms_top_company');
+  if (state.stats.contractsCompleted >= 5 && state.mediaCredibility >= 70) {
+    triggerMs('ms_clean_operator');
+  }
+  if (state.stats.covertOpsCount >= 5 && state.cash > 0) {
+    triggerMs('ms_shadow_operator');
+  }
+  if (valuation >= 1_000_000) triggerMs('ms_millionaire_valuation');
 
   // Achievements
   if (state.stats.rigPurchasesCount > 0 || totalRigsOwned > 1) triggerAch('ach_first_machine');
@@ -126,6 +180,11 @@ export function evaluateProgression(
     triggerAch('ach_master_tech');
   }
   if (valuation >= 500_000) triggerAch('ach_mining_empire');
+  if (state.stats.contractsCompleted >= 10) triggerAch('ach_contract_titan');
+  if (state.rigs.some((r) => r.enabled && r.overclockPct >= 135 && r.lastStepUsd > 0)) {
+    triggerAch('ach_overclock_king');
+  }
+  if (state.unlockedResearch.length >= 12) triggerAch('ach_full_house');
 
   // Active Challenge Evaluation
   let nextActiveChallenge: ChallengeId | null = state.activeChallengeId ?? null;
