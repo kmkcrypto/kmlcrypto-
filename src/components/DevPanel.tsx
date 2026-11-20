@@ -12,9 +12,11 @@ import {
   Unlock,
   Zap,
   ShieldAlert,
+  Layers,
 } from 'lucide-react';
 import { MARKET_REGIME_SPECS } from '../data/catalog';
-import { CoinSymbol, GameState, MarketRegime } from '../types/game';
+import { SCENARIOS } from '../engine/scenarios';
+import { CoinSymbol, DevScenarioId, GameState, MarketRegime } from '../types/game';
 import { formatStepLabel, formatUsd } from '../utils/format';
 
 interface DevPanelProps {
@@ -22,6 +24,7 @@ interface DevPanelProps {
   onClose: () => void;
   onToggleDevMode: (enabled: boolean) => void;
   onToggleDevUnlockAll: () => void;
+  onDevLoadScenario: (id: DevScenarioId) => void;
   onAddCash: (amount: number) => void;
   onClearDebt: () => void;
   onAddRp: (amount: number) => void;
@@ -45,6 +48,7 @@ export const DevPanel: React.FC<DevPanelProps> = ({
   onClose,
   onToggleDevMode,
   onToggleDevUnlockAll,
+  onDevLoadScenario,
   onAddCash,
   onClearDebt,
   onAddRp,
@@ -117,6 +121,45 @@ export const DevPanel: React.FC<DevPanelProps> = ({
 
         {/* Scrollable Content */}
         <div className="p-6 overflow-y-auto space-y-6">
+          {/* Progression Scenarios */}
+          <div className="p-4 rounded-lg bg-[#020704] border border-green-500/20 space-y-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-green-100">
+              <Layers className="w-4 h-4 text-green-400" />
+              <span>Progression Scenarios</span>
+              <span className="ml-auto text-[10px] font-mono font-semibold text-amber-300/80">
+                ISOLATED SANDBOX SAVE
+              </span>
+            </div>
+            <p className="text-xs text-green-200/70 leading-relaxed">
+              Jump straight to a progression stage. A scenario replaces the sandbox save slot
+              only — your career save is never touched.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {SCENARIOS.map((scn) => (
+                <button
+                  key={scn.id}
+                  type="button"
+                  onClick={() => onDevLoadScenario(scn.id)}
+                  className={`text-left p-2.5 rounded-lg border transition-colors ${
+                    state.scenarioId === scn.id
+                      ? 'bg-green-500/15 border-green-400/60'
+                      : 'bg-[#030B05] border-green-500/25 hover:border-green-400/60 hover:bg-green-950/50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-green-100">{scn.name}</span>
+                    <span className="text-[10px] font-mono text-green-400/80 whitespace-nowrap">
+                      {scn.tagline}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] leading-snug text-green-200/70">
+                    {scn.description}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="p-4 rounded-lg bg-[#020704] border border-green-500/20 space-y-3">
               <div className="flex items-center justify-between">

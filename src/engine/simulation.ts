@@ -87,12 +87,14 @@ import {
   queueFabProduction,
   sellCustomAsicsWholesale,
   stepFabProduction,
+  stripCustomAsicFromRig,
 } from './fab';
 import {
   computeCompanyValuation,
   computeValuationBreakdown,
   evaluateProgression,
 } from './milestones';
+import { buildDefaultWorld, stepSharedWorld } from './world';
 import {
   createInitialRivals,
   getPlayerRivalComparison,
@@ -179,6 +181,7 @@ export {
   placeLimitOrder,
   queueFabProduction,
   sellCustomAsicsWholesale,
+  stripCustomAsicFromRig,
 };
 
 export const BILLING_CYCLE_STEPS = 30;
@@ -739,6 +742,42 @@ export function getSysEngineerBonus(state: Pick<GameState, 'employees' | 'strike
   return Math.min(0.38, raw);
 }
 
+/**
+ * Normalizes raw fleet hashrate (which spans from H/s to PH/s) onto the same
+ * index scale as rival syndicates. Without this, a Gen-6 fleet scored in the
+ * billions next to rivals scoring in the dozens, so market share and block
+ * share collapsed to 0%/100% instead of being a real competition.
+ */
+export function computeFleetHashIndex(fleetEffectiveHash: number, rigCount: number): number {
+  const hash = Math.max(0, fleetEffectiveHash);
+  return Math.max(12, Math.round(20 + Math.log10(1 + hash) * 40 + rigCount * 14));
+}
+
+/**
+ * Live estimate of the player's fleet hash index on the same scale as rival
+ * syndicates, for the shared-world report before the first step has run.
+ */
+export function estimateFleetHashIndex(state: GameState): number {
+  const facility = getFacility(state.facilityId);
+  const enabled = state.rigs.filter((r) => r.enabled);
+  let hash = 0;
+  for (const rig of enabled) {
+    const t = computeRigTelemetry(
+      rig,
+      facility,
+      state.unlockedResearch,
+      0,
+      state.coolingUnits ?? [],
+      Math.max(1, enabled.length),
+      state.facilityUpgrades,
+      0,
+      state.facilityExtraRooms ?? 0
+    );
+    hash += t.effectiveHashrate;
+  }
+  return computeFleetHashIndex(hash, state.rigs.length);
+}
+
 export function getEffectiveFacilityMaxRigs(
   state: Pick<GameState, 'facilityId' | 'facilityUpgrades' | 'facilityExtraRooms'>
 ): number {
@@ -1055,6 +1094,8 @@ export function createNewGameState(
     runSeed,
     stepCount: 0,
     soundEnabled: true,
+    stepSeconds: 30,
+    stepHours: 24,
     cash: startingCash,
     researchPoints: devMode ? 1000 : isSandbox ? 250 : difficulty === 'TYCOON_SANDBOX' ? 80 : 12,
     unlockedResearch,
@@ -1077,6 +1118,7 @@ export function createNewGameState(
     limitOrders: [],
     shortPositions: [],
     fab: buildDefaultFab(),
+    world: buildDefaultWorld(runSeed),
     marketRegime,
     regimeStepsRemaining,
     employees: [],
@@ -1948,18 +1990,23 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     let nextHalvingRem = coin.stepsUntilHalving - 1;
     let nextHalvingCount = coin.halvingCount;
     let nextBlockScale = coin.blockRewardScale;
+    let nextBasePrice = coin.basePriceUsd;
     let halvingSupplyShock = 0;
 
     if (nextHalvingRem <= 0) {
       nextHalvingRem = coin.halvingEverySteps;
       nextHalvingCount += 1;
       nextBlockScale = Number((coin.blockRewardScale * 0.5).toFixed(4));
+      // Emission halves permanently, but scarcity lifts the long-run fair value.
+      // Without this ratchet the revenue curve collapses exponentially (~0.5x per
+      // halving) and the late game becomes unplayable no matter the hardware.
+      nextBasePrice = Number((coin.basePriceUsd * 1.22).toFixed(6));
       halvingSupplyShock = 0.24;
       nextSentiment = Math.min(100, nextSentiment + 26);
       milestoneHit = true;
       pushNews(
         `${coin.symbol} Block Halving #${nextHalvingCount}!`,
-        `Block emission halved (x${nextBlockScale}); supply shock boosted ${coin.symbol} spot price +24%.`,
+        `Block emission halved (x${nextBlockScale}); supply shock boosted ${coin.symbol} spot price +24% and lifted its long-run fair value +22%.`,
         'MILESTONE'
       );
     }
@@ -1988,6 +2035,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       ...coin,
       prevPriceUsd: coin.priceUsd,
       priceUsd: nextPrice,
+      basePriceUsd: nextBasePrice,
       priceHistory: history,
       sentiment: nextSentiment,
       networkDifficulty: nextDiff,
@@ -2484,11 +2532,33 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   const nextCredibility = Math.min(100, prev.mediaCredibility + 0.08);
 
   // 9. Update rival companies & market share
-  const playerPowerScore = Math.max(
-    12,
-    Math.round(20 + stepFleetEffectiveHash * 0.25 + nextRigs.length * 14)
-  );
+  const playerPowerScore = computeFleetHashIndex(stepFleetEffectiveHash, nextRigs.length);
   nextStats.peakFleetHashScore = Math.max(nextStats.peakFleetHashScore, playerPowerScore);
+
+  // 9b. Advance the shared blockchain world (simulated locally until multiplayer lands)
+  const worldStep = stepSharedWorld(
+    prev.world,
+    { ...prev, coins: nextCoins, stepCount: nextStep },
+    playerPowerScore
+  );
+  const nextWorld = worldStep.nextWorld;
+  (Object.keys(worldStep.rewardByCoin) as CoinSymbol[]).forEach((sym) => {
+    const amount = worldStep.rewardByCoin[sym] ?? 0;
+    if (amount > 0) nextWallet[sym] = (nextWallet[sym] ?? 0) + amount;
+  });
+  if (worldStep.block && worldStep.block.winnerName === 'You' && worldStep.block.playerRewardCoins > 0) {
+    milestoneHit = true;
+    pushNews(
+      `World Block #${worldStep.block.height} Won`,
+      `Your fleet captured block #${worldStep.block.height}: +${worldStep.block.playerRewardCoins.toFixed(
+        4
+      )} ${worldStep.block.coin} (${formatUsd(
+        worldStep.block.playerRewardUsd
+      )}) credited to your wallet.`,
+      'MILESTONE'
+    );
+  }
+
   const modPowerMult = nextModifiers.reduce((s, m) => s * m.powerRateMult, 1.0);
   const calibratedRivals = stepRivalSyndicates(
     prev.rivals,
@@ -2698,6 +2768,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     limitOrders: exStep.limitOrders,
     shortPositions: exStep.shortPositions,
     fab: fabStep.nextFab,
+    world: nextWorld,
     marketRegime: nextRegime,
     regimeStepsRemaining: nextRegimeRem,
     activeCampaigns: nextCampaigns,

@@ -4,6 +4,14 @@ export function formatStepLabel(stepCount: number): string {
   return `Step ${stepCount}`;
 }
 
+/** In-game calendar derived from the step count and hours-per-step setting. */
+export function formatGameDate(stepCount: number, stepHours = 24): string {
+  const totalHours = Math.max(0, stepCount) * Math.max(1, stepHours);
+  const day = Math.floor(totalHours / 24) + 1;
+  const hour = totalHours % 24;
+  return `Day ${day} ${String(hour).padStart(2, '0')}:00`;
+}
+
 export function formatUsd(amount: number, compact = false): string {
   if (compact && Math.abs(amount) >= 1_000_000) {
     return `${amount < 0 ? '-' : ''}$${(Math.abs(amount) / 1_000_000).toFixed(2)}M`;

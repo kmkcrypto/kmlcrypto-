@@ -66,6 +66,7 @@ import {
   queueFabProduction,
   resolvePendingEvent,
   sellCustomAsicsWholesale,
+  stripCustomAsicFromRig,
 } from './engine/simulation';
 import { getUnlockedSystems } from './data/onboarding';
 import { getGlobalHardwarePriceMult } from './engine/usedMarket';
@@ -79,10 +80,13 @@ import {
   serializeSaveEnvelope,
   validateAndParseImportedSave,
 } from './engine/saveSystem';
+import { createScenarioState } from './engine/scenarios';
 import {
   ChallengeId,
   ChipProcessNode,
   CoinSymbol,
+  DesignProfile,
+  DevScenarioId,
   DifficultyLevel,
   EmployeeRole,
   FacilityUpgradeId,
@@ -161,7 +165,9 @@ export default function App() {
     return null;
   });
 
-  const AUTO_STEP_SECONDS = 30;
+  const DEFAULT_STEP_SECONDS = 30;
+  const DEFAULT_STEP_HOURS = 24;
+  const autoStepSeconds = state?.stepSeconds ?? DEFAULT_STEP_SECONDS;
 
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
   const [showEduLanding, setShowEduLanding] = useState<boolean>(true);
@@ -171,7 +177,7 @@ export default function App() {
   const [activeTerminalModal, setActiveTerminalModal] = useState<'BUILDER' | 'TINKER' | null>(
     null
   );
-  const [autoCountdown, setAutoCountdown] = useState<number>(AUTO_STEP_SECONDS);
+  const [autoCountdown, setAutoCountdown] = useState<number>(autoStepSeconds);
   const [commandTrigger, setCommandTrigger] = useState<TerminalCommandTrigger | null>(null);
   const autoStepRef = useRef<() => void>(() => {});
 
@@ -232,7 +238,7 @@ export default function App() {
     setDevPanelOpen(false);
     setActiveTerminalModal(null);
     setUserPaused(false);
-    setAutoCountdown(AUTO_STEP_SECONDS);
+    setAutoCountdown(autoStepSeconds);
     if (sandboxConfig || difficulty === 'SANDBOX') {
       showBanner(`Sandbox launched (${fresh.runSeed}): isolated save slot active.`);
     } else if (devMode) {
@@ -253,7 +259,7 @@ export default function App() {
     if (snap) {
       setState({ ...snap, mode: 'PLAYING' });
       setActiveTerminalModal(null);
-      setAutoCountdown(AUTO_STEP_SECONDS);
+      setAutoCountdown(autoStepSeconds);
     }
   };
 
@@ -391,7 +397,7 @@ export default function App() {
     else if (!silent && totalMiningCash > 0) soundFx.playCash();
 
     setState(current);
-    setAutoCountdown(AUTO_STEP_SECONDS);
+    setAutoCountdown(autoStepSeconds);
     return {
       stepsRun,
       newStepCount: current.stepCount,
@@ -443,7 +449,7 @@ export default function App() {
       autoPauseReason === null
     ) {
       autoStepRef.current();
-      setAutoCountdown(AUTO_STEP_SECONDS);
+      setAutoCountdown(autoStepSeconds);
     }
   }, [autoCountdown, showEduLanding, state?.mode, autoPauseReason]);
 
@@ -579,6 +585,28 @@ export default function App() {
 
   const handleSetOnboardingMode = (onboardingMode: OnboardingMode) => {
     setState((prev) => (prev ? { ...prev, onboardingMode } : prev));
+  };
+
+  const handleSetSimSpeed = (
+    stepSeconds: number,
+    stepHours?: number
+  ): { ok: boolean; summary: string } => {
+    const seconds = Math.max(5, Math.min(300, Math.round(stepSeconds)));
+    const hours =
+      stepHours === undefined ? undefined : Math.max(1, Math.min(24, Math.round(stepHours)));
+    setState((prev) =>
+      prev
+        ? { ...prev, stepSeconds: seconds, ...(hours !== undefined ? { stepHours: hours } : {}) }
+        : prev
+    );
+    setAutoCountdown(seconds);
+    const effectiveHours = hours ?? state?.stepHours ?? DEFAULT_STEP_HOURS;
+    return {
+      ok: true,
+      summary: `Simulation speed: 1 step every ${seconds}s (${(DEFAULT_STEP_SECONDS / seconds).toFixed(
+        2
+      )}x) | Game clock: ${effectiveHours}h per step.`,
+    };
   };
 
   const handleClaimObjectives = () => {
@@ -1192,14 +1220,26 @@ export default function App() {
   const handleDesignCustomChip = (
     name: string,
     algo: MiningAlgorithm,
-    node: ChipProcessNode
+    node: ChipProcessNode,
+    profile: DesignProfile = 'BALANCED'
   ): { ok: boolean; summary: string } => {
     if (!state) return { ok: false, summary: 'No active game.' };
-    const check = designCustomChipBlueprint(state, name, algo, node);
+    const check = designCustomChipBlueprint(state, name, algo, node, profile);
     if (!check.ok) return { ok: false, summary: check.summary };
     soundFx.playCash();
-    setState((prev) => (prev ? designCustomChipBlueprint(prev, name, algo, node).nextState : prev));
+    setState((prev) =>
+      prev ? designCustomChipBlueprint(prev, name, algo, node, profile).nextState : prev
+    );
     return { ok: true, summary: check.summary };
+  };
+
+  const handleStripCustomAsic = (rigIdx: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = stripCustomAsicFromRig(state, rigIdx);
+    if (!res.ok) return { ok: false, summary: res.summary };
+    soundFx.playClick();
+    setState((prev) => (prev ? stripCustomAsicFromRig(prev, rigIdx).nextState : prev));
+    return { ok: true, summary: res.summary };
   };
 
   const handleQueueFabProduction = (
@@ -3055,6 +3095,19 @@ export default function App() {
     setState((prev) => (prev ? { ...prev, devUnlockAll: !prev.devUnlockAll } : prev));
   };
 
+  const handleDevLoadScenario = (id: DevScenarioId) => {
+    soundFx.playMilestone();
+    const scenario = createScenarioState(id);
+    setState(scenario);
+    setSandboxSnapshot(scenario);
+    setActiveTerminalModal(null);
+    setUserPaused(false);
+    setAutoCountdown(autoStepSeconds);
+    showBanner(
+      `Dev scenario loaded into the sandbox slot (${scenario.runSeed}). Career save untouched.`
+    );
+  };
+
   const handleDevAddCash = (amount: number) => {
     soundFx.playCash();
     setState((prev) => (prev ? { ...prev, cash: prev.cash + amount } : prev));
@@ -3462,9 +3515,9 @@ export default function App() {
               }}
               title={
                 autoPauseReason === null
-                  ? 'Pause automatic 30s stepping'
+                  ? `Pause automatic ${autoStepSeconds}s stepping`
                   : userPaused
-                  ? 'Resume automatic 30s stepping'
+                  ? `Resume automatic ${autoStepSeconds}s stepping`
                   : `Auto-stepping paused (${autoPauseReason})`
               }
               className={`px-2.5 py-1.5 rounded-lg border text-xs font-mono inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 tabular-nums ${
@@ -3744,6 +3797,7 @@ export default function App() {
                 onQueueFabProduction={handleQueueFabProduction}
                 onDeployCustomAsic={handleDeployCustomAsic}
                 onSellCustomAsic={handleSellCustomAsic}
+                onStripCustomAsic={handleStripCustomAsic}
                 onBackupSave={() => handleBackupSave()}
                 onRestoreBackup={() => handleRestoreBackup(Boolean(state.isSandbox))}
                 onExportSave={() => handleExportSave(Boolean(state.isSandbox))}
@@ -3765,6 +3819,7 @@ export default function App() {
                 onSetTutorialStep={handleSetTutorialStep}
                 onMarkTutorialSeen={handleMarkTutorialSeen}
                 onSetOnboardingMode={handleSetOnboardingMode}
+                onSetSimSpeed={handleSetSimSpeed}
                 onClaimObjectives={handleClaimObjectives}
                 userPaused={userPaused}
                 autoPauseReason={autoPauseReason}
@@ -3785,6 +3840,7 @@ export default function App() {
           onClose={() => setDevPanelOpen(false)}
           onToggleDevMode={handleToggleDevMode}
           onToggleDevUnlockAll={handleToggleDevUnlockAll}
+          onDevLoadScenario={handleDevLoadScenario}
           onAddCash={handleDevAddCash}
           onClearDebt={handleDevClearDebt}
           onAddRp={handleDevAddRp}

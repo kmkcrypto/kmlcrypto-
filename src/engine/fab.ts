@@ -1,9 +1,11 @@
-import { FACILITY_TIERS, PSU_PARTS } from '../data/catalog';
+import { CHASSIS_PARTS, FACILITY_TIERS, PSU_PARTS, RESEARCH_NODES } from '../data/catalog';
 import {
   ChipProcessNode,
+  ChipQualityGrade,
   CustomAsicInventoryItem,
   CustomAsicSpec,
   CustomChipBlueprint,
+  DesignProfile,
   FabProductionOrder,
   FabState,
   GameState,
@@ -12,6 +14,7 @@ import {
   TransactionEntry,
 } from '../types/game';
 import { formatHashrate, formatStepLabel, formatUsd } from '../utils/format';
+import { createSeededRng } from '../utils/rng';
 import {
   computeAverageRigHealth,
   ensureRigComponentHealth,
@@ -19,6 +22,97 @@ import {
 } from './usedMarket';
 
 const LINE_COSTS = [18000, 36000, 68000];
+
+/**
+ * Blueprint design trade-offs. Every tape-out must pick where the silicon
+ * spends its budget: raw hashrate, power efficiency, thermal density, or a
+ * neutral reference design.
+ */
+export const DESIGN_PROFILE_SPECS: Record<
+  DesignProfile,
+  {
+    label: string;
+    hashMult: number;
+    wattMult: number;
+    heatMult: number;
+    costMult: number;
+    blurb: string;
+  }
+> = {
+  PERF: {
+    label: 'Performance',
+    hashMult: 1.15,
+    wattMult: 1.18,
+    heatMult: 1.08,
+    costMult: 1.08,
+    blurb: '+15% hashrate, +18% power draw',
+  },
+  BALANCED: {
+    label: 'Balanced',
+    hashMult: 1,
+    wattMult: 1,
+    heatMult: 1,
+    costMult: 1,
+    blurb: 'Reference design, no trade-off',
+  },
+  EFF: {
+    label: 'Efficiency',
+    hashMult: 0.9,
+    wattMult: 0.8,
+    heatMult: 0.9,
+    costMult: 1.15,
+    blurb: '-20% power draw, -10% hashrate',
+  },
+  COMPACT: {
+    label: 'Compact',
+    hashMult: 0.95,
+    wattMult: 0.85,
+    heatMult: 0.7,
+    costMult: 1.05,
+    blurb: '-30% heat, -15% power, -5% hashrate',
+  },
+};
+
+export function parseDesignProfile(raw?: string): DesignProfile | null {
+  if (!raw) return 'BALANCED';
+  switch (raw.trim().toUpperCase()) {
+    case 'PERF':
+    case 'PERFORMANCE':
+    case 'HASH':
+      return 'PERF';
+    case 'BAL':
+    case 'BALANCED':
+    case 'STOCK':
+      return 'BALANCED';
+    case 'EFF':
+    case 'EFFICIENCY':
+    case 'ECO':
+      return 'EFF';
+    case 'COMPACT':
+    case 'COOL':
+    case 'QUIET':
+      return 'COMPACT';
+    default:
+      return null;
+  }
+}
+
+function qualityGradeFromRoll(roll: number): { grade: ChipQualityGrade; mult: number } {
+  if (roll >= 0.85) return { grade: 'A', mult: 1.06 };
+  if (roll >= 0.4) return { grade: 'B', mult: 1 };
+  return { grade: 'C', mult: 0.94 };
+}
+
+/**
+ * A foundry can only tape out a process node the wider hardware tree has
+ * already reached: the fab follows research, it does not leapfrog it.
+ */
+const NODE_RESEARCH: Record<ChipProcessNode, string> = {
+  '7nm': 'res_asic_tapeout',
+  '5nm': 'res_gen3_silicon',
+  '3nm': 'res_gen4_hyperhash',
+  '2nm': 'res_gen5_exascale',
+};
 
 const NODE_SPECS: Record<
   ChipProcessNode,
@@ -227,7 +321,8 @@ export function designCustomChipBlueprint(
   state: GameState,
   name: string,
   algo: MiningAlgorithm,
-  processNode: ChipProcessNode
+  processNode: ChipProcessNode,
+  profile: DesignProfile = 'BALANCED'
 ): { ok: boolean; nextState: GameState; summary: string } {
   const gate = isFabUnlocked(state);
   if (!gate.ok) return { ok: false, nextState: state, summary: gate.reason ?? 'Foundry locked.' };
@@ -240,15 +335,13 @@ export function designCustomChipBlueprint(
       summary: 'Commission Fab Line #1 first ("fab line build").',
     };
   }
-  if (
-    processNode === '2nm' &&
-    !state.devUnlockAll &&
-    !state.unlockedResearch.includes('res_gen5_exascale')
-  ) {
+  const nodeResearchId = NODE_RESEARCH[processNode];
+  if (nodeResearchId && !state.devUnlockAll && !state.unlockedResearch.includes(nodeResearchId)) {
+    const node = RESEARCH_NODES.find((n) => n.id === nodeResearchId);
     return {
       ok: false,
       nextState: state,
-      summary: '2nm GAAFET process requires R&D "Gen-5 2nm GAAFET & Two-Phase Cryo".',
+      summary: `${processNode} process requires R&D "${node?.name ?? nodeResearchId}".`,
     };
   }
 
@@ -278,13 +371,28 @@ export function designCustomChipBlueprint(
   const skillBonusMult = 1 + Math.max(0, maxResearcherSkill - 1) * 0.05;
   const yieldCut = state.unlockedResearch.includes('res_wafer_lithography') ? 0.94 : 1.0;
 
+  const profileSpec = DESIGN_PROFILE_SPECS[profile] ?? DESIGN_PROFILE_SPECS.BALANCED;
+  // First-silicon quality: a seeded prototype roll decides how clean the
+  // tape-out lands. Better researchers narrow the spread.
+  const protoRoll = createSeededRng(
+    `${state.runSeed}|proto|${cleanName}|${algo}|${processNode}|${profile}`
+  )();
+  const { grade: qualityGrade, mult: gradeMult } = qualityGradeFromRoll(protoRoll);
+  const qualityMult = Number(
+    (gradeMult * (0.94 + Math.min(1, Math.max(0, protoRoll)) * 0.06)).toFixed(4)
+  );
+
   const isPowerAsic = algo === 'SHA256' || algo === 'SCRYPT';
-  const rawHash = BASE_ALGO_HASHRATES[algo][processNode] * skillBonusMult;
+  const rawHash =
+    BASE_ALGO_HASHRATES[algo][processNode] * skillBonusMult * profileSpec.hashMult * qualityMult;
   const hashRate = algo === 'RANDOMX' ? Number(rawHash.toFixed(4)) : Math.round(rawHash);
-  const watts = isPowerAsic ? spec.asicWatts : spec.compactWatts;
-  const heatC = isPowerAsic ? spec.asicHeatC : spec.compactHeatC;
-  const unitCostUsd = Math.round(spec.unitCostUsd * yieldCut);
-  const wholesaleValueUsd = Math.round(spec.unitCostUsd * spec.wholesaleMult);
+  const baseWatts = isPowerAsic ? spec.asicWatts : spec.compactWatts;
+  const watts = Math.round(baseWatts * profileSpec.wattMult);
+  const heatC = Math.round((isPowerAsic ? spec.asicHeatC : spec.compactHeatC) * profileSpec.heatMult);
+  const unitCostUsd = Math.round(spec.unitCostUsd * yieldCut * profileSpec.costMult);
+  const wholesaleValueUsd = Math.round(
+    spec.unitCostUsd * spec.wholesaleMult * profileSpec.costMult * qualityMult
+  );
 
   const bp: CustomChipBlueprint = {
     id: `bp_${state.stepCount}_${Math.random().toString(36).slice(2, 6)}`,
@@ -296,6 +404,9 @@ export function designCustomChipBlueprint(
     hashRate,
     watts,
     heatC,
+    designProfile: profile,
+    qualityGrade,
+    qualityMult,
     wholesaleValueUsd,
     createdStep: state.stepCount,
   };
@@ -321,7 +432,7 @@ export function designCustomChipBlueprint(
       },
       transactions: [tx, ...(state.transactions ?? [])].slice(0, 200),
     },
-    summary: `Taped out "${cleanName}" (${processNode} ${algo} @ ${formatHashrate(
+    summary: `Taped out "${cleanName}" [${profileSpec.label} · Grade ${qualityGrade}] (${processNode} ${algo} @ ${formatHashrate(
       hashRate,
       algo
     )}, ${watts}W) for ${formatUsd(spec.nreUsd)} NRE. Unit fab cost: ${formatUsd(
@@ -358,6 +469,13 @@ export function queueFabProduction(
   }
 
   const batchSteps = bp.waferSteps + Math.max(0, cleanQty - 1);
+  // Each wafer batch yields slightly differently; the roll is banked on the
+  // order so the finished stack keeps its own measured specs.
+  const qualityRoll = Number(
+    (0.95 + createSeededRng(`${state.runSeed}|batch|${bp.id}|${state.stepCount}|${cleanQty}`)() * 0.1).toFixed(
+      3
+    )
+  );
   const order: FabProductionOrder = {
     id: `ord_fab_${state.stepCount}_${Math.random().toString(36).slice(2, 6)}`,
     blueprintId: bp.id,
@@ -365,6 +483,7 @@ export function queueFabProduction(
     qty: cleanQty,
     stepsRemaining: batchSteps,
     totalSteps: batchSteps,
+    qualityRoll,
   };
 
   const tx: TransactionEntry = {
@@ -390,7 +509,9 @@ export function queueFabProduction(
     },
     summary: `Queued ${cleanQty}x "${bp.name}" wafers for ${formatUsd(totalCost)} (~${Math.ceil(
       batchSteps / fab.linesCount
-    )} steps at ${fab.linesCount}x line throughput).`,
+    )} steps at ${fab.linesCount}x line throughput). Projected yield: ${(
+      qualityRoll * 100
+    ).toFixed(1)}%.`,
   };
 }
 
@@ -424,7 +545,14 @@ export function stepFabProduction(
       const bp = fab.blueprints.find((b) => b.id === ord.blueprintId);
       manufacturedAdd += ord.qty;
       if (bp) {
-        const existing = nextInventory.find((i) => i.blueprintId === bp.id);
+        const roll = ord.qualityRoll ?? 1;
+        const stackHash =
+          bp.algo === 'RANDOMX'
+            ? Number((bp.hashRate * roll).toFixed(4))
+            : Math.round(bp.hashRate * roll);
+        const existing = nextInventory.find(
+          (i) => i.blueprintId === bp.id && Math.abs((i.qualityRoll ?? 1) - roll) < 1e-9
+        );
         if (existing) {
           existing.qty += ord.qty;
         } else {
@@ -433,11 +561,13 @@ export function stepFabProduction(
             name: bp.name,
             algo: bp.algo,
             processNode: bp.processNode,
-            hashRate: bp.hashRate,
+            hashRate: stackHash,
             watts: bp.watts,
             heatC: bp.heatC,
-            wholesaleValueUsd: bp.wholesaleValueUsd,
+            wholesaleValueUsd: Math.round(bp.wholesaleValueUsd * roll),
             qty: ord.qty,
+            qualityGrade: bp.qualityGrade,
+            qualityRoll: roll,
           });
         }
       }
@@ -480,6 +610,19 @@ export function deployCustomAsicToRig(
   const rig = state.rigs[rigIdx];
   if (!rig) {
     return { ok: false, nextState: state, summary: `Rig #${rigIdx + 1} not found.` };
+  }
+
+  // A custom ASIC only produces hashrate inside an ASIC blade enclosure; without
+  // this check it could be "installed" into a desktop tower and silently mine nothing.
+  const chassis = CHASSIS_PARTS.find((c) => c.id === rig.chassisId);
+  if (!chassis || chassis.maxAsics < 1) {
+    return {
+      ok: false,
+      nextState: state,
+      summary: `Rig #${rigIdx + 1} uses ${
+        chassis?.name ?? 'an incompatible chassis'
+      }, which cannot seat an ASIC blade. Rebuild it on a 42U ASIC shelf or better.`,
+    };
   }
 
   const spec: CustomAsicSpec = {
@@ -543,6 +686,90 @@ export function deployCustomAsicToRig(
       item.hashRate,
       item.algo
     )} on ${item.algo}) into ${rig.name}.${psuNote}`,
+  };
+}
+
+/**
+ * Pull an installed custom ASIC back into foundry inventory so it can be
+ * re-deployed to a better rig or exported wholesale. Charged as a refurb fee.
+ */
+export function stripCustomAsicFromRig(
+  state: GameState,
+  rigIdx: number
+): { ok: boolean; nextState: GameState; summary: string } {
+  const rig = state.rigs[rigIdx];
+  if (!rig) return { ok: false, nextState: state, summary: `Rig #${rigIdx + 1} not found.` };
+  const spec = rig.customAsicSpec;
+  if (!spec) {
+    return {
+      ok: false,
+      nextState: state,
+      summary: `Rig #${rigIdx + 1} has no custom ASIC installed.`,
+    };
+  }
+
+  const fab = buildDefaultFab(state.fab);
+  const bp = fab.blueprints.find((b) => b.id === spec.blueprintId);
+  const wholesaleValueUsd = bp?.wholesaleValueUsd ?? Math.round(spec.watts * 3);
+  const refurbFee = Math.max(100, Math.round(wholesaleValueUsd * 0.02));
+  if (state.cash < refurbFee) {
+    return {
+      ok: false,
+      nextState: state,
+      summary: `Extraction & refurbishment costs ${formatUsd(refurbFee)}.`,
+    };
+  }
+
+  const nextInventory = fab.inventory.map((i) => ({ ...i }));
+  const existing = nextInventory.find(
+    (i) =>
+      i.blueprintId === spec.blueprintId &&
+      i.hashRate === spec.hashRate &&
+      i.watts === spec.watts
+  );
+  if (existing) {
+    existing.qty += 1;
+  } else {
+    nextInventory.push({
+      blueprintId: spec.blueprintId,
+      name: spec.name,
+      algo: spec.algo,
+      processNode: spec.processNode,
+      hashRate: spec.hashRate,
+      watts: spec.watts,
+      heatC: spec.heatC,
+      wholesaleValueUsd,
+      qty: 1,
+      qualityGrade: bp?.qualityGrade,
+      qualityRoll: bp?.qualityMult,
+    });
+  }
+
+  const tx: TransactionEntry = {
+    id: `tx_fab_strip_${state.stepCount}_${Math.random().toString(36).slice(2, 6)}`,
+    step: state.stepCount,
+    stepLabel: formatStepLabel(state.stepCount),
+    category: 'FAB',
+    amountUsd: -refurbFee,
+    description: `Extracted custom ASIC "${spec.name}" from ${rig.name}`,
+  };
+
+  return {
+    ok: true,
+    nextState: {
+      ...state,
+      cash: state.cash - refurbFee,
+      rigs: state.rigs.map((r, i) => (i === rigIdx ? { ...r, customAsicSpec: undefined } : r)),
+      fab: { ...fab, inventory: nextInventory },
+      currentCycleStats: {
+        ...state.currentCycleStats,
+        otherSpendUsd: state.currentCycleStats.otherSpendUsd + refurbFee,
+      },
+      transactions: [tx, ...(state.transactions ?? [])].slice(0, 200),
+    },
+    summary: `Extracted "${spec.name}" from ${rig.name} for ${formatUsd(
+      refurbFee
+    )}. It is back in foundry inventory and can be redeployed or exported.`,
   };
 }
 
@@ -611,15 +838,17 @@ export function formatFabStatusReport(state: GameState): string {
   const bpRows =
     fab.blueprints.length === 0
       ? ['  (No chip blueprints taped out yet)']
-      : fab.blueprints.map(
-          (bp, i) =>
-            `  #${i + 1} ${bp.name.padEnd(22)} ${bp.processNode} ${bp.algo.padEnd(8)} ${formatHashrate(
-              bp.hashRate,
-              bp.algo
-            ).padStart(12)}  ${String(bp.watts).padStart(5)}W  Unit:${formatUsd(
-              bp.unitCostUsd
-            )}  Export:${formatUsd(bp.wholesaleValueUsd)}`
-        );
+      : fab.blueprints.map((bp, i) => {
+          const tag = `${DESIGN_PROFILE_SPECS[bp.designProfile ?? 'BALANCED'].label.slice(0, 4)}${
+            bp.qualityGrade ? `-${bp.qualityGrade}` : ''
+          }`;
+          return `  #${i + 1} ${bp.name.padEnd(22)} ${bp.processNode} ${bp.algo.padEnd(8)} ${formatHashrate(
+            bp.hashRate,
+            bp.algo
+          ).padStart(12)}  ${String(bp.watts).padStart(5)}W  ${tag.padEnd(8)} Unit:${formatUsd(
+            bp.unitCostUsd
+          )}  Export:${formatUsd(bp.wholesaleValueUsd)}`;
+        });
 
   const qRows =
     fab.productionQueue.length === 0
@@ -634,14 +863,16 @@ export function formatFabStatusReport(state: GameState): string {
   const invRows =
     fab.inventory.length === 0
       ? ['  (Inventory empty)']
-      : fab.inventory.map(
-          (it, i) =>
-            `  #${i + 1} ${String(it.qty).padStart(2)}x ${it.name.padEnd(22)} ${it.processNode} ${it.algo.padEnd(
-              8
-            )} ${formatHashrate(it.hashRate, it.algo).padStart(12)}  Wholesale:${formatUsd(
-              it.wholesaleValueUsd
-            )}/ea`
-        );
+      : fab.inventory.map((it, i) => {
+          const yieldTag = `${((it.qualityRoll ?? 1) * 100).toFixed(1)}%${
+            it.qualityGrade ? ` ${it.qualityGrade}` : ''
+          }`;
+          return `  #${i + 1} ${String(it.qty).padStart(2)}x ${it.name.padEnd(22)} ${it.processNode} ${it.algo.padEnd(
+            8
+          )} ${formatHashrate(it.hashRate, it.algo).padStart(12)}  ${yieldTag.padEnd(9)} Wholesale:${formatUsd(
+            it.wholesaleValueUsd
+          )}/ea`;
+        });
 
   return [
     `  PROPRIETARY ASIC FOUNDRY (Lines: ${fab.linesCount}/3 · Upkeep: ${formatUsd(
@@ -651,7 +882,7 @@ export function formatFabStatusReport(state: GameState): string {
     )})`,
     `  Next Fab Line Cost: ${nextLineCost}`,
     ``,
-    `  CHIP BLUEPRINTS ("fab design <name> <sha256|scrypt|randomx|ethash|post> <7nm|5nm|3nm|2nm>")`,
+    `  CHIP BLUEPRINTS ("fab design <name> <sha256|scrypt|randomx|ethash|post> <7nm|5nm|3nm|2nm> [profile]")`,
     ...bpRows,
     ``,
     `  ACTIVE WAFER QUEUE ("fab produce <bp#> <qty>")`,
@@ -660,11 +891,17 @@ export function formatFabStatusReport(state: GameState): string {
     `  FINISHED INVENTORY ("fab deploy <inv#> <rig#>" | "fab sell <inv#> <qty|all>")`,
     ...invRows,
     ``,
+    `  DESIGN PROFILES: ${(Object.keys(DESIGN_PROFILE_SPECS) as DesignProfile[])
+      .map((p) => `${p.toLowerCase()}=${DESIGN_PROFILE_SPECS[p].blurb}`)
+      .join(' | ')}`,
+    `  Every tape-out also rolls first-silicon quality (Grade A/B/C) and every wafer batch rolls its own yield (95-105%).`,
+    ``,
     `  COMMANDS:`,
     `    fab line build                               Commission cleanroom fab line (1..3)`,
-    `    fab design <name> <algo> <7nm|5nm|3nm|2nm>   Tape out proprietary chip blueprint`,
+    `    fab design <name> <algo> <node> [profile]    Tape out blueprint (node: 7nm|5nm|3nm|2nm)`,
     `    fab produce <bp#> <qty>                      Manufacture custom chip batch (1..20)`,
     `    fab deploy <inv#> <rig#>                     Install custom chip into an active rig`,
+    `    fab strip <rig#>                             Pull an installed ASIC back into inventory`,
     `    fab sell <inv#> <qty|all>                    Export finished ASICs for wholesale profit`,
   ].join('\n');
 }

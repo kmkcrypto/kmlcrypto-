@@ -25,6 +25,7 @@ import {
   STORAGE_PARTS,
 } from '../data/catalog';
 import { getRivalStrategyLabel } from '../engine/rivals';
+import { formatWorldReport } from '../engine/world';
 import {
   BILLING_CYCLE_STEPS,
   calculatePartTradeInCost,
@@ -40,6 +41,7 @@ import {
   formatMarketForecastReport,
   formatSingleRoomView,
   formatWalletAndExchangeReport,
+  estimateFleetHashIndex,
   getAutoSellMultiplier,
   getComponentRepairCost,
   getEffectiveFacilityMaxRigs,
@@ -57,6 +59,7 @@ import {
   getSysEngineerBonus,
   resolveCoolerRoomId,
 } from '../engine/simulation';
+import { parseDesignProfile } from '../engine/fab';
 import { getGlobalHardwarePriceMult, getRigGeneration } from '../engine/usedMarket';
 import {
   previewCoolingUnit,
@@ -76,6 +79,7 @@ import {
   ChallengeId,
   ChipProcessNode,
   CoinSymbol,
+  DesignProfile,
   EmployeeRole,
   FacilityUpgradeId,
   FirmwareProfile,
@@ -95,6 +99,7 @@ import {
 } from '../types/game';
 import {
   formatCoinAmount,
+  formatGameDate,
   formatHashrate,
   formatStepLabel,
   formatUsd,
@@ -242,11 +247,13 @@ interface TextGameTerminalProps {
   onDesignCustomChip: (
     name: string,
     algo: MiningAlgorithm,
-    node: ChipProcessNode
+    node: ChipProcessNode,
+    profile?: DesignProfile
   ) => { ok: boolean; summary: string };
   onQueueFabProduction: (bpIdx: number, qty: number) => { ok: boolean; summary: string };
   onDeployCustomAsic: (invIdx: number, rigIdx: number) => { ok: boolean; summary: string };
   onSellCustomAsic: (invIdx: number, qtyOrAll: number | 'ALL') => { ok: boolean; summary: string };
+  onStripCustomAsic: (rigIdx: number) => { ok: boolean; summary: string };
   onBackupSave: () => boolean;
   onRestoreBackup: () => boolean;
   onExportSave: () => string | null;
@@ -268,6 +275,7 @@ interface TextGameTerminalProps {
   onSetTutorialStep: (step: number) => void;
   onMarkTutorialSeen: (guideId: string) => void;
   onSetOnboardingMode: (mode: OnboardingMode) => void;
+  onSetSimSpeed: (stepSeconds: number, stepHours?: number) => { ok: boolean; summary: string };
   onClaimObjectives: () => void;
   userPaused: boolean;
   autoPauseReason: string | null;
@@ -289,6 +297,7 @@ const TOP_COMMANDS = [
   'pause',
   'resume',
   'auto',
+  'speed',
   'event',
   'decide',
   'build rig',
@@ -325,6 +334,8 @@ const TOP_COMMANDS = [
   'chart',
   'fab',
   'foundry',
+  'world',
+  'blockchain',
   'contracts',
   'contract',
   'rivals',
@@ -426,6 +437,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onQueueFabProduction,
   onDeployCustomAsic,
   onSellCustomAsic,
+  onStripCustomAsic,
   onBackupSave,
   onRestoreBackup,
   onExportSave,
@@ -447,6 +459,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onSetTutorialStep,
   onMarkTutorialSeen,
   onSetOnboardingMode,
+  onSetSimSpeed,
   onClaimObjectives,
   userPaused,
   autoPauseReason,
@@ -710,6 +723,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         )}/100  Rep: ${Math.round(state.mediaCredibility)}  Align: ${alignment}`,
         78
       )} |`,
+      `| ${padRight(
+        `Clock: ${formatGameDate(state.stepCount, state.stepHours ?? 24)}  Speed: ${
+          state.stepSeconds ?? 30
+        }s/step (${(30 / (state.stepSeconds ?? 30)).toFixed(2)}x)  ${state.stepHours ?? 24}h/step`,
+        78
+      )} |`,
       ...(modBanner ? [modBanner] : []),
       ...(challengeSpec
         ? [`| ${padRight(`CHALLENGE: ${challengeSpec.title} — ${challengeSpec.description}`, 78)} |`]
@@ -787,7 +806,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         {
           kind: 'PRE',
           text: [
-            `  Step & bill in Nst  Advance simulation with "step [n]" or let the 30s auto-timer`,
+            `  Step & bill in Nst  Advance with "step [n]" or let the auto-timer run (see "speed")`,
             `                      run. Rent, utility, and payroll bills settle every ${BILLING_CYCLE_STEPS} steps.`,
             `  Cash & Rev/st       Mined crypto AUTO-SELLS each step into Cash. "RP" is Research`,
             `                      Points spent in "research" to unlock stronger hardware.`,
@@ -2008,7 +2027,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             `    codex [topic] | wiki [topic]      Permanent in-terminal mechanics encyclopedia`,
             `    tutorial [list|<topic>|restart]   Interactive & replayable topic tutorials`,
             `    mode <guided|veteran>             Switch between gradual unlocks or full access`,
-            `    step [n] | pause | resume | auto  Advance steps or toggle 30s auto-stepping`,
+            `    step [n] | pause | resume | auto  Advance steps or toggle auto-stepping`,
+            `    speed [<5..300>|2x|clock <1..24>]   Real seconds per step & in-game hours per step`,
             `    event | decide <1|2|3>            View active event or lock in choice`,
             `    stats | valuation | history | milestones | achievements | challenges | save`,
             `  HARDWARE, USED MARKET & MAINTENANCE`,
@@ -2029,7 +2049,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             ...(unlockedSys.staff
               ? [`    staff | hire <tech|elec|mgr|eng|res|pr|analyst> | train <#> | fire <#> | shift | priority`]
               : []),
-            `    research [done | start <#>] | fab [line build|design|produce|deploy|sell] | ledger`,
+            `    research [done | start <#>] | fab [line build|design|produce|deploy|strip|sell] | ledger`,
+            `    world | blockchain                          Shared block clock, network share & block history`,
             `  MARKET, EXCHANGE${unlockedSys.contracts || unlockedSys.rivals || unlockedSys.ops ? ', CONTRACTS, RIVALS & OPS' : ''}`,
             `    market | forecast [COIN] | unlock <COIN> | chart <COIN|portfolio|cash|profit|hashrate|power>`,
             `    wallet | exchange [buy|sell|limit|cancel|short|close]   Treasury wallet & spot/margin desk`,
@@ -2304,12 +2325,69 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       return;
     }
 
+    if (cmd === 'speed' || cmd === 'tick') {
+      const stepSecs = state.stepSeconds ?? 30;
+      const stepHrs = state.stepHours ?? 24;
+      if (!arg1) {
+        append([
+          {
+            kind: 'OK',
+            text: `Simulation speed: 1 step every ${stepSecs}s (${(30 / stepSecs).toFixed(
+              2
+            )}x) | Game clock: ${stepHrs}h per step (now ${formatGameDate(
+              state.stepCount,
+              stepHrs
+            )}).`,
+          },
+          {
+            kind: 'TEXT',
+            text: 'Usage: "speed <5..300>" real seconds per step | "speed <1x|2x|3x|4x|6x>" | "speed clock <1..24>" in-game hours per step.',
+          },
+        ]);
+        return;
+      }
+      if (arg1 === 'clock') {
+        const hrs = parseInt(arg2, 10);
+        if (!Number.isFinite(hrs) || hrs < 1 || hrs > 24) {
+          append([{ kind: 'ERR', text: 'Usage: speed clock <1..24> (in-game hours per step).' }]);
+          return;
+        }
+        const res = onSetSimSpeed(stepSecs, hrs);
+        append([{ kind: 'OK', text: res.summary }]);
+        return;
+      }
+      const multMatch = arg1.match(/^(\d+(?:\.\d+)?)x$/);
+      if (multMatch) {
+        const mult = parseFloat(multMatch[1]);
+        if (!(mult >= 0.1) || mult > 6) {
+          append([{ kind: 'ERR', text: 'Multiplier must be between 0.1x and 6x (30s base).' }]);
+          return;
+        }
+        const res = onSetSimSpeed(30 / mult);
+        append([{ kind: 'OK', text: res.summary }]);
+        return;
+      }
+      const secs = parseInt(arg1, 10);
+      if (!Number.isFinite(secs) || secs < 5 || secs > 300) {
+        append([
+          {
+            kind: 'ERR',
+            text: 'Usage: speed <5..300> seconds per step, "speed 2x", or "speed clock <1..24>".',
+          },
+        ]);
+        return;
+      }
+      const res = onSetSimSpeed(secs);
+      append([{ kind: 'OK', text: res.summary }]);
+      return;
+    }
+
     if (cmd === 'pause') {
       onSetUserPaused(true);
       append([
         {
           kind: 'WARN',
-          text: 'Auto-stepping PAUSED (30s timer stopped). Manual "step [n]" still works; type "resume" anytime.',
+          text: `Auto-stepping PAUSED (${state.stepSeconds ?? 30}s timer stopped). Manual "step [n]" still works; type "resume" anytime.`,
         },
       ]);
       return;
@@ -2326,8 +2404,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         {
           kind: blockedBy ? 'WARN' : 'OK',
           text: blockedBy
-            ? `Manual pause cleared — 30s auto-stepping will start automatically once the ${blockedBy} finishes.`
-            : 'Auto-stepping RESUMED (1 step every 30s). Type "pause" anytime.',
+            ? `Manual pause cleared — auto-stepping (${state.stepSeconds ?? 30}s) will start automatically once the ${blockedBy} finishes.`
+            : `Auto-stepping RESUMED (1 step every ${state.stepSeconds ?? 30}s). Type "pause" anytime.`,
         },
       ]);
       return;
@@ -2341,15 +2419,20 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       }
       if (arg1 === 'on' || arg1 === 'resume' || arg1 === 'start') {
         onSetUserPaused(false);
-        append([{ kind: 'OK', text: 'Auto-stepping RESUMED (1 step every 30s).' }]);
+        append([
+          {
+            kind: 'OK',
+            text: `Auto-stepping RESUMED (1 step every ${state.stepSeconds ?? 30}s).`,
+          },
+        ]);
         return;
       }
       append([
         {
           kind: autoPauseReason ? 'WARN' : 'OK',
           text: autoPauseReason
-            ? `Auto-step (30s): PAUSED (${autoPauseReason}). Auto-pauses during events, rig building, tinkering, and tutorial.`
-            : `Auto-step (30s): ACTIVE — next automatic step in ${autoCountdown}s. Type "pause" to stop.`,
+            ? `Auto-step (${state.stepSeconds ?? 30}s): PAUSED (${autoPauseReason}). Auto-pauses during events, rig building, tinkering, and tutorial.`
+            : `Auto-step (${state.stepSeconds ?? 30}s): ACTIVE — next automatic step in ${autoCountdown}s. Type "pause" to stop.`,
         },
       ]);
       return;
@@ -3988,6 +4071,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       return;
     }
 
+    if (cmd === 'world' || cmd === 'blockchain') {
+      append([
+        { kind: 'HEAD', text: 'WORLD & BLOCKCHAIN' },
+        { kind: 'PRE', text: formatWorldReport(state, estimateFleetHashIndex(state)) },
+      ]);
+      return;
+    }
+
     if (cmd === 'fab' || cmd === 'foundry') {
       if (!arg1 || arg1 === 'status' || arg1 === 'list') {
         append([
@@ -4002,22 +4093,33 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         return;
       }
       if (arg1 === 'design') {
-        const rawTokens = trimmed.split(/\s+/).slice(1);
+        const rawTokens = trimmed.split(/\s+/).slice(2);
         const bpName = rawTokens[0];
         const algoRaw = (rawTokens[1] || '').toUpperCase() as MiningAlgorithm;
         const nodeRaw = (rawTokens[2] || '').toLowerCase() as ChipProcessNode;
+        const profile = parseDesignProfile(rawTokens[3]);
         const validAlgos: MiningAlgorithm[] = ['SHA256', 'SCRYPT', 'RANDOMX', 'ETHASH', 'POST'];
         const validNodes: ChipProcessNode[] = ['7nm', '5nm', '3nm', '2nm'];
-        if (!bpName || !validAlgos.includes(algoRaw) || !validNodes.includes(nodeRaw)) {
+        if (!bpName || !validAlgos.includes(algoRaw) || !validNodes.includes(nodeRaw) || !profile) {
           append([
             {
               kind: 'ERR',
-              text: 'Usage: fab design <SingleWordName> <sha256|scrypt|randomx|ethash|post> <7nm|5nm|3nm|2nm>',
+              text: 'Usage: fab design <SingleWordName> <sha256|scrypt|randomx|ethash|post> <7nm|5nm|3nm|2nm> [perf|balanced|eff|compact]',
             },
           ]);
           return;
         }
-        const res = onDesignCustomChip(bpName, algoRaw, nodeRaw);
+        const res = onDesignCustomChip(bpName, algoRaw, nodeRaw, profile);
+        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        return;
+      }
+      if (arg1 === 'strip') {
+        const rigIdx = parseInt(arg2, 10) - 1;
+        if (isNaN(rigIdx)) {
+          append([{ kind: 'ERR', text: 'Usage: fab strip <rig#>' }]);
+          return;
+        }
+        const res = onStripCustomAsic(rigIdx);
         append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
         return;
       }
@@ -4058,7 +4160,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       append([
         {
           kind: 'ERR',
-          text: 'Usage: fab [line build | design <name> <algo> <7nm|5nm|3nm|2nm> | produce <bp#> <qty> | deploy <inv#> <rig#> | sell <inv#> <qty|all>]',
+          text: 'Usage: fab [line build | design <name> <algo> <node> [perf|balanced|eff|compact] | produce <bp#> <qty> | deploy <inv#> <rig#> | strip <rig#> | sell <inv#> <qty|all>]',
         },
       ]);
       return;

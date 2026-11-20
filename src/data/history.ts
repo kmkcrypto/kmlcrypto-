@@ -13,12 +13,14 @@ export function createInitialCoins(runSeed = 'DEFAULT'): Record<CoinSymbol, Coin
   const ethBase = Number((2400 * jitter(0.12)).toFixed(2));
   const xchBase = Number((400 * jitter(0.15)).toFixed(2));
 
-  const btcHalve = halvingOffset(90);
-  const ltcHalve = halvingOffset(105);
-  const dogeHalve = halvingOffset(80);
-  const xmrHalve = halvingOffset(115);
-  const ethHalve = halvingOffset(100);
-  const xchHalve = halvingOffset(120);
+  // Halvings are a mid/late-game pressure valve, not an early-game wall: at
+  // 90-120 steps a run hit ten halvings (x1/1024 emission) before step 1,000.
+  const btcHalve = halvingOffset(420);
+  const ltcHalve = halvingOffset(480);
+  const dogeHalve = halvingOffset(360);
+  const xmrHalve = halvingOffset(520);
+  const ethHalve = halvingOffset(440);
+  const xchHalve = halvingOffset(540);
 
   return {
     BTC: {
