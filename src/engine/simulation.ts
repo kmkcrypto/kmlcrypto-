@@ -103,6 +103,8 @@ import {
   stepRivalSyndicates,
 } from './rivals';
 import { analyzeCoinForecast, formatMarketForecastReport } from './marketForecast';
+import { stepShellCoins } from './underground';
+import { archiveSeason, getSeasonId, getSeasonLabel } from './leaderboard';
 import {
   buildDefaultStats,
 } from './saveSystem';
@@ -1120,6 +1122,7 @@ export function createNewGameState(
     shortPositions: [],
     fab: buildDefaultFab(),
     world: buildDefaultWorld(runSeed),
+    seasonHistory: [],
     marketRegime,
     regimeStepsRemaining,
     employees: [],
@@ -1141,6 +1144,8 @@ export function createNewGameState(
       bribeProtectionSteps: 0,
       blackMarketListings: [],
       blackMarketRefreshStep: 15,
+      shellCoins: [],
+      raidCooldownStep: 0,
     },
     pendingEvent: null,
     ledger: [],
@@ -2512,6 +2517,42 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     }
   }
 
+  if ((nextUnderground.raidStepsRemaining ?? 0) > 0 && nextUnderground.raidCoin) {
+    const rCoin = nextCoins[nextUnderground.raidCoin];
+    const raidRes = computeStepCoinOutput(
+      nextUnderground.raidBonusHash ?? 0,
+      rCoin,
+      1,
+      autoSellMult,
+      'PPS',
+      true
+    );
+    if (raidRes.autoSoldUsd > 0) {
+      nextCash += raidRes.autoSoldUsd;
+      stepMiningUsd += raidRes.autoSoldUsd;
+      nextStats.totalRevenueUsd += raidRes.autoSoldUsd;
+      stepCoinUsdEarned[rCoin.symbol] =
+        (stepCoinUsdEarned[rCoin.symbol] ?? 0) + raidRes.autoSoldUsd;
+      nextCoins[rCoin.symbol] = {
+        ...nextCoins[rCoin.symbol],
+        totalMined: nextCoins[rCoin.symbol].totalMined + raidRes.minedCoins,
+        totalEarnedUsd: nextCoins[rCoin.symbol].totalEarnedUsd + raidRes.autoSoldUsd,
+      };
+    }
+    nextUnderground.raidStepsRemaining = (nextUnderground.raidStepsRemaining ?? 0) - 1;
+    stepScrutinyDelta += nextUnderground.bribeProtectionSteps > 0 ? 0.5 : 1.9;
+    if (nextUnderground.raidStepsRemaining === 0) {
+      nextUnderground.raidBonusHash = 0;
+      nextUnderground.raidCoin = undefined;
+      pushNews(
+        'Hijacked Hash Expired',
+        `${nextUnderground.raidSourceName ?? 'A rival'}'s racks were re-secured. The free hashrate is gone.`,
+        'UNDERGROUND'
+      );
+      nextUnderground.raidSourceName = undefined;
+    }
+  }
+
   if (nextUnderground.bribeProtectionSteps > 0) {
     nextUnderground.bribeProtectionSteps -= 1;
   }
@@ -2524,6 +2565,16 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       rigs: nextRigs,
     });
     nextUnderground.blackMarketRefreshStep = nextStep + 15;
+  }
+
+  const shellStep = stepShellCoins(nextUnderground, nextStep, prev.runSeed);
+  nextUnderground.shellCoins = shellStep.underground.shellCoins;
+  for (const dead of shellStep.collapsed) {
+    pushNews(
+      `Shell Coin Collapsed: $${dead.ticker}`,
+      `$${dead.ticker} ("${dead.name}") lost all hype. Price flatlined at $0.0001 and the pool dried up.`,
+      'UNDERGROUND'
+    );
   }
 
   // Used Equipment Market Refresh every 10 steps
@@ -2554,7 +2605,11 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     { ...prev, coins: nextCoins, stepCount: nextStep },
     playerPowerScore
   );
-  const nextWorld = worldStep.nextWorld;
+  const nextWorld = {
+    ...worldStep.nextWorld,
+    seasonId: getSeasonId(nextStep),
+    seasonLabel: `Season ${getSeasonId(nextStep)} · ${getSeasonLabel(getSeasonId(nextStep))}`,
+  };
   (Object.keys(worldStep.rewardByCoin) as CoinSymbol[]).forEach((sym) => {
     const amount = worldStep.rewardByCoin[sym] ?? 0;
     if (amount > 0) nextWallet[sym] = (nextWallet[sym] ?? 0) + amount;
@@ -2799,6 +2854,35 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     noiseFinesTotal: prev.noiseFinesTotal + stepNoiseFine,
     stats: nextStats,
   };
+
+  // 11b. Close out a season when the step clock crosses its boundary
+  const seasonHistory = archiveSeason(prev, playerPowerScore);
+  if (seasonHistory) {
+    const closed = seasonHistory[0];
+    nextState = {
+      ...nextState,
+      seasonHistory,
+      unlockedAchievements:
+        closed.playerRank === 1 && !nextState.unlockedAchievements.includes('ach_season_champion')
+          ? [...nextState.unlockedAchievements, 'ach_season_champion']
+          : nextState.unlockedAchievements,
+      news: [
+        {
+          id: `news_season_${closed.seasonId}`,
+          step: nextStep,
+          stepLabel,
+          title: `Season ${closed.seasonId} Closed — ${closed.label}`,
+          detail:
+            closed.playerRank === 1
+              ? 'You finished #1 and claimed the Season Champion title.'
+              : `You finished #${closed.playerRank} of ${closed.standings.length}. Run "leaderboard" for the standings.`,
+          category: 'MILESTONE' as const,
+        },
+        ...nextState.news,
+      ].slice(0, 60),
+    };
+    if (closed.playerRank === 1) milestoneHit = true;
+  }
 
   // 12. Evaluate milestones, achievements, challenges & early objectives
   const prog = evaluateProgression(nextState, playerPowerScore, {

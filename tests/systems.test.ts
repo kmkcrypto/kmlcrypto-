@@ -16,6 +16,21 @@ import {
   estimateFleetHashIndex,
 } from '../src/engine/simulation';
 import {
+  launchShellCoin,
+  resolveRaid,
+  rugShellCoin,
+  shillShellCoin,
+  SHELL_COIN_LAUNCH_COST,
+  stepShellCoins,
+} from '../src/engine/underground';
+import {
+  archiveSeason,
+  buildSeasonStandings,
+  getSeasonId,
+  getSeasonStatus,
+  SEASON_LENGTH_STEPS,
+} from '../src/engine/leaderboard';
+import {
   buildDefaultFab,
   deployCustomAsicToRig,
   designCustomChipBlueprint,
@@ -24,6 +39,7 @@ import {
   stripCustomAsicFromRig,
 } from '../src/engine/fab';
 import { createScenarioState, SCENARIOS } from '../src/engine/scenarios';
+import { hydrateSavedState, serializeSaveEnvelope } from '../src/engine/saveSystem';
 import { buildDefaultWorld, getPlayerHashIndex, stepSharedWorld } from '../src/engine/world';
 import type { GameState } from '../src/types/game';
 
@@ -296,5 +312,157 @@ describe('HASHRATE systems: halving, shared world, scenarios, foundry', () => {
     const recovered = stripped.nextState.fab!.inventory.find((i) => i.name === 'PerfChip');
     assert.ok(recovered && recovered.qty === 2, 'Extracted ASIC must return to inventory');
     assert.ok(stripped.nextState.cash < deployed.nextState.cash, 'Extraction charges a refurb fee');
+  });
+
+  it('8. Gen 4-6 GPU-capable chassis exist, hold real GPU clusters and are R&D-gated', () => {
+    const gpuChassis = CHASSIS_PARTS.filter(
+      (c) => !c.isAsicRack && (c.generation ?? 1) >= 4
+    );
+    assert.deepEqual(
+      [...new Set(gpuChassis.map((c) => c.generation))].sort(),
+      [4, 5, 6],
+      'Gen 4, 5 and 6 each need a GPU-capable chassis'
+    );
+    for (const c of gpuChassis) {
+      assert.ok(c.maxGpus >= 6, `${c.name} must hold a real GPU cluster`);
+      assert.ok(
+        c.researchRequired && RESEARCH_IDS.has(c.researchRequired),
+        `${c.name} must be gated behind a real R&D node`
+      );
+    }
+  });
+});
+
+describe('HASHRATE systems: shell coins, vault raids & seasons', () => {
+  it('9. Shell coins launch, cost cash, draw heat and reject bad tickers', () => {
+    const base = createNewGameState('STANDARD', false, 'TEST_SHELL');
+    const funded: GameState = { ...base, cash: 6000 };
+    const launched = launchShellCoin(funded, 'moon', 'Moon Coin');
+    if (!launched.ok) throw new Error(launched.reason);
+
+    assert.equal(launched.nextState.cash, funded.cash - SHELL_COIN_LAUNCH_COST);
+    assert.equal(launched.nextState.underground.shellCoins?.[0].ticker, 'MOON');
+    assert.ok(
+      launched.nextState.regulatoryScrutiny > funded.regulatoryScrutiny,
+      'Launching a scam token must draw regulator attention'
+    );
+
+    const duplicate = launchShellCoin(funded, 'BTC', 'Fake Bitcoin');
+    assert.equal(duplicate.ok, false, 'Real coin tickers must be rejected');
+
+    const broke = launchShellCoin({ ...base, cash: 100 }, 'MOON', 'Moon Coin');
+    assert.equal(broke.ok, false, 'Launching must require the full fee');
+  });
+
+  it('10. Shilling deepens the pool and a rug pull cashes it out', () => {
+    const base = createNewGameState('STANDARD', false, 'TEST_RUG');
+    const launched = launchShellCoin({ ...base, cash: 6000 }, 'MOON', 'Moon Coin');
+    if (!launched.ok) throw new Error(launched.reason);
+
+    const shilled = shillShellCoin(launched.nextState, 'MOON');
+    if (!shilled.ok) throw new Error(shilled.reason);
+    const coinAfterShill = shilled.nextState.underground.shellCoins?.[0];
+    assert.ok((coinAfterShill?.hype ?? 0) > 42, 'Shilling must raise hype');
+    assert.ok(
+      (coinAfterShill?.liquidityUsd ?? 0) > (launched.nextState.underground.shellCoins?.[0].liquidityUsd ?? 0),
+      'Shilling must add money to the liquidity pool'
+    );
+
+    const rugged = rugShellCoin(shilled.nextState, 'MOON');
+    if (!rugged.ok) throw new Error(rugged.reason);
+    const coinAfterRug = rugged.nextState.underground.shellCoins?.[0];
+    assert.equal(coinAfterRug?.rugged, true);
+    assert.equal(coinAfterRug?.liquidityUsd, 0);
+    assert.equal(coinAfterRug?.priceUsd, 0.0001);
+    assert.ok(rugged.nextState.cash > shilled.nextState.cash, 'A rug must return cash');
+    assert.equal(rugShellCoin(rugged.nextState, 'MOON').ok, false, 'A token can only be rugged once');
+  });
+
+  it('11. Shell coin hype decays each step and a dead token collapses', () => {
+    const base = createNewGameState('STANDARD', false, 'TEST_HYPE');
+    const underground = {
+      ...base.underground,
+      shellCoins: [
+        {
+          ticker: 'MOON',
+          name: 'Moon Coin',
+          launchedStep: 0,
+          priceUsd: 0.06,
+          hype: 3,
+          liquidityUsd: 2000,
+          supply: 1_000_000,
+          extractedUsd: 0,
+          rugged: false,
+        },
+      ],
+    };
+    const stepped = stepShellCoins(underground, 1, 'TEST_HYPE');
+    assert.equal(stepped.collapsed.length, 1, 'A token at zero hype must be reported as collapsed');
+    assert.equal(stepped.underground.shellCoins?.[0].priceUsd, 0.0001);
+    assert.equal(stepped.underground.shellCoins?.[0].hype, 0);
+  });
+
+  it('12. A successful raid steals cash, hijacks hash and starts a cooldown', () => {
+    const base = createNewGameState('STANDARD', false, 'TEST_RAID');
+    const target = base.rivals[0];
+    let success: ReturnType<typeof resolveRaid> | null = null;
+    for (let step = 10; step < 60 && !success; step += 1) {
+      const attempt = resolveRaid(
+        { ...base, stepCount: step, regulatoryScrutiny: 5, cash: 20000 },
+        target.id,
+        5000
+      );
+      if (attempt.ok && attempt.nextState.cash > 20000) success = attempt;
+    }
+    if (!success || !success.ok) throw new Error('Expected at least one successful raid');
+    const raided = success.nextState;
+    const rivalAfter = raided.rivals.find((r) => r.id === target.id);
+    assert.ok(raided.cash > 20000, 'A raid must pay out cash');
+    assert.ok((rivalAfter?.cashReserveUsd ?? 0) < target.cashReserveUsd, 'The rival must lose reserve cash');
+    assert.equal(raided.underground.raidStepsRemaining, 8);
+    assert.ok((raided.underground.raidBonusHash ?? 0) > 0);
+    assert.ok(raided.regulatoryScrutiny > 5, 'A raid must raise heat');
+
+    const blocked = resolveRaid(raided, target.id, 5000);
+    assert.equal(blocked.ok, false, 'Raid crew must need a cooldown');
+  });
+
+  it('13. Seasons archive standings every 60 steps and rank the player', () => {
+    const base = createNewGameState('STANDARD', false, 'TEST_SEASON');
+    assert.equal(getSeasonId(0), 1);
+    assert.equal(getSeasonId(SEASON_LENGTH_STEPS), 2);
+    assert.equal(getSeasonStatus(SEASON_LENGTH_STEPS - 1).stepsRemaining, 1);
+    assert.equal(archiveSeason({ ...base, stepCount: 30 }, 100), null);
+
+    const standings = buildSeasonStandings(base, 100);
+    assert.equal(standings.length, base.rivals.length + 1);
+    assert.ok(standings.some((s) => s.isPlayer));
+    for (let i = 1; i < standings.length; i += 1) {
+      assert.ok(standings[i - 1].score >= standings[i].score, 'Standings must be sorted by score');
+    }
+
+    const archived = archiveSeason({ ...base, stepCount: SEASON_LENGTH_STEPS - 1 }, 100);
+    assert.ok(archived && archived.length === 1);
+    assert.equal(archived[0].seasonId, 1);
+    assert.ok(archived[0].playerRank >= 1);
+    assert.equal(archived[0].standings.length, base.rivals.length + 1);
+  });
+});
+
+describe('HASHRATE systems: underground & season persistence', () => {
+  it('14. Saves keep shell coins, raid cooldowns and season history across a reload', () => {
+    const base = createNewGameState('STANDARD', false, 'TEST_SAVE_UG');
+    const launched = launchShellCoin({ ...base, cash: 6000 }, 'MOON', 'Moon Coin');
+    if (!launched.ok) throw new Error(launched.reason);
+    const archived = archiveSeason({ ...base, stepCount: SEASON_LENGTH_STEPS - 1 }, 50);
+    if (!archived) throw new Error('Expected a season record at the boundary');
+
+    const saved = { ...launched.nextState, seasonHistory: archived };
+    const hydrated = hydrateSavedState(JSON.parse(serializeSaveEnvelope(saved)));
+    assert.ok(hydrated);
+    assert.equal(hydrated!.underground.shellCoins?.[0].ticker, 'MOON');
+    assert.equal(hydrated!.underground.raidCooldownStep, 0);
+    assert.equal(hydrated!.seasonHistory?.[0].seasonId, 1);
+    assert.equal(hydrated!.seasonHistory?.[0].standings.length, base.rivals.length + 1);
   });
 });

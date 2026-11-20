@@ -1,6 +1,25 @@
 import { FACILITY_TIERS } from './catalog';
 import { GameState, OnboardingMode } from '../types/game';
 
+/** Facility names/specs are read from the live catalog so guide text can never drift from the data. */
+const GARAGE_FACILITY_NAME = FACILITY_TIERS[1]?.name ?? 'Garage Operation';
+const FIRST_FACILITY = FACILITY_TIERS[0];
+const LAST_FACILITY = FACILITY_TIERS[FACILITY_TIERS.length - 1];
+
+const FACILITY_TIER_NOTES: string[] = [
+  'Starter home setup, strict residential noise cap.',
+  'Unlocks Tier-1 staff & stronger circuits.',
+  'Unlocks senior staff & commercial power.',
+  'Industrial floor for dense GPU/ASIC rows.',
+  'Substation power + heavy cooling headroom.',
+  'Institutional hyperscale mining campus.',
+];
+
+const FACILITY_TIER_LINES = FACILITY_TIERS.flatMap((f, idx) => [
+  `    ${idx + 1}. ${f.name} (${f.maxRigs} slots, ${f.maxPowerKw} kW, ${f.noiseLimitDba} dBA)`,
+  `       -> ${FACILITY_TIER_NOTES[idx] ?? ''}`,
+]);
+
 export type GuidedSystemId = 'contracts' | 'staff' | 'rivals' | 'pr' | 'ops' | 'blackmarket';
 
 export interface SystemUnlockStatus {
@@ -85,11 +104,11 @@ export function getUnlockedSystems(
     blackmarket,
     unlockNotes: {
       contracts: 'Unlocks at Step 3, 2nd rig, or 1st completed R&D node',
-      staff: 'Unlocks at Suburban Garage, $1,800 Cash, or Step 8',
-      rivals: 'Unlocks at Suburban Garage, 2nd rig, or Step 10',
-      pr: 'Unlocks at Suburban Garage, 2nd rig, or Step 10',
-      ops: 'Unlocks at Suburban Garage, Step 14, or Heat >= 18',
-      blackmarket: 'Unlocks alongside Underground Ops at Suburban Garage or Step 14',
+      staff: `Unlocks at ${GARAGE_FACILITY_NAME}, $1,800 Cash, or Step 8`,
+      rivals: `Unlocks at ${GARAGE_FACILITY_NAME}, 2nd rig, or Step 10`,
+      pr: `Unlocks at ${GARAGE_FACILITY_NAME}, 2nd rig, or Step 10`,
+      ops: `Unlocks at ${GARAGE_FACILITY_NAME}, Step 14, or Heat >= 18`,
+      blackmarket: `Unlocks alongside Underground Ops at ${GARAGE_FACILITY_NAME} or Step 14`,
     },
   };
 }
@@ -168,7 +187,7 @@ export function evaluateEarlyObjectives(state: GameState): EarlyObjective[] {
     },
     {
       id: 'obj_upgrade_facility',
-      title: 'Expand to Suburban Garage (or larger facility)',
+      title: `Expand to ${GARAGE_FACILITY_NAME} (or larger facility)`,
       hint: 'Run "facilities" and rent/buy tier 2 when your Bedroom slots/kW cap out.',
       rewardCash: 400,
       rewardRp: 12,
@@ -235,15 +254,10 @@ export const TUTORIAL_TOPICS: Record<string, TutorialTopicGuide> = {
   facilities: {
     id: 'facilities',
     title: 'FACILITY PROGRESSION & INFRASTRUCTURE UPGRADES',
-    summary: 'Scaling from Bedroom to Industrial Complex, rent vs ownership, and noise limits.',
+    summary: `Scaling from ${FIRST_FACILITY.name} to ${LAST_FACILITY.name}, rent vs ownership, and noise limits.`,
     lines: [
-      '  6 FACILITY TIERS ("facilities"):',
-      '    1. Bedroom (3 slots, 1.8 kW)        -> Starter home setup, strict 52 dBA noise cap.',
-      '    2. Suburban Garage (6 slots, 6.5kW) -> Unlocks Tier-1 staff & stronger circuits.',
-      '    3. Small Commercial (12 slots, 22kW)-> Unlocks senior staff & commercial power.',
-      '    4. Warehouse (22 slots, 68 kW)      -> Industrial floor for dense GPU/ASIC rows.',
-      '    5. Industrial Facility (40, 180 kW) -> Substation power + heavy cooling headroom.',
-      '    6. Mega Complex (72 slots, 520 kW)  -> Institutional hyperscale mining campus.',
+      `  ${FACILITY_TIERS.length} FACILITY TIERS ("facilities"):`,
+      ...FACILITY_TIER_LINES,
       '',
       '  RENT vs BUY, ROOMS & UPGRADES:',
       '    - Renting costs low upfront cash + recurring 30-step rent; Buying eliminates rent.',
@@ -315,12 +329,17 @@ export const TUTORIAL_TOPICS: Record<string, TutorialTopicGuide> = {
   blackmarket: {
     id: 'blackmarket',
     title: 'UNDERGROUND OPS & BLACK MARKET',
-    summary: 'High-risk covert actions: power siphoning, botnets, wash trading, and illicit ROMs.',
+    summary:
+      'High-risk covert actions: power siphoning, botnets, wash trading, pump & dumps, extortion, and illicit ROMs.',
     lines: [
       '  COVERT ACTIONS ("ops"):',
       '    - Power Siphon: -65% electricity bills & +25% grid cap, but +3.2 Heat every step.',
       '    - Botnet Rental: Temporary massive hash surge on a coin for a fee + Heat spike.',
       '    - Wash Trade / Rival Sabotage: Manipulate price or DDoS a rival syndicate.',
+      '    - Pump & Dump ("ops pump <COIN>"): Harder price spike than a wash trade, but a',
+      '      traceable pattern — regulators can fine you and Heat climbs faster.',
+      '    - Protection Racket ("ops extort <#>"): Demand cash from a rival syndicate;',
+      '      they may refuse, costing Heat, raising hostility and inviting retaliation.',
       '    - Heat Mitigation: Run "ops launder" or "ops bribe" to shield against raids.',
       '',
       '  BLACK MARKET ("blackmarket"):',
@@ -398,7 +417,7 @@ export const CONTEXTUAL_GUIDES: Record<
   },
   ctx_ops: {
     title: 'COVERT OPERATIONS & REGULATORY HEAT',
-    body: 'Power siphoning, botnets, and sabotage offer huge shortcuts at the cost of Regulatory Scrutiny ("Heat"). Keep Heat controlled with "ops launder" / "ops bribe" or risk federal raids.',
+    body: 'Power siphoning, botnets, wash trading, pump & dumps, extortion and sabotage offer huge shortcuts at the cost of Regulatory Scrutiny ("Heat"). Bigger schemes can be traced and fined. Keep Heat controlled with "ops launder" / "ops bribe" or risk federal raids.',
     tipCommand: 'tutorial blackmarket',
   },
   ctx_blackmarket: {
@@ -469,7 +488,7 @@ export const CODEX_ENTRIES: CodexEntry[] = [
     title: 'FACILITIES, ROOMS & INFRASTRUCTURE UPGRADES',
     keywords: ['bedroom', 'garage', 'warehouse', 'rent', 'buy', 'upgrade', 'rooms', 'floorplan', 'expand'],
     body: [
-      '  - Six progression tiers from Bedroom (2 slots, 1.8 kW) to Mega Complex (85 slots, 360 kW).',
+      `  - ${FACILITY_TIERS.length} progression tiers from ${FIRST_FACILITY.name} (${FIRST_FACILITY.maxRigs} slots, ${FIRST_FACILITY.maxPowerKw} kW) to ${LAST_FACILITY.name} (${LAST_FACILITY.maxRigs} slots, ${LAST_FACILITY.maxPowerKw} kW).`,
       '  - Renting requires lower upfront cash; Buying removes recurring 30-step rent.',
       '  - Run "rooms" for an interactive ASCII floor-plan; move rigs ("rig <#> room <#>") into',
       '    Cold Aisles or baffled Cleanrooms, place coolers ("cool room <#> <room#>"), or "room expand".',
@@ -509,6 +528,22 @@ export const CODEX_ENTRIES: CodexEntry[] = [
       '  - Rivals ("rivals") grow continuously and raise network difficulty across shared coins.',
       '  - PR Campaigns ("pr") legally shift coin prices/sentiment; Covert Ops ("ops") and',
       '    Black Market ("blackmarket") trade big shortcuts for Regulatory Scrutiny ("Heat").',
+      '  - Underground actions: "ops siphon", "ops botnet", "ops wash", "ops pump", "ops extort",',
+      '    "ops sabotage", "ops raid", "ops launder", "ops bribe". Bigger schemes raise more Heat and',
+      '    can be traced. Vault raids ("ops raid <#>") steal cash and hijack rival hashrate for 8 steps.',
+      '  - Shell coins ("ops coin <TICKER> <Name>", "ops shill", "ops rug") are manufactured tokens:',
+      '    hype decays every step, the liquidity pool is what a rug can take, and a traced rug draws a fine.',
+    ],
+  },
+  {
+    key: 'seasons',
+    title: 'SEASONS, LEADERBOARDS & HALL OF FAME',
+    keywords: ['season', 'leaderboard', 'rank', 'score', 'hall', 'fame', 'champion'],
+    body: [
+      '  - A season lasts 60 steps. Run "leaderboard" (or "season") for live standings vs. every rival.',
+      '  - Season score = company valuation + hash index x600 + reputation x450 + 5 per unspent RP.',
+      '  - When a season closes its standings are archived in the Hall of Fame and a champion is crowned.',
+      '  - Finish a season at #1 to unlock the "Season Champion" achievement.',
     ],
   },
   {
