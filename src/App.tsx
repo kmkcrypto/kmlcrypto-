@@ -2816,6 +2816,135 @@ export default function App() {
     return { ok: true, cost };
   };
 
+  const handlePumpDump = (
+    coin: CoinSymbol
+  ): { ok: boolean; reason?: string; cost?: number; summary?: string } => {
+    if (!state) return { ok: false, reason: 'No game active.' };
+    if (state.stepCount < state.underground.washCooldownStep) {
+      return {
+        ok: false,
+        reason: `Market desk cooling down: ${state.underground.washCooldownStep - state.stepCount} steps left.`,
+      };
+    }
+    const stepRev = Math.max(40, state.rigs.reduce((s, r) => s + r.lastStepUsd, 0));
+    const cost = Math.max(620, Math.round(stepRev * 9));
+    if (state.cash < cost) {
+      return { ok: false, reason: `Insufficient cash (need ${formatUsd(cost)}).` };
+    }
+    const traced = Math.random() < 0.3;
+    const fine = traced ? Math.round(state.cash * 0.12) : 0;
+    soundFx.playAlert();
+    setState((prev) => {
+      if (!prev) return prev;
+      const target = prev.coins[coin];
+      const nextPrice = target.priceUsd * 1.42;
+      const stepLabel = formatStepLabel(prev.stepCount);
+      return {
+        ...prev,
+        cash: prev.cash - cost - fine,
+        regulatoryScrutiny: Math.min(100, prev.regulatoryScrutiny + 26 + (traced ? 8 : 0)),
+        mediaCredibility: Math.max(5, prev.mediaCredibility - 8),
+        currentCycleStats: {
+          ...prev.currentCycleStats,
+          otherSpendUsd: prev.currentCycleStats.otherSpendUsd + cost + fine,
+        },
+        transactions: [
+          ...(fine > 0
+            ? [
+                makeTx(
+                  prev.stepCount,
+                  'EVENT',
+                  -fine,
+                  `Regulator fine: traced pump & dump (${coin})`
+                ),
+              ]
+            : []),
+          makeTx(prev.stepCount, 'EVENT', -cost, `Shell-account pump & dump (${coin})`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
+        underground: { ...prev.underground, washCooldownStep: prev.stepCount + 18 },
+        coins: {
+          ...prev.coins,
+          [coin]: {
+            ...target,
+            prevPriceUsd: target.priceUsd,
+            priceUsd: nextPrice,
+            sentiment: Math.min(100, target.sentiment + 34),
+            priceHistory: [
+              ...target.priceHistory,
+              { step: prev.stepCount, stepLabel, price: nextPrice },
+            ].slice(-365),
+          },
+        },
+        stats: { ...prev.stats, covertOpsCount: prev.stats.covertOpsCount + 1 },
+      };
+    });
+    return {
+      ok: true,
+      cost,
+      summary: traced
+        ? `Pump & dump on ${coin} (${formatUsd(cost)}) traced by regulators: ${formatUsd(
+            fine
+          )} fine, +34 Heat, -8 Rep.`
+        : `Pump & dump on ${coin} (${formatUsd(cost)}, +26 Heat, -8 Rep). No trace this time.`,
+    };
+  };
+
+  const handleExtortRival = (
+    rivalId: string
+  ): { ok: boolean; reason?: string; cost?: number; summary?: string } => {
+    if (!state) return { ok: false, reason: 'No game active.' };
+    const rival = state.rivals.find((r) => r.id === rivalId);
+    if (!rival) return { ok: false, reason: 'Rival not found.' };
+    const cooldownStep = state.underground.extortCooldownStep ?? 0;
+    if (state.stepCount < cooldownStep) {
+      return {
+        ok: false,
+        reason: `Rackets need to cool off: ${cooldownStep - state.stepCount} steps left.`,
+      };
+    }
+    if (state.regulatoryScrutiny >= 92) {
+      return { ok: false, reason: 'Heat too high — every rival is cooperating with regulators.' };
+    }
+    const demand = Math.min(8000, Math.max(150, Math.round(rival.cashReserveUsd * 0.04)));
+    const refused = Math.random() < 0.25;
+    soundFx.playAlert();
+    setState((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        cash: prev.cash + (refused ? 0 : demand),
+        regulatoryScrutiny: Math.min(100, prev.regulatoryScrutiny + (refused ? 28 : 20)),
+        mediaCredibility: Math.max(5, prev.mediaCredibility - 6),
+        transactions: refused
+          ? prev.transactions ?? []
+          : [
+              makeTx(prev.stepCount, 'EVENT', demand, `Protection racket: ${rival.name}`),
+              ...(prev.transactions ?? []),
+            ].slice(0, 200),
+        rivals: prev.rivals.map((rv) =>
+          rv.id === rivalId
+            ? {
+                ...rv,
+                hostility: Math.min(100, rv.hostility + (refused ? 26 : 18)),
+                lastActionSummary: refused
+                  ? 'Refused extortion demand and tipped off regulators'
+                  : 'Paid protection money under threat',
+              }
+            : rv
+        ),
+        underground: { ...prev.underground, extortCooldownStep: prev.stepCount + 10 },
+        stats: { ...prev.stats, covertOpsCount: prev.stats.covertOpsCount + 1 },
+      };
+    });
+    return {
+      ok: true,
+      summary: refused
+        ? `${rival.name} refused the demand and tipped off regulators (+28 Heat, hostility up).`
+        : `${rival.name} paid ${formatUsd(demand)} protection money (+20 Heat, -6 Rep).`,
+    };
+  };
+
   const handleSabotageRival = (
     rivalId: string
   ): { ok: boolean; reason?: string; cost?: number } => {
@@ -3665,6 +3794,8 @@ export default function App() {
                 onToggleSiphon={handleToggleSiphon}
                 onRentBotnet={handleRentBotnet}
                 onWashTrade={handleWashTrade}
+                onPumpDump={handlePumpDump}
+                onExtortRival={handleExtortRival}
                 onSabotageRival={handleSabotageRival}
                 onInvestigateRival={(rivalIdx) => {
                   if (!state) return { ok: false, summary: 'No active game.' };

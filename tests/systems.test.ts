@@ -297,4 +297,22 @@ describe('HASHRATE systems: halving, shared world, scenarios, foundry', () => {
     assert.ok(recovered && recovered.qty === 2, 'Extracted ASIC must return to inventory');
     assert.ok(stripped.nextState.cash < deployed.nextState.cash, 'Extraction charges a refurb fee');
   });
+
+  it('8. Gen 4-6 GPU-capable chassis exist, hold real GPU clusters and are R&D-gated', () => {
+    const gpuChassis = CHASSIS_PARTS.filter(
+      (c) => !c.isAsicRack && (c.generation ?? 1) >= 4
+    );
+    assert.deepEqual(
+      [...new Set(gpuChassis.map((c) => c.generation))].sort(),
+      [4, 5, 6],
+      'Gen 4, 5 and 6 each need a GPU-capable chassis'
+    );
+    for (const c of gpuChassis) {
+      assert.ok(c.maxGpus >= 6, `${c.name} must hold a real GPU cluster`);
+      assert.ok(
+        c.researchRequired && RESEARCH_IDS.has(c.researchRequired),
+        `${c.name} must be gated behind a real R&D node`
+      );
+    }
+  });
 });

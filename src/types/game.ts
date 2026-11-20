@@ -558,6 +558,8 @@ export interface UndergroundState {
   botnetBonusHash: number;
   botnetStepsRemaining: number;
   washCooldownStep: number;
+  /** Step when the protection-racket extortion action becomes available again. */
+  extortCooldownStep?: number;
   launderCooldownStep: number;
   bribeProtectionSteps: number;
   blackMarketListings: BlackMarketListing[];
