@@ -87,6 +87,7 @@ import {
   queueFabProduction,
   sellCustomAsicsWholesale,
   stepFabProduction,
+  stripCustomAsicFromRig,
 } from './fab';
 import {
   computeCompanyValuation,
@@ -180,6 +181,7 @@ export {
   placeLimitOrder,
   queueFabProduction,
   sellCustomAsicsWholesale,
+  stripCustomAsicFromRig,
 };
 
 export const BILLING_CYCLE_STEPS = 30;
@@ -1092,6 +1094,8 @@ export function createNewGameState(
     runSeed,
     stepCount: 0,
     soundEnabled: true,
+    stepSeconds: 30,
+    stepHours: 24,
     cash: startingCash,
     researchPoints: devMode ? 1000 : isSandbox ? 250 : difficulty === 'TYCOON_SANDBOX' ? 80 : 12,
     unlockedResearch,

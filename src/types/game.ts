@@ -730,6 +730,10 @@ export interface GameState {
   runSeed: string;
   stepCount: number;
   soundEnabled: boolean;
+  /** Real seconds between automatic steps (5-300). Defaults to 30. */
+  stepSeconds?: number;
+  /** In-game hours that pass per step, used for the game clock (1-24). Defaults to 24. */
+  stepHours?: number;
   cash: number;
   researchPoints: number;
   unlockedResearch: string[];
@@ -856,6 +860,10 @@ export interface CustomAsicSpec {
   heatC: number;
 }
 
+export type DesignProfile = 'PERF' | 'BALANCED' | 'EFF' | 'COMPACT';
+
+export type ChipQualityGrade = 'A' | 'B' | 'C';
+
 export interface CustomChipBlueprint {
   id: string;
   name: string;
@@ -868,6 +876,9 @@ export interface CustomChipBlueprint {
   heatC: number;
   wholesaleValueUsd: number;
   createdStep: number;
+  designProfile?: DesignProfile;
+  qualityGrade?: ChipQualityGrade;
+  qualityMult?: number;
 }
 
 export interface FabProductionOrder {
@@ -877,6 +888,8 @@ export interface FabProductionOrder {
   qty: number;
   stepsRemaining: number;
   totalSteps: number;
+  /** Yield roll for this wafer batch (0.95-1.05), applied to hashrate and resale value. */
+  qualityRoll?: number;
 }
 
 export interface CustomAsicInventoryItem {
@@ -889,6 +902,9 @@ export interface CustomAsicInventoryItem {
   heatC: number;
   wholesaleValueUsd: number;
   qty: number;
+  qualityGrade?: ChipQualityGrade;
+  /** Batch yield multiplier this stack was manufactured at (0.95-1.05). */
+  qualityRoll?: number;
 }
 
 export interface FabState {

@@ -19,6 +19,9 @@ import {
   buildDefaultFab,
   deployCustomAsicToRig,
   designCustomChipBlueprint,
+  parseDesignProfile,
+  queueFabProduction,
+  stripCustomAsicFromRig,
 } from '../src/engine/fab';
 import { createScenarioState, SCENARIOS } from '../src/engine/scenarios';
 import { buildDefaultWorld, getPlayerHashIndex, stepSharedWorld } from '../src/engine/world';
@@ -216,5 +219,82 @@ describe('HASHRATE systems: halving, shared world, scenarios, foundry', () => {
     assert.ok(starterIndex >= 12 && starterIndex < 100, 'Starter fleet must stay on the rival scale');
     assert.ok(gen6Index > starterIndex, 'Gen-6 fleet must out-score a starter CPU');
     assert.ok(gen6Index < 5000, 'Gen-6 fleet index must not dwarf the rival economy');
+  });
+
+  it('7. Blueprint trade-offs, prototype quality and batch yield shape every chip', () => {
+    const base = createNewGameState('TYCOON_SANDBOX', false, 'TEST_FAB_DEPTH');
+    const foundry: GameState = {
+      ...base,
+      facilityId: 'fac_warehouse',
+      cash: 5_000_000,
+      unlockedResearch: ['res_wafer_lithography', 'res_asic_tapeout'],
+      fab: buildDefaultFab({ linesCount: 2 }),
+    };
+
+    assert.equal(parseDesignProfile(undefined), 'BALANCED');
+    assert.equal(parseDesignProfile('eco'), 'EFF');
+    assert.equal(parseDesignProfile('nonsense'), null);
+
+    const perf = designCustomChipBlueprint(foundry, 'PerfChip', 'SHA256', '7nm', 'PERF');
+    const eff = designCustomChipBlueprint(foundry, 'EffChip', 'SHA256', '7nm', 'EFF');
+    assert.equal(perf.ok, true);
+    assert.equal(eff.ok, true);
+    const perfBp = perf.nextState.fab!.blueprints.find((b) => b.name === 'PerfChip')!;
+    const effBp = eff.nextState.fab!.blueprints.find((b) => b.name === 'EffChip')!;
+    assert.ok(perfBp.hashRate > effBp.hashRate, 'Performance profile must out-hash Efficiency');
+    assert.ok(perfBp.watts > effBp.watts, 'Performance profile must draw more power');
+    assert.ok(perfBp.unitCostUsd < effBp.unitCostUsd, 'Efficiency bins cost more per unit');
+    assert.equal(perfBp.designProfile, 'PERF');
+    assert.ok(
+      perfBp.qualityGrade === 'A' || perfBp.qualityGrade === 'B' || perfBp.qualityGrade === 'C',
+      'Tape-out must land a prototype quality grade'
+    );
+    assert.ok(
+      perfBp.qualityMult! >= 0.9 && perfBp.qualityMult! <= 1.07,
+      'Prototype quality must stay within a narrow band'
+    );
+
+    const queued = queueFabProduction(perf.nextState, 0, 2);
+    assert.equal(queued.ok, true);
+    const order = queued.nextState.fab!.productionQueue[0];
+    assert.ok(
+      order.qualityRoll! >= 0.95 && order.qualityRoll! <= 1.05,
+      'Each wafer batch rolls its own yield'
+    );
+
+    let stepped = queued.nextState;
+    for (let i = 0; i < 12; i++) stepped = advanceOneStep(stepped).nextState;
+    const stack = stepped.fab!.inventory.find((i) => i.blueprintId === perfBp.id);
+    assert.ok(stack, 'Finished wafers must land in foundry inventory');
+    assert.equal(stack!.qty, 2);
+    assert.equal(stack!.qualityRoll, order.qualityRoll);
+    assert.ok(
+      Math.abs(stack!.hashRate - Math.round(perfBp.hashRate * order.qualityRoll!)) <= 1,
+      'Stack hashrate must reflect its own batch yield'
+    );
+
+    // Component trading: deploy the finished chip, then pull it back into inventory.
+    const asicState = createScenarioState('GEN6');
+    const asicRigIdx = asicState.rigs.findIndex((r) => {
+      const chassis = CHASSIS_PARTS.find((c) => c.id === r.chassisId);
+      return (chassis?.maxAsics ?? 0) >= 1;
+    });
+    assert.ok(asicRigIdx >= 0, 'Gen-6 scenario must field an ASIC-capable rig');
+    const deployable: GameState = { ...stepped, rigs: asicState.rigs };
+    const deployed = deployCustomAsicToRig(deployable, 0, asicRigIdx);
+    assert.equal(deployed.ok, true, deployed.summary);
+    assert.equal(deployed.nextState.rigs[asicRigIdx].customAsicSpec?.name, 'PerfChip');
+    assert.equal(
+      deployed.nextState.fab!.inventory[0].qty,
+      1,
+      'Deploying one chip must draw one unit from the stack'
+    );
+
+    const stripped = stripCustomAsicFromRig(deployed.nextState, asicRigIdx);
+    assert.equal(stripped.ok, true);
+    assert.equal(stripped.nextState.rigs[asicRigIdx].customAsicSpec, undefined);
+    const recovered = stripped.nextState.fab!.inventory.find((i) => i.name === 'PerfChip');
+    assert.ok(recovered && recovered.qty === 2, 'Extracted ASIC must return to inventory');
+    assert.ok(stripped.nextState.cash < deployed.nextState.cash, 'Extraction charges a refurb fee');
   });
 });
