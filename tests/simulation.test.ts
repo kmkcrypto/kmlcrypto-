@@ -31,14 +31,22 @@ import {
 import { formatPortfolioChart } from '../src/components/terminal/reports';
 import {
   advanceOneStep,
+  buildFabLine,
+  cancelLimitOrder,
   claimCompletedObjectives,
+  closeShortPosition,
   computeAverageRigHealth,
+  computeCompanyValuation,
   computeFacilityCoolingSummary,
   computeRigTelemetry,
   computeWorkloadSummary,
   createInitialComponentHealth,
   createNewGameState,
+  deployCustomAsicToRig,
+  designCustomChipBlueprint,
   ensureRigComponentHealth,
+  executeSpotBuy,
+  executeSpotSell,
   formatAsciiFloorPlan,
   formatSingleRoomView,
   generateInteractiveEvent,
@@ -54,7 +62,11 @@ import {
   getManagerBonuses,
   getRigRepairCost,
   getTechnicianBonuses,
+  openShortPosition,
+  placeLimitOrder,
+  queueFabProduction,
   resolvePendingEvent,
+  sellCustomAsicsWholesale,
 } from '../src/engine/simulation';
 import {
   calculateRigResaleValue,
@@ -701,5 +713,226 @@ describe('Blockworks Tycoon 2.0 Simulation Engine', () => {
     assert.ok(RESEARCH_NODES.some((n) => n.id === 'res_wafer_lithography'));
     assert.ok(RESEARCH_NODES.some((n) => n.id === 'res_quant_forecasting'));
     assert.ok(RESEARCH_NODES.some((n) => n.id === 'res_bulk_procurement'));
+  });
+
+  it('18. Exchange spot/limit/short trading, HOLD wallet payouts, and Custom ASIC Foundry lifecycle work end-to-end', () => {
+    const base = createNewGameState('TYCOON_SANDBOX', false, 'TEST_EXCHANGE_FAB');
+    const holdState = {
+      ...base,
+      cash: 500_000,
+      facilityId: 'fac_warehouse',
+      ownedFacilityIds: ['fac_bedroom', 'fac_garage', 'fac_commercial', 'fac_warehouse'],
+      unlockedResearch: ['res_wafer_lithography', 'res_asic_tapeout', 'res_gen4_hyperhash'],
+      rigs: base.rigs.map((r) => ({
+        ...r,
+        chassisId: 'chassis_asic_rack',
+        computeId: 'asic_s19_pro',
+        psuId: 'psu_3600w_pdu',
+        coolingId: 'cool_delta_blowers',
+        payoutMode: 'HOLD' as const,
+      })),
+    };
+
+    // 1) HOLD payout directs mined coins to treasury wallet rather than cash
+    const step1 = advanceOneStep(holdState).nextState;
+    assert.ok((step1.wallet?.BTC ?? 0) > 0, 'HOLD mode must credit mined BTC into wallet');
+    assert.equal(step1.rigs[0].lastStepUsd, 0, 'HOLD rig must report $0 auto-sold cash');
+
+    // 2) Spot buy & sell update wallet, cash, and EXCHANGE ledger entries
+    const buy = executeSpotBuy(step1, 'BTC', 20_000);
+    assert.equal(buy.ok, true, buy.summary);
+    assert.ok(buy.nextState.cash === step1.cash - 20_000);
+    assert.ok((buy.nextState.wallet?.BTC ?? 0) > (step1.wallet?.BTC ?? 0));
+    assert.equal(buy.nextState.transactions[0]?.category, 'EXCHANGE');
+
+    const sell = executeSpotSell(buy.nextState, 'BTC', 'ALL');
+    assert.equal(sell.ok, true, sell.summary);
+    assert.ok((sell.nextState.wallet?.BTC ?? 0) <= 1e-8);
+    assert.ok(sell.nextState.cash > buy.nextState.cash);
+
+    // 3) Limit buy & cancel + auto-fill on target price
+    const curBtc = sell.nextState.coins.BTC.priceUsd;
+    const limCancel = placeLimitOrder(sell.nextState, 'BUY', 'BTC', curBtc * 0.5, 1000);
+    assert.equal(limCancel.ok, true);
+    const cancelled = cancelLimitOrder(limCancel.nextState, 0);
+    assert.equal(cancelled.ok, true);
+    assert.equal(cancelled.nextState.cash, sell.nextState.cash);
+
+    const limFillSetup = placeLimitOrder(sell.nextState, 'BUY', 'BTC', curBtc * 2.5, 5000);
+    assert.equal(limFillSetup.ok, true);
+    const limFilled = advanceOneStep(limFillSetup.nextState).nextState;
+    assert.equal(limFilled.limitOrders?.length ?? 0, 0, 'In-the-money limit buy must auto-fill on step');
+    assert.ok((limFilled.wallet?.BTC ?? 0) > 0);
+
+    // 4) Short profit on price drop & auto-liquidation on surge
+    const sh = openShortPosition(sell.nextState, 'BTC', 4000);
+    assert.equal(sh.ok, true);
+    const dropped = {
+      ...sh.nextState,
+      coins: {
+        ...sh.nextState.coins,
+        BTC: { ...sh.nextState.coins.BTC, priceUsd: curBtc * 0.7 },
+      },
+    };
+    const closedProfit = closeShortPosition(dropped, 0);
+    assert.equal(closedProfit.ok, true);
+    assert.ok(
+      closedProfit.nextState.cash > sell.nextState.cash,
+      'Short closed after 30% drop must net profit'
+    );
+
+    const surged = {
+      ...sh.nextState,
+      coins: {
+        ...sh.nextState.coins,
+        BTC: { ...sh.nextState.coins.BTC, priceUsd: curBtc * 1.95 },
+      },
+    };
+    const liqStep = advanceOneStep(surged);
+    assert.equal(liqStep.nextState.shortPositions?.length ?? 0, 0, 'Short must liquidate at +95% rally');
+    assert.equal(liqStep.alertHit, true);
+
+    // 5) Fab line, chip tape-out, wafer batch, ASIC install & wholesale export + save round-trip
+    const f1 = buildFabLine(sell.nextState);
+    assert.equal(f1.ok, true, f1.summary);
+    const bp = designCustomChipBlueprint(f1.nextState, 'NovaSha3', 'SHA256', '3nm', 'PERF');
+    assert.equal(bp.ok, true, bp.summary);
+    const prod = queueFabProduction(bp.nextState, 0, 2);
+    assert.equal(prod.ok, true, prod.summary);
+
+    let fabRun = prod.nextState;
+    for (let i = 0; i < 10; i++) {
+      fabRun = advanceOneStep({ ...fabRun, pendingEvent: null }).nextState;
+    }
+    assert.ok((fabRun.fab?.inventory.length ?? 0) >= 1, 'Completed wafer batch must stock inventory');
+
+    const stockTel = computeRigTelemetry(
+      fabRun.rigs[0],
+      getFacility(fabRun.facilityId),
+      fabRun.unlockedResearch,
+      0,
+      fabRun.coolingUnits ?? [],
+      1,
+      fabRun.facilityUpgrades
+    );
+    const deployed = deployCustomAsicToRig(fabRun, 0, 0);
+    assert.equal(deployed.ok, true, deployed.summary);
+    const customTel = computeRigTelemetry(
+      deployed.nextState.rigs[0],
+      getFacility(deployed.nextState.facilityId),
+      deployed.nextState.unlockedResearch,
+      0,
+      deployed.nextState.coolingUnits ?? [],
+      1,
+      deployed.nextState.facilityUpgrades
+    );
+    assert.ok(
+      customTel.effectiveHashrate !== stockTel.effectiveHashrate,
+      'Installed custom ASIC must drive rig telemetry'
+    );
+
+    const exported = sellCustomAsicsWholesale(deployed.nextState, 0, 'ALL');
+    assert.equal(exported.ok, true, exported.summary);
+    assert.ok(exported.nextState.cash > deployed.nextState.cash);
+
+    const valWithCustom = computeValuationBreakdown(deployed.nextState);
+    assert.ok(valWithCustom.fabInventoryUsd > 0, 'Remaining fab inventory must be included in valuation');
+
+    // Save round-trip preserves wallet, customAsicSpec, and fab
+    const rawSave = serializeSaveEnvelope(deployed.nextState);
+    const parsedSave = validateAndParseImportedSave(rawSave);
+    assert.equal(parsedSave.ok, true);
+    assert.equal(parsedSave.state?.rigs[0].customAsicSpec?.name, 'NovaSha3');
+    assert.equal(parsedSave.state?.fab?.linesCount, 1);
+  });
+
+  it('19. Save hydration handles malformed fields cleanly & 500-step deterministic stress test stays bounded', () => {
+    // 1) Corrupt JSON and missing-field save hydration checks
+    const badJson = validateAndParseImportedSave('{not valid json');
+    assert.equal(badJson.ok, false);
+
+    const minimalLegacy = {
+      mode: 'PLAYING',
+      difficulty: 'STANDARD',
+      runSeed: 'LEGACY_RESILIENT',
+      stepCount: 5,
+      cash: 1200,
+      coins: createNewGameState('STANDARD', false, 'LEGACY_RESILIENT').coins,
+      rigs: [
+        {
+          id: 'r_legacy',
+          name: 'Old Rig',
+          chassisId: 'chassis_bedroom_tower',
+          computeId: 'cpu_core2_duo',
+          gpuIds: [],
+          storageId: 'stor_ddr3_4gb',
+          psuId: 'psu_450w',
+          coolingId: 'cool_stock_air',
+          osId: 'os_windows7',
+          targetCoin: 'BTC',
+          overclockPct: 100,
+          enabled: true,
+          temperatureC: 50,
+          healthPct: -50, // out-of-range test
+          status: 'MINING',
+          lastStepCoins: 0,
+          lastStepUsd: 0,
+          totalMinedCoins: 0,
+          totalEarnedUsd: 0,
+          createdStep: 0,
+        },
+      ],
+    };
+    const hydrated = hydrateSavedState(minimalLegacy);
+    assert.ok(hydrated, 'Minimal legacy save should hydrate cleanly');
+    assert.ok(hydrated!.rigs[0].healthPct >= 20 && hydrated!.rigs[0].healthPct <= 100);
+    assert.ok(hydrated!.wallet !== undefined);
+    assert.ok(hydrated!.fab !== undefined);
+    assert.ok(hydrated!.world !== undefined);
+
+    // 2) Determinism check: identical seeds produce identical step-15 results
+    const runA0 = createNewGameState('STANDARD', false, 'DET_SEED_42');
+    const runB0 = createNewGameState('STANDARD', false, 'DET_SEED_42');
+    let runA = runA0;
+    let runB = runB0;
+    for (let i = 0; i < 15; i++) {
+      if (runA.pendingEvent) runA = resolvePendingEvent(runA, '1').nextState;
+      if (runB.pendingEvent) runB = resolvePendingEvent(runB, '1').nextState;
+      runA = advanceOneStep(runA).nextState;
+      runB = advanceOneStep(runB).nextState;
+    }
+    assert.equal(runA.coins.BTC.priceUsd, runB.coins.BTC.priceUsd, 'Seeded BTC price must replay identically');
+    assert.equal(runA.cash, runB.cash, 'Seeded cash must replay identically');
+
+    // 3) 500-step long-horizon stability & memory bound stress test
+    let stress = createNewGameState('TYCOON_SANDBOX', false, 'STRESS_500');
+    stress = {
+      ...stress,
+      facilityId: 'fac_warehouse',
+      ownedFacilityIds: ['fac_bedroom', 'fac_garage', 'fac_commercial', 'fac_warehouse'],
+      cash: 250_000,
+    };
+
+    for (let s = 0; s < 500; s++) {
+      if (stress.pendingEvent) {
+        stress = resolvePendingEvent(stress, '1').nextState;
+        if (stress.pendingEvent) {
+          stress = { ...stress, pendingEvent: null };
+        }
+      }
+      stress = advanceOneStep(stress).nextState;
+    }
+
+    assert.equal(stress.stepCount, 500);
+    assert.ok(Number.isFinite(stress.cash), 'Cash must stay finite over 500 steps');
+    assert.ok(Number.isFinite(computeCompanyValuation(stress)), 'Valuation must stay finite');
+    Object.values(stress.coins).forEach((c) => {
+      assert.ok(Number.isFinite(c.priceUsd) && c.priceUsd > 0, `${c.symbol} price must remain finite & positive`);
+      assert.ok(c.priceHistory.length <= 365, `${c.symbol} priceHistory must remain bounded <= 365`);
+    });
+    assert.ok(stress.transactions.length <= 200, 'Transactions array must stay bounded <= 200');
+    assert.ok(stress.news.length <= 60, 'News array must stay bounded <= 60');
+    assert.ok((stress.performanceHistory ?? []).length <= 60, 'Performance history must stay bounded <= 60');
+    assert.ok(stress.ledger.length <= 48, 'Billing ledger must stay bounded <= 48');
   });
 });

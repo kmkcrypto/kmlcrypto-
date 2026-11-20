@@ -13,6 +13,7 @@ import {
   RigComponentHealth,
 } from '../types/game';
 import { formatUsd } from '../utils/format';
+import { createSeededRng } from '../utils/rng';
 
 export interface WorkloadSummary {
   demandUnits: number;
@@ -187,7 +188,8 @@ export function stepEmployeesWorkloadAndMorale(
     const nextMorale = Number(Math.max(0, Math.min(100, rawMorale)).toFixed(1));
 
     // Individual resignation at extreme burnout
-    if (nextMorale <= 12 && Math.random() < 0.28) {
+    const quitRng = createSeededRng(`${state.runSeed}|emp_quit|${nextStep}|${e.id}`);
+    if (nextMorale <= 12 && quitRng() < 0.28) {
       alerts.push({
         id: `news_quit_${e.id}_${nextStep}`,
         step: nextStep,
@@ -288,6 +290,7 @@ export function generateDynamicEvent(
   forcedCategory?: PendingEventCategory
 ): PendingEvent {
   const step = state.stepCount;
+  const rng = createSeededRng(`${state.runSeed}|dyn_evt|${step}|${forcedCategory ?? 'auto'}`);
   const facility = FACILITY_TIERS.find((f) => f.id === state.facilityId) ?? FACILITY_TIERS[0];
   const facIdx = Math.max(0, FACILITY_TIERS.findIndex((f) => f.id === state.facilityId));
   const unlockedCoins = (Object.keys(state.coins) as CoinSymbol[]).filter(
@@ -296,7 +299,7 @@ export function generateDynamicEvent(
   const hotCoin = unlockedCoins[unlockedCoins.length - 1] ?? 'BTC';
   const damagedRig = [...state.rigs].sort((a, b) => a.healthPct - b.healthPct)[0];
   const targetRig = damagedRig ?? state.rigs[0];
-  const targetRival = state.rivals[Math.floor(Math.random() * state.rivals.length)];
+  const targetRival = state.rivals[Math.floor(rng() * state.rivals.length)];
   const stepRev = Math.max(40, state.rigs.reduce((s, r) => s + r.lastStepUsd, 0));
 
   const techSkill = getTopSkillForRole(state, 'TECHNICIAN');
@@ -313,10 +316,10 @@ export function generateDynamicEvent(
     if (
       state.regulatoryScrutiny >= 58 &&
       (state.underground?.bribeProtectionSteps ?? 0) === 0 &&
-      Math.random() < 0.65
+      rng() < 0.65
     ) {
       category = 'RAID';
-    } else if ((state.strikeStepsRemaining ?? 0) > 0 && Math.random() < 0.5) {
+    } else if ((state.strikeStepsRemaining ?? 0) > 0 && rng() < 0.5) {
       category = 'EMPLOYEE';
     } else {
       const weighted: PendingEventCategory[] = ['MARKET', 'GRID', 'OPERATIONS', 'FACILITY', 'INDUSTRY'];
@@ -331,7 +334,7 @@ export function generateDynamicEvent(
       }
       if (state.rigs.length >= 2 || facIdx >= 1) weighted.push('RIVAL');
       if (state.cash < 300) weighted.push('OPERATIONS', 'MARKET');
-      category = weighted[Math.floor(Math.random() * weighted.length)];
+      category = weighted[Math.floor(rng() * weighted.length)];
     }
   }
 
@@ -380,7 +383,7 @@ export function generateDynamicEvent(
     if ((state.strikeStepsRemaining ?? 0) > 0 || workload.lowMoraleCount >= 3) {
       return buildStrikeNegotiationEvent(state);
     }
-    const leadEmp = state.employees[Math.floor(Math.random() * state.employees.length)];
+    const leadEmp = state.employees[Math.floor(rng() * state.employees.length)];
     const bonusCost = Math.max(160, Math.round(state.employees.length * 140));
     return {
       id: `evt_emp_${step}`,

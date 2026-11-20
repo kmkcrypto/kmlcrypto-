@@ -682,7 +682,8 @@ export function computeStepCoinOutput(
   efficiencyFactor: number,
   autoSellMult: number,
   poolMode: PoolMode = 'PPS',
-  deterministicEstimate = false
+  deterministicEstimate = false,
+  rng: () => number = Math.random
 ): { minedCoins: number; autoSoldUsd: number; soloBlockHit: boolean } {
   if (!coin.unlocked || effectiveHashrate <= 0 || efficiencyFactor <= 0) {
     return { minedCoins: 0, autoSoldUsd: 0, soloBlockHit: false };
@@ -714,10 +715,10 @@ export function computeStepCoinOutput(
   let poolMult = 0.98;
   let soloBlockHit = false;
   if (poolMode === 'PPLNS') {
-    poolMult = 1.05 * (0.85 + Math.random() * 0.3);
+    poolMult = 1.05 * (0.85 + rng() * 0.3);
   } else if (poolMode === 'SOLO') {
     const hitChance = Math.max(0.06, Math.min(0.36, 0.08 + Math.log10(1 + ratio) * 0.065));
-    if (Math.random() < hitChance) {
+    if (rng() < hitChance) {
       soloBlockHit = true;
       poolMult = (1 / hitChance) * 1.12;
     } else {
@@ -1245,7 +1246,10 @@ export function claimCompletedObjectives(state: GameState): {
   };
 }
 
-function pickNextMarketRegime(current: MarketRegime): { regime: MarketRegime; duration: number } {
+function pickNextMarketRegime(
+  current: MarketRegime,
+  rng: () => number = Math.random
+): { regime: MarketRegime; duration: number } {
   const transitions: Record<MarketRegime, MarketRegime[]> = {
     ACCUMULATION: ['BULL_RUN', 'BULL_RUN', 'CRYPTO_WINTER', 'ACCUMULATION'],
     BULL_RUN: ['MANIA_PEAK', 'CORRECTION', 'BULL_RUN'],
@@ -1254,13 +1258,16 @@ function pickNextMarketRegime(current: MarketRegime): { regime: MarketRegime; du
     CRYPTO_WINTER: ['ACCUMULATION', 'ACCUMULATION', 'BULL_RUN'],
   };
   const choices = transitions[current];
-  const next = choices[Math.floor(Math.random() * choices.length)];
+  const next = choices[Math.floor(rng() * choices.length)];
   const spec = MARKET_REGIME_SPECS[next];
-  const duration = Math.round(spec.minSteps + Math.random() * (spec.maxSteps - spec.minSteps));
+  const duration = Math.round(spec.minSteps + rng() * (spec.maxSteps - spec.minSteps));
   return { regime: next, duration };
 }
 
-function createEconomicMarketModifier(step: number): ActiveMarketModifier {
+function createEconomicMarketModifier(
+  step: number,
+  rng: () => number = Math.random
+): ActiveMarketModifier {
   const catalog: Omit<ActiveMarketModifier, 'id'>[] = [
     {
       type: 'HARDWARE_SHORTAGE',
@@ -1363,7 +1370,7 @@ function createEconomicMarketModifier(step: number): ActiveMarketModifier {
     },
   ];
 
-  const picked = catalog[Math.floor(Math.random() * catalog.length)];
+  const picked = catalog[Math.floor(rng() * catalog.length)];
   return {
     ...picked,
     id: `mod_${step}_${picked.type}`,
@@ -1442,6 +1449,7 @@ export function resolvePendingEvent(
   let alertHit = false;
   const res = choice.resolutionId;
 
+  const evtRng = createSeededRng(`${state.runSeed}|evt_res|${state.stepCount}|${evt.id}|${optionKey}`);
   const prSkill = getTopSkillForRole(state, 'PR_STRATEGIST');
   const resSkill = getTopSkillForRole(state, 'RESEARCHER');
 
@@ -1469,7 +1477,7 @@ export function resolvePendingEvent(
     summary = `Logs wiped, covert links severed${stripped ? ', 1 illicit mod dumped' : ''} (-38 Heat).`;
   } else if (res === 'raid_resist') {
     const seizeChance = prSkill >= 2 ? 0.5 : 0.7;
-    const seized = Math.random() < seizeChance;
+    const seized = evtRng() < seizeChance;
     if (seized) {
       const fine = Math.max(300, Math.round(next.cash * 0.2));
       next.cash -= fine;
@@ -1814,7 +1822,7 @@ export function resolvePendingEvent(
   } else {
     if (evt.targetCoin) {
       const c = next.coins[evt.targetCoin];
-      const swing = Math.random() < 0.5 ? 0.9 : 1.12;
+      const swing = evtRng() < 0.5 ? 0.9 : 1.12;
       const nextPrice = Math.max(0.001, c.priceUsd * swing);
       next.coins = {
         ...next.coins,
@@ -1873,6 +1881,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
 
   const nextStep = prev.stepCount + 1;
   const stepLabel = formatStepLabel(nextStep);
+  const stepRng = createSeededRng(`${prev.runSeed}|step|${nextStep}`);
+  let idSeq = 0;
   const facility = getFacility(prev.facilityId);
   const facIdx = Math.max(0, FACILITY_TIERS.findIndex((f) => f.id === prev.facilityId));
   const nextStats = buildDefaultStats(prev.stats);
@@ -1885,8 +1895,9 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   const newTransactions: TransactionEntry[] = [...(prev.transactions ?? [])];
 
   const pushNews = (title: string, detail: string, category: NewsItem['category']) => {
+    idSeq += 1;
     newNews.unshift({
-      id: `news_${nextStep}_${Math.random().toString(36).slice(2, 7)}`,
+      id: `news_${nextStep}_${idSeq}`,
       step: nextStep,
       stepLabel,
       title,
@@ -1896,8 +1907,9 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   };
   const pushTx = (category: TransactionCategory, amountUsd: number, description: string) => {
     if (Math.abs(amountUsd) < 0.01) return;
+    idSeq += 1;
     newTransactions.unshift({
-      id: `tx_${nextStep}_${Math.random().toString(36).slice(2, 7)}`,
+      id: `tx_${nextStep}_${idSeq}`,
       step: nextStep,
       stepLabel,
       category,
@@ -1910,7 +1922,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   let nextRegime = prev.marketRegime;
   let nextRegimeRem = prev.regimeStepsRemaining - 1;
   if (nextRegimeRem <= 0) {
-    const picked = pickNextMarketRegime(prev.marketRegime);
+    const picked = pickNextMarketRegime(prev.marketRegime, stepRng);
     nextRegime = picked.regime;
     nextRegimeRem = picked.duration;
     const spec = MARKET_REGIME_SPECS[nextRegime];
@@ -1922,8 +1934,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     .map((m) => ({ ...m, stepsRemaining: m.stepsRemaining - 1 }))
     .filter((m) => m.stepsRemaining > 0);
 
-  if (nextStep >= 8 && nextStep % 14 === 0 && nextModifiers.length < 2 && Math.random() < 0.65) {
-    const newMod = createEconomicMarketModifier(nextStep);
+  if (nextStep >= 8 && nextStep % 14 === 0 && nextModifiers.length < 2 && stepRng() < 0.65) {
+    const newMod = createEconomicMarketModifier(nextStep, stepRng);
     nextModifiers = [...nextModifiers, newMod];
     pushNews(`Economic Shift: ${newMod.label}`, newMod.summary, 'MARKET');
   }
@@ -1978,7 +1990,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     const pull = logGap * 0.045;
 
     const baseVol = sym === 'DOGE' ? 0.07 : sym === 'XCH' ? 0.048 : 0.036;
-    const randWave = (Math.random() - 0.5) * 2 * baseVol * regimeSpec.volatilityMult;
+    const randWave = (stepRng() - 0.5) * 2 * baseVol * regimeSpec.volatilityMult;
     const prBoost = prImpulseByCoin[sym] ?? 0;
 
     let nextSentiment = Math.max(
@@ -2292,7 +2304,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       efficiencyFactor,
       autoSellMult,
       rig.poolMode,
-      false
+      false,
+      stepRng
     );
 
     const isHold = rig.payoutMode === 'HOLD';
@@ -2351,7 +2364,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     const { psu, storage, os } = getPartBundle(rig);
     const psuRatio = psu.maxWatts > 0 ? finalTelemetry.rawWatts / psu.maxWatts : 1;
     const applyDelta = (cur: number, mult: number) => {
-      const jitter = 0.85 + Math.random() * 0.3;
+      const jitter = 0.85 + stepRng() * 0.3;
       const nextVal = cur - totalWear * mult * jitter + techBonus.repairPerStep;
       return Number(Math.max(20, Math.min(100, nextVal)).toFixed(1));
     };
@@ -2390,7 +2403,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     let finalStatus: MiningRig['status'] =
       nextHealth <= 20 || minCompHealth <= 20 ? 'NEEDS_REPAIR' : status;
     let nextFailures = rig.failureCount ?? 0;
-    if (failChance > 0 && Math.random() < failChance) {
+    if (failChance > 0 && stepRng() < failChance) {
       finalStatus = 'FAILED';
       nextFailures += 1;
       nextStats.equipmentFailuresCount += 1;
@@ -2857,9 +2870,9 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
         : 0;
     const regularEventChance = nextStep >= 4 ? 0.095 : 0;
 
-    if (Math.random() < raidChance) {
+    if (stepRng() < raidChance) {
       eventTriggered = generateInteractiveEvent(nextState, 'RAID');
-    } else if (Math.random() < regularEventChance) {
+    } else if (stepRng() < regularEventChance) {
       eventTriggered = generateInteractiveEvent(nextState);
     }
   }
