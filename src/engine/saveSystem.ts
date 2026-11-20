@@ -55,7 +55,7 @@ export function buildDefaultStats(prev?: Partial<EmpireStats>): EmpireStats {
 
 function migrateRig(r: MiningRig, idx: number): MiningRig {
   const componentHealth = ensureRigComponentHealth(r);
-  const avgHealth = r.componentHealth ? computeAverageRigHealth(componentHealth) : (typeof r.healthPct === 'number' ? r.healthPct : 100);
+  const avgHealth = computeAverageRigHealth(componentHealth);
   return {
     ...r,
     gridX: typeof r.gridX === 'number' ? r.gridX : 1 + (idx % 4),
