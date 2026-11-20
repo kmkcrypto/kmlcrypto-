@@ -25,6 +25,7 @@ import {
   STORAGE_PARTS,
 } from '../data/catalog';
 import { getRivalStrategyLabel } from '../engine/rivals';
+import { formatWorldReport } from '../engine/world';
 import {
   BILLING_CYCLE_STEPS,
   calculatePartTradeInCost,
@@ -40,6 +41,7 @@ import {
   formatMarketForecastReport,
   formatSingleRoomView,
   formatWalletAndExchangeReport,
+  estimateFleetHashIndex,
   getAutoSellMultiplier,
   getComponentRepairCost,
   getEffectiveFacilityMaxRigs,
@@ -325,6 +327,8 @@ const TOP_COMMANDS = [
   'chart',
   'fab',
   'foundry',
+  'world',
+  'blockchain',
   'contracts',
   'contract',
   'rivals',
@@ -2030,6 +2034,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
               ? [`    staff | hire <tech|elec|mgr|eng|res|pr|analyst> | train <#> | fire <#> | shift | priority`]
               : []),
             `    research [done | start <#>] | fab [line build|design|produce|deploy|sell] | ledger`,
+            `    world | blockchain                          Shared block clock, network share & block history`,
             `  MARKET, EXCHANGE${unlockedSys.contracts || unlockedSys.rivals || unlockedSys.ops ? ', CONTRACTS, RIVALS & OPS' : ''}`,
             `    market | forecast [COIN] | unlock <COIN> | chart <COIN|portfolio|cash|profit|hashrate|power>`,
             `    wallet | exchange [buy|sell|limit|cancel|short|close]   Treasury wallet & spot/margin desk`,
@@ -3984,6 +3989,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           kind: 'ERR',
           text: 'Usage: exchange [buy <COIN> <usd> | sell <COIN> <qty|all> | limit <buy|sell> <COIN> <px> <amt> | cancel <#> | short <COIN> <usd> | close <#>]',
         },
+      ]);
+      return;
+    }
+
+    if (cmd === 'world' || cmd === 'blockchain') {
+      append([
+        { kind: 'HEAD', text: 'WORLD & BLOCKCHAIN' },
+        { kind: 'PRE', text: formatWorldReport(state, estimateFleetHashIndex(state)) },
       ]);
       return;
     }

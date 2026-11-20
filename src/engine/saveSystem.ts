@@ -12,6 +12,7 @@ import { generateRandomSeed } from '../utils/rng';
 import { buildDefaultWallet } from './exchange';
 import { buildDefaultFab } from './fab';
 import { createInitialRivals } from './rivals';
+import { buildDefaultWorld } from './world';
 import {
   computeAverageRigHealth,
   ensureRigComponentHealth,
@@ -272,6 +273,11 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
       limitOrders: Array.isArray(candidate.limitOrders) ? candidate.limitOrders : [],
       shortPositions: Array.isArray(candidate.shortPositions) ? candidate.shortPositions : [],
       fab: buildDefaultFab(candidate.fab),
+      scenarioId: candidate.scenarioId,
+      world: {
+        ...buildDefaultWorld(candidate.runSeed),
+        ...(candidate.world && typeof candidate.world === 'object' ? candidate.world : {}),
+      },
     };
 
     if (hydrated.usedMarketListings.length === 0) {

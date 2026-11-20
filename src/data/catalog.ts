@@ -177,6 +177,24 @@ export const CHASSIS_PARTS: ChassisPart[] = [
     noiseModifier: -8,
     description: 'Hermetic Gen-5 immersion pod dissipating extreme multi-kW blade thermal flux.',
   },
+  {
+    id: 'chassis_ai_hpc_rack',
+    name: 'Gen-6 AI HPC Compute Rack',
+    category: 'chassis',
+    era: 'AI',
+    generation: 6,
+    researchRequired: 'res_gen6_ai_convergence',
+    cost: 4200,
+    maxGpus: 0,
+    maxStorage: 16,
+    isAsicRack: true,
+    maxAsics: 1,
+    baseWatts: 110,
+    coolingBonus: 64,
+    noiseModifier: -10,
+    description:
+      '52U converged HPC rack balancing multi-kW mining blades against dense AI accelerator nodes.',
+  },
 ];
 
 export const COMPUTE_PARTS: ComputePart[] = [
@@ -474,6 +492,38 @@ export const COMPUTE_PARTS: ComputePart[] = [
     hashrates: { SHA256: 680_000_000 },
     description: 'Apex 2nm GAAFET blade built for industrial complexes with HVDC power.',
   },
+  {
+    id: 'asic_ai_hybrid_phor',
+    name: 'NeuralHash AI-ASIC Exonic (1.05 PH/s)',
+    category: 'compute',
+    kind: 'ASIC',
+    era: 'AI',
+    generation: 6,
+    researchRequired: 'res_gen6_ai_convergence',
+    cost: 34000,
+    watts: 8600,
+    heatC: 74,
+    noiseDba: 28,
+    hashrates: { SHA256: 1_050_000_000 },
+    description:
+      'Gen-6 chiplet pairing a SHA-256 datapath with on-die inference engines; needs a 16kW HVDC shelf.',
+  },
+  {
+    id: 'accel_ai_scrypt_pod',
+    name: 'TensorScrypt Accelerator Pod (44 GH/s)',
+    category: 'compute',
+    kind: 'ASIC',
+    era: 'AI',
+    generation: 6,
+    researchRequired: 'res_gen6_ai_convergence',
+    cost: 27500,
+    watts: 6100,
+    heatC: 68,
+    noiseDba: 30,
+    hashrates: { SCRYPT: 44_000, RANDOMX: 0.21 },
+    description:
+      'Converged AI/Scrypt accelerator: neural scheduling keeps Scrypt lanes saturated between AI jobs.',
+  },
 ];
 
 export const GPU_PARTS: GpuPart[] = [
@@ -645,6 +695,21 @@ export const GPU_PARTS: GpuPart[] = [
     hashrates: { ETHASH: 235, RANDOMX: 0.0062, SCRYPT: 3.4 },
     description: 'Gen-5 GDDR7 memory monster pushing Ethash & multi-algo density to record highs.',
   },
+  {
+    id: 'gpu_ai_tensor_rtx',
+    name: 'Neural Tensor RTX Pro AI (48 GB)',
+    category: 'gpu',
+    era: 'AI',
+    generation: 6,
+    researchRequired: 'res_gen6_ai_convergence',
+    cost: 4100,
+    watts: 575,
+    heatC: 44,
+    noiseDba: 15,
+    hashrates: { ETHASH: 330, RANDOMX: 0.0081, SCRYPT: 4.6 },
+    description:
+      'Gen-6 AI accelerator card that mines Ethash between inference batches on a unified HBM stack.',
+  },
 ];
 
 export const STORAGE_PARTS: StoragePart[] = [
@@ -762,6 +827,22 @@ export const STORAGE_PARTS: StoragePart[] = [
     efficiencyBonus: 0.13,
     description: 'Distributed erasure-coded storage cluster built to dominate Chia PoST.',
   },
+  {
+    id: 'stor_ai_nvme_1280tb',
+    name: '1280 TB AI NVMe Fabric Array',
+    category: 'storage',
+    era: 'AI',
+    generation: 6,
+    researchRequired: 'res_gen6_ai_convergence',
+    cost: 19500,
+    ramGb: 512,
+    storageTb: 1280,
+    watts: 430,
+    heatC: 24,
+    efficiencyBonus: 0.16,
+    description:
+      'Gen-6 fabric-attached NVMe array shared between AI training jobs and Chia plot storage.',
+  },
 ];
 
 export const PSU_PARTS: PsuPart[] = [
@@ -875,6 +956,20 @@ export const PSU_PARTS: PsuPart[] = [
     efficiency: 0.985,
     noiseDba: 11,
     description: '98.5% high-voltage DC shelf engineered for Gen-5 ExaBlades under heavy OC.',
+  },
+  {
+    id: 'psu_16000w_hvdc',
+    name: '16kW 800V HVDC AI Substation Shelf',
+    category: 'psu',
+    era: 'AI',
+    generation: 6,
+    researchRequired: 'res_gen6_ai_convergence',
+    cost: 2650,
+    maxWatts: 16000,
+    efficiency: 0.99,
+    noiseDba: 10,
+    description:
+      '99% efficient 800V DC shelf feeding converged AI accelerators and Gen-6 ASIC blades.',
   },
 ];
 
@@ -992,6 +1087,20 @@ export const COOLING_PARTS: CoolingPart[] = [
     noiseDba: 3,
     description: 'Gen-5 boiling-condenser tank keeping Chronos 2nm ExaBlades whisper-quiet & icy.',
   },
+  {
+    id: 'cool_ai_thermal_fabric',
+    name: 'AI Thermal Fabric Cold Plate',
+    category: 'cooling',
+    era: 'AI',
+    generation: 6,
+    researchRequired: 'res_ai_thermal_fabric',
+    cost: 6800,
+    coolingPowerC: 310,
+    watts: 150,
+    noiseDba: 2,
+    description:
+      'Gen-6 predictive cold-plate fabric that shifts coolant between AI accelerators and ASIC blades.',
+  },
 ];
 
 export const OS_PARTS: OsPart[] = [
@@ -1082,6 +1191,20 @@ export const OS_PARTS: OsPart[] = [
     powerMultiplier: 0.94,
     stabilityBonus: 0.4,
     description: 'Gen-5 deterministic ASIC kernel (+28% hash, -6% draw, +40% fault stability).',
+  },
+  {
+    id: 'os_neural_fleet',
+    name: 'NeuralFleet Converged Kernel',
+    category: 'os',
+    era: 'AI',
+    generation: 6,
+    researchRequired: 'res_ai_thermal_fabric',
+    cost: 980,
+    hashrateMultiplier: 1.34,
+    powerMultiplier: 0.9,
+    stabilityBonus: 0.45,
+    description:
+      'Gen-6 scheduler balancing mining lanes against AI inference jobs (+34% hash, -10% draw).',
   },
 ];
 
@@ -1897,6 +2020,28 @@ export const RESEARCH_NODES: ResearchNode[] = [
     prereqIds: ['res_gen4_hyperhash', 'res_cryo_cooling'],
     effectSummary: 'Unlocks Chronos 2nm (680 TH/s), Titan Scrypt-X, RTX 5090, 9kW HVDC & Two-Phase Immersion.',
     category: 'HARDWARE',
+  },
+  {
+    id: 'res_gen6_ai_convergence',
+    name: 'Gen-6 AI Infrastructure Convergence',
+    era: 'AI',
+    costRp: 420,
+    costCash: 48000,
+    prereqIds: ['res_gen5_exascale'],
+    effectSummary:
+      'Unlocks Gen-6 AI-ASIC blades, Tensor accelerators, Neural Tensor GPUs, AI HPC racks, 1280 TB NVMe fabric & 16kW HVDC.',
+    category: 'HARDWARE',
+  },
+  {
+    id: 'res_ai_thermal_fabric',
+    name: 'Predictive AI Thermal Fabric',
+    era: 'AI',
+    costRp: 360,
+    costCash: 36000,
+    prereqIds: ['res_gen6_ai_convergence'],
+    effectSummary:
+      'Unlocks AI Thermal Fabric cold plates and the NeuralFleet Converged Kernel for Gen-6 fleets.',
+    category: 'COOLING',
   },
   {
     id: 'res_quant_forecasting',

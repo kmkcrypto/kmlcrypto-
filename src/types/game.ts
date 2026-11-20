@@ -2,9 +2,19 @@ export type GameModeState = 'TITLE_MENU' | 'PLAYING';
 
 export type DifficultyLevel = 'BOOTSTRAP' | 'STANDARD' | 'TYCOON_SANDBOX' | 'SANDBOX';
 
-export type TechEra = 'CPU' | 'GPU' | 'FPGA' | 'ASIC';
+export type TechEra = 'CPU' | 'GPU' | 'FPGA' | 'ASIC' | 'AI';
 
-export type HardwareGen = 1 | 2 | 3 | 4 | 5;
+export type HardwareGen = 1 | 2 | 3 | 4 | 5 | 6;
+
+/** Developer testing scenarios: each launches an isolated sandbox save at a known progression stage. */
+export type DevScenarioId =
+  | 'MIDGAME'
+  | 'INDUSTRIAL'
+  | 'GEN5'
+  | 'GEN6'
+  | 'MANUFACTURING'
+  | 'MULTIPLAYER'
+  | 'CUSTOM';
 
 export type HardwareConditionTier = 'NEW' | 'REFURBISHED' | 'USED' | 'DAMAGED';
 
@@ -156,6 +166,7 @@ export interface RigBuildConfig {
   overclockPct: number;
   poolMode?: PoolMode;
   firmwareProfile?: FirmwareProfile;
+  payoutMode?: 'AUTOSELL' | 'HOLD';
   roomId?: string;
 }
 
@@ -778,6 +789,59 @@ export interface GameState {
   limitOrders?: LimitOrder[];
   shortPositions?: ShortPosition[];
   fab?: FabState;
+  scenarioId?: DevScenarioId;
+  world?: SharedWorldState;
+}
+
+/**
+ * Shared-world (multiplayer) data model.
+ *
+ * Only the systems are in place for now: a locally simulated world with a
+ * 10-minute block clock, network hash share and block history. There is no
+ * networking, matchmaking or authoritative server yet.
+ */
+export interface SharedWorldState {
+  worldId: string;
+  seasonId: number;
+  seasonLabel: string;
+  blockHeight: number;
+  blockIntervalMinutes: number;
+  minutesPerStep: number;
+  stepsPerBlock: number;
+  stepAccumulator: number;
+  rewardMode: WorldBlockRewardMode;
+  networkHashIndex: number;
+  players: WorldPlayerSnapshot[];
+  blocks: WorldBlockRecord[];
+  totalPlayerBlocksWon: number;
+  totalPlayerCoins: number;
+  totalPlayerUsd: number;
+  lastBlockSummary: string;
+}
+
+export type WorldBlockRewardMode = 'PROPORTIONAL' | 'WINNER_TAKE_ALL';
+
+export interface WorldBlockRecord {
+  height: number;
+  step: number;
+  stepLabel: string;
+  coin: CoinSymbol;
+  networkHashIndex: number;
+  playerHashIndex: number;
+  playerSharePct: number;
+  winnerName: string;
+  blockRewardCoins: number;
+  playerRewardCoins: number;
+  playerRewardUsd: number;
+}
+
+export interface WorldPlayerSnapshot {
+  id: string;
+  name: string;
+  isHuman: boolean;
+  hashIndex: number;
+  sharePct: number;
+  blocksWon: number;
 }
 
 export type ChipProcessNode = '7nm' | '5nm' | '3nm' | '2nm';

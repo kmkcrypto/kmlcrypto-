@@ -1,4 +1,4 @@
-import { FACILITY_TIERS, PSU_PARTS } from '../data/catalog';
+import { CHASSIS_PARTS, FACILITY_TIERS, PSU_PARTS, RESEARCH_NODES } from '../data/catalog';
 import {
   ChipProcessNode,
   CustomAsicInventoryItem,
@@ -19,6 +19,17 @@ import {
 } from './usedMarket';
 
 const LINE_COSTS = [18000, 36000, 68000];
+
+/**
+ * A foundry can only tape out a process node the wider hardware tree has
+ * already reached: the fab follows research, it does not leapfrog it.
+ */
+const NODE_RESEARCH: Record<ChipProcessNode, string> = {
+  '7nm': 'res_asic_tapeout',
+  '5nm': 'res_gen3_silicon',
+  '3nm': 'res_gen4_hyperhash',
+  '2nm': 'res_gen5_exascale',
+};
 
 const NODE_SPECS: Record<
   ChipProcessNode,
@@ -240,15 +251,13 @@ export function designCustomChipBlueprint(
       summary: 'Commission Fab Line #1 first ("fab line build").',
     };
   }
-  if (
-    processNode === '2nm' &&
-    !state.devUnlockAll &&
-    !state.unlockedResearch.includes('res_gen5_exascale')
-  ) {
+  const nodeResearchId = NODE_RESEARCH[processNode];
+  if (nodeResearchId && !state.devUnlockAll && !state.unlockedResearch.includes(nodeResearchId)) {
+    const node = RESEARCH_NODES.find((n) => n.id === nodeResearchId);
     return {
       ok: false,
       nextState: state,
-      summary: '2nm GAAFET process requires R&D "Gen-5 2nm GAAFET & Two-Phase Cryo".',
+      summary: `${processNode} process requires R&D "${node?.name ?? nodeResearchId}".`,
     };
   }
 
@@ -480,6 +489,19 @@ export function deployCustomAsicToRig(
   const rig = state.rigs[rigIdx];
   if (!rig) {
     return { ok: false, nextState: state, summary: `Rig #${rigIdx + 1} not found.` };
+  }
+
+  // A custom ASIC only produces hashrate inside an ASIC blade enclosure; without
+  // this check it could be "installed" into a desktop tower and silently mine nothing.
+  const chassis = CHASSIS_PARTS.find((c) => c.id === rig.chassisId);
+  if (!chassis || chassis.maxAsics < 1) {
+    return {
+      ok: false,
+      nextState: state,
+      summary: `Rig #${rigIdx + 1} uses ${
+        chassis?.name ?? 'an incompatible chassis'
+      }, which cannot seat an ASIC blade. Rebuild it on a 42U ASIC shelf or better.`,
+    };
   }
 
   const spec: CustomAsicSpec = {

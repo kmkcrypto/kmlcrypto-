@@ -79,10 +79,12 @@ import {
   serializeSaveEnvelope,
   validateAndParseImportedSave,
 } from './engine/saveSystem';
+import { createScenarioState } from './engine/scenarios';
 import {
   ChallengeId,
   ChipProcessNode,
   CoinSymbol,
+  DevScenarioId,
   DifficultyLevel,
   EmployeeRole,
   FacilityUpgradeId,
@@ -3055,6 +3057,19 @@ export default function App() {
     setState((prev) => (prev ? { ...prev, devUnlockAll: !prev.devUnlockAll } : prev));
   };
 
+  const handleDevLoadScenario = (id: DevScenarioId) => {
+    soundFx.playMilestone();
+    const scenario = createScenarioState(id);
+    setState(scenario);
+    setSandboxSnapshot(scenario);
+    setActiveTerminalModal(null);
+    setUserPaused(false);
+    setAutoCountdown(AUTO_STEP_SECONDS);
+    showBanner(
+      `Dev scenario loaded into the sandbox slot (${scenario.runSeed}). Career save untouched.`
+    );
+  };
+
   const handleDevAddCash = (amount: number) => {
     soundFx.playCash();
     setState((prev) => (prev ? { ...prev, cash: prev.cash + amount } : prev));
@@ -3785,6 +3800,7 @@ export default function App() {
           onClose={() => setDevPanelOpen(false)}
           onToggleDevMode={handleToggleDevMode}
           onToggleDevUnlockAll={handleToggleDevUnlockAll}
+          onDevLoadScenario={handleDevLoadScenario}
           onAddCash={handleDevAddCash}
           onClearDebt={handleDevClearDebt}
           onAddRp={handleDevAddRp}
