@@ -4,6 +4,8 @@ export type DifficultyLevel = 'BOOTSTRAP' | 'STANDARD' | 'TYCOON_SANDBOX' | 'SAN
 
 export type TechEra = 'CPU' | 'GPU' | 'FPGA' | 'ASIC' | 'AI' | 'QUANTUM';
 
+export type TechBranch = 'SILICON' | 'QUANTUM' | 'PHOTONIC';
+
 export type HardwareGen = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 /** Developer testing scenarios: each launches an isolated sandbox save at a known progression stage. */
@@ -15,13 +17,26 @@ export type DevScenarioId =
   | 'GEN7'
   | 'MANUFACTURING'
   | 'MULTIPLAYER'
+  | 'QUANTUM_PHOTONIC'
+  | 'UNDERGROUND_CRISIS'
+  | 'CUSTOM_COIN_EMPIRE'
   | 'CUSTOM';
 
 export type HardwareConditionTier = 'NEW' | 'REFURBISHED' | 'USED' | 'DAMAGED';
 
-export type CoinSymbol = 'BTC' | 'LTC' | 'DOGE' | 'XMR' | 'ETH' | 'XCH';
+export type CoreCoinSymbol = 'BTC' | 'LTC' | 'DOGE' | 'XMR' | 'ETH' | 'XCH' | 'RVN' | 'ZEC' | 'QBC';
 
-export type MiningAlgorithm = 'SHA256' | 'SCRYPT' | 'RANDOMX' | 'ETHASH' | 'POST';
+export type CoinSymbol = string;
+
+export type MiningAlgorithm =
+  | 'SHA256'
+  | 'SCRYPT'
+  | 'RANDOMX'
+  | 'ETHASH'
+  | 'POST'
+  | 'KAWPOW'
+  | 'EQUIHASH'
+  | 'QHASH';
 
 export type MarketRegime =
   | 'ACCUMULATION'
@@ -52,6 +67,7 @@ export interface ChassisPart {
   name: string;
   category: 'chassis';
   era: TechEra;
+  branch?: TechBranch;
   generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
@@ -59,6 +75,10 @@ export interface ChassisPart {
   maxStorage: number;
   isAsicRack: boolean;
   maxAsics: number;
+  supportsHybridAsicGpu?: boolean;
+  allowedBranches?: TechBranch[];
+  isCryoRated?: boolean;
+  isOpticalBackplane?: boolean;
   baseWatts: number;
   coolingBonus: number;
   noiseModifier: number;
@@ -71,12 +91,15 @@ export interface ComputePart {
   category: 'compute';
   kind: 'CPU' | 'FPGA' | 'ASIC';
   era: TechEra;
+  branch?: TechBranch;
   generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
   watts: number;
   heatC: number;
   noiseDba: number;
+  requiresCryoCooling?: boolean;
+  requiresOpticalChassis?: boolean;
   hashrates: Partial<Record<MiningAlgorithm, number>>;
   description: string;
 }
@@ -86,12 +109,15 @@ export interface GpuPart {
   name: string;
   category: 'gpu';
   era: TechEra;
+  branch?: TechBranch;
   generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
+  vramGb?: number;
   watts: number;
   heatC: number;
   noiseDba: number;
+  requiresOpticalChassis?: boolean;
   hashrates: Partial<Record<MiningAlgorithm, number>>;
   description: string;
 }
@@ -101,6 +127,7 @@ export interface StoragePart {
   name: string;
   category: 'storage';
   era: TechEra;
+  branch?: TechBranch;
   generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
@@ -117,6 +144,7 @@ export interface PsuPart {
   name: string;
   category: 'psu';
   era: TechEra;
+  branch?: TechBranch;
   generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
@@ -131,10 +159,12 @@ export interface CoolingPart {
   name: string;
   category: 'cooling';
   era: TechEra;
+  branch?: TechBranch;
   generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
   coolingPowerC: number;
+  isCryoRated?: boolean;
   watts: number;
   noiseDba: number;
   description: string;
@@ -145,6 +175,7 @@ export interface OsPart {
   name: string;
   category: 'os';
   era: TechEra;
+  branch?: TechBranch;
   generation?: HardwareGen;
   researchRequired?: string;
   cost: number;
@@ -170,6 +201,15 @@ export interface RigBuildConfig {
   payoutMode?: 'AUTOSELL' | 'HOLD';
   roomId?: string;
   customParts?: RigCustomPartsMap;
+  customPartSerials?: {
+    chassis?: string;
+    compute?: string;
+    gpus?: (string | null)[];
+    storage?: string;
+    psu?: string;
+    cooling?: string;
+    os?: string;
+  };
 }
 
 export type RepairComponentSlot =
@@ -336,6 +376,16 @@ export interface FacilityTier {
   description: string;
 }
 
+export interface CustomCoinCreatorMeta {
+  createdStep: number;
+  initialLiquidityUsd: number;
+  creatorFeePct: number;
+  adoptionScore: number;
+  trustScore: number;
+  difficultyBias: number;
+  totalSupplyMinted: number;
+}
+
 export interface CoinMarketState {
   symbol: CoinSymbol;
   name: string;
@@ -360,6 +410,13 @@ export interface CoinMarketState {
   totalEarnedUsd: number;
   payoutNote: string;
   color: string;
+  /** Coin-specific hardware constraints & mechanics */
+  minVramGb?: number;
+  minRamGb?: number;
+  preferredBranch?: TechBranch;
+  volatilityMult?: number;
+  isPlayerCreated?: boolean;
+  creatorMeta?: CustomCoinCreatorMeta;
 }
 
 export type EmployeeRole =
@@ -555,6 +612,57 @@ export interface BlackMarketListing {
   defectRiskPct?: number;
 }
 
+export type InvestigationStage =
+  | 'NONE'
+  | 'WATCHLIST'
+  | 'FORMAL_AUDIT'
+  | 'SANCTIONED'
+  | 'PROBATION';
+
+export type RaidApproachId = 'STEALTH_SIPHON' | 'ZERO_DAY_BREACH' | 'INSIDER_BRIBE';
+
+export interface PreparedRaidPlan {
+  id: string;
+  targetRivalId: string;
+  targetName: string;
+  preparedStep: number;
+  defenseRating: number;
+  intelConfidencePct: number;
+  estimatedLootMinUsd: number;
+  estimatedLootMaxUsd: number;
+  detectionRiskPct: number;
+  recommendedApproach: RaidApproachId;
+}
+
+export interface UndergroundOpRecord {
+  id: string;
+  step: number;
+  stepLabel: string;
+  opType:
+    | 'SIPHON'
+    | 'BOTNET'
+    | 'WASH'
+    | 'PUMP'
+    | 'EXTORT'
+    | 'SABOTAGE'
+    | 'RAID_PREP'
+    | 'RAID_EXEC'
+    | 'SHELL_DEV'
+    | 'SHELL_LAUNCH'
+    | 'SHELL_SHILL'
+    | 'SHELL_RUG'
+    | 'LAUNDER'
+    | 'BRIBE'
+    | 'COMPLY'
+    | 'SETTLE'
+    | 'INVESTIGATION';
+  summary: string;
+  outcome: 'SUCCESS' | 'TRACED' | 'FAILED' | 'PENALTY' | 'RECOVERY';
+  cashDeltaUsd: number;
+  heatDelta: number;
+  repDelta: number;
+}
+
 export interface UndergroundState {
   powerSiphonActive: boolean;
   botnetCoin: CoinSymbol | null;
@@ -576,7 +684,23 @@ export interface UndergroundState {
   raidStepsRemaining?: number;
   raidCoin?: CoinSymbol;
   raidSourceName?: string;
+  /** Expanded underground investigation, intel, and records */
+  suspiciousActivityScore?: number;
+  investigationStage?: InvestigationStage;
+  investigationStepsRemaining?: number;
+  scandalMarks?: number;
+  marketConfidencePenaltyPct?: number;
+  retaliationRiskPct?: number;
+  preparedRaid?: PreparedRaidPlan | null;
+  operationRecords?: UndergroundOpRecord[];
 }
+
+export type ShellCoinLifecycleStage =
+  | 'CONCEPT'
+  | 'SEEDED'
+  | 'ACTIVE'
+  | 'RUGGED'
+  | 'COLLAPSED';
 
 /**
  * A shell coin the player launched to pump and dump. It lives outside the
@@ -586,6 +710,8 @@ export interface ShellCoinState {
   ticker: string;
   name: string;
   launchedStep: number;
+  stage?: ShellCoinLifecycleStage;
+  auditSpoofed?: boolean;
   priceUsd: number;
   /** Manufactured interest (0-100). Decays every step unless re-shilled. */
   hype: number;
@@ -595,6 +721,7 @@ export interface ShellCoinState {
   extractedUsd: number;
   rugged: boolean;
   ruggedStep?: number;
+  tracedScandal?: boolean;
 }
 
 export type PendingEventCategory =
@@ -835,6 +962,7 @@ export interface GameState {
   stats: EmpireStats;
   tutorialStep?: number;
   onboardingMode?: OnboardingMode;
+  guidedOnboarding?: GuidedOnboardingState;
   seenTutorials?: string[];
   claimedObjectives?: string[];
   devMode: boolean;
@@ -845,6 +973,7 @@ export interface GameState {
   shortPositions?: ShortPosition[];
   fab?: FabState;
   scenarioId?: DevScenarioId;
+  activePresetId?: string;
   world?: SharedWorldState;
   /** Completed seasons, newest first. Drives the "leaderboard" hall of fame. */
   seasonHistory?: SeasonRecord[];
@@ -941,11 +1070,78 @@ export interface FabEngineeringAllocation {
   reliability: number;
 }
 
+export type ChipLayoutTopology = 'MONOLITHIC' | 'CHIPLET_QUAD' | 'MESH_TENSOR';
+export type GpuComputeArch = 'SIMD_DENSE' | 'TENSOR_MATRIX' | 'OPTICAL_SHADER';
+export type GpuMemorySpec = 'GDDR6X' | 'HBM3' | 'OPTICAL_MEM';
+export type QuantumQubitTopology = 'SURFACE_CODE' | 'TOPOLOGICAL_BRAID' | 'ANNEAL_LATTICE';
+export type PhotonicSwitchMode = 'MZ_INTERFERO' | 'MICRORING_RES';
+
+export interface FabComponentParams {
+  branch?: TechBranch;
+  // Chip & compute architecture
+  layoutTopology?: ChipLayoutTopology;
+  memoryBusWidth?: 128 | 256 | 512 | 1024;
+  sramCacheMb?: number;
+  voltageBiasPct?: number; // 85..120
+  clockBiasPct?: number; // 85..125
+  // GPU & AI accelerator options
+  gpuComputeArch?: GpuComputeArch;
+  vramType?: GpuMemorySpec;
+  vramGb?: number;
+  workloadBias?: 'ETHASH_DAG' | 'KAWPOW_ALU' | 'EQUIHASH_MEM' | 'AI_CONVERGED';
+  // Gen7 Quantum specific
+  qubitTopology?: QuantumQubitTopology;
+  logicalQubits?: number;
+  coherenceTimeUs?: number;
+  cryoTargetMk?: number;
+  // Gen7 Photonic specific
+  waveguideLanes?: number;
+  laserWavelengthNm?: 1310 | 1550;
+  wdmChannels?: number;
+  opticalSwitchMode?: PhotonicSwitchMode;
+  // Component-specific parameters (Chassis/Storage/PSU/Cooling/OS)
+  hybridAsicSupport?: boolean;
+  isCryoRated?: boolean;
+  isOpticalBackplane?: boolean;
+  eccDepth?: number; // 1..4
+  railPhases?: number; // 4..24
+  flowGeometry?: 'AXIAL' | 'JET_IMPINGEMENT' | 'CRYO_CASCADE';
+  schedulerTickHz?: number;
+}
+
+export interface PrototypeTestReport {
+  testedStep: number;
+  runsCount: number;
+  status: 'UNVALIDATED' | 'PASSED' | 'MARGINAL' | 'FAILED_FLAW';
+  validatedScore: number; // 0..100
+  thermalMarginC: number;
+  voltageStabilityPct: number;
+  branchCalibrationPct: number;
+  discoveredFlaws: string[];
+  yieldBonusPct: number;
+  defectReductionPct: number;
+  reliabilityBonus: number;
+}
+
+export interface BlueprintRevisionEntry {
+  revisionNumber: number;
+  step: number;
+  summary: string;
+  hashRate: number;
+  watts: number;
+  heatC: number;
+  manufacturabilityPct: number;
+}
+
 export interface CustomComponentSpec {
   blueprintId: string;
+  revisionNumber?: number;
+  serialNumber?: string;
+  batchId?: string;
   partCategory: PartCategory;
   architecture: FabArchitectureId;
   subFeature?: FabSubFeatureId;
+  branch?: TechBranch;
   name: string;
   processNode: ChipProcessNode;
   generation: HardwareGen;
@@ -954,18 +1150,28 @@ export interface CustomComponentSpec {
   qualityGrade?: ChipQualityGrade;
   qualityRoll?: number;
   wearResistance?: number;
+  manufacturabilityPct?: number;
+  prototypeValidated?: boolean;
+  componentParams?: FabComponentParams;
   // Compute & GPU fields
   algo?: MiningAlgorithm;
   hashrates?: Partial<Record<MiningAlgorithm, number>>;
+  vramGb?: number;
   watts?: number;
   heatC?: number;
   noiseDba?: number;
   computeKind?: 'CPU' | 'FPGA' | 'ASIC';
+  requiresCryoCooling?: boolean;
+  requiresOpticalChassis?: boolean;
   // Chassis fields
   maxGpus?: number;
   maxStorage?: number;
   isAsicRack?: boolean;
   maxAsics?: number;
+  supportsHybridAsicGpu?: boolean;
+  allowedBranches?: TechBranch[];
+  isCryoRated?: boolean;
+  isOpticalBackplane?: boolean;
   baseWatts?: number;
   coolingBonus?: number;
   noiseModifier?: number;
@@ -979,6 +1185,7 @@ export interface CustomComponentSpec {
   // Cooling fields
   coolingPowerC?: number;
   isImmersion?: boolean;
+  isCryoRatedCooling?: boolean;
   // OS fields
   hashrateMultiplier?: number;
   powerMultiplier?: number;
@@ -1003,6 +1210,8 @@ export interface CustomAsicSpec {
   hashRate: number;
   watts: number;
   heatC: number;
+  serialNumber?: string;
+  branch?: TechBranch;
 }
 
 export type DesignProfile = 'PERF' | 'BALANCED' | 'EFF' | 'COMPACT';
@@ -1015,9 +1224,17 @@ export interface CustomChipBlueprint {
   partCategory?: PartCategory;
   architecture?: FabArchitectureId;
   subFeature?: FabSubFeatureId;
+  branch?: TechBranch;
   engineering?: FabEngineeringAllocation;
+  componentParams?: FabComponentParams;
   customSpec?: CustomComponentSpec;
   nreCostUsd?: number;
+  manufacturabilityPct?: number;
+  isDraft?: boolean;
+  revisionNumber?: number;
+  parentBlueprintId?: string;
+  revisionHistory?: BlueprintRevisionEntry[];
+  prototypeReport?: PrototypeTestReport;
   algo: MiningAlgorithm;
   processNode: ChipProcessNode;
   unitCostUsd: number;
@@ -1034,13 +1251,65 @@ export interface CustomChipBlueprint {
 
 export interface FabProductionOrder {
   id: string;
+  batchId?: string;
   blueprintId: string;
   blueprintName: string;
+  revisionNumber?: number;
   qty: number;
   stepsRemaining: number;
   totalSteps: number;
   /** Yield roll for this wafer batch (0.95-1.05), applied to hashrate and resale value. */
   qualityRoll?: number;
+  prototypeValidated?: boolean;
+  manufacturabilityPct?: number;
+}
+
+export interface FabBatchRecord {
+  batchId: string;
+  blueprintId: string;
+  blueprintName: string;
+  revisionNumber: number;
+  partCategory: PartCategory;
+  processNode: ChipProcessNode;
+  branch: TechBranch;
+  requestedQty: number;
+  passedQty: number;
+  scrappedDefectQty: number;
+  qcScore: number;
+  qualityGrade: ChipQualityGrade;
+  qualityRoll: number;
+  prototypeValidated: boolean;
+  completedStep: number;
+  stepLabel: string;
+  serialNumbers: string[];
+  notes: string;
+}
+
+export interface SerializedComponentRecord {
+  serialNumber: string;
+  batchId: string;
+  blueprintId: string;
+  revisionNumber: number;
+  name: string;
+  partCategory: PartCategory;
+  processNode: ChipProcessNode;
+  branch: TechBranch;
+  qualityGrade: ChipQualityGrade;
+  measuredHashMult: number;
+  measuredWattMult: number;
+  wearResistance: number;
+  manufacturedStep: number;
+  status: 'IN_STOCK' | 'INSTALLED' | 'EXPORTED' | 'SCRAPPED';
+  installedRigId?: string;
+  history: string[];
+}
+
+export interface ManufacturingHistoryEntry {
+  id: string;
+  step: number;
+  stepLabel: string;
+  kind: 'DRAFT' | 'TAPEOUT' | 'REVISION' | 'PROTOTYPE' | 'BATCH_DONE' | 'DEPLOY' | 'STRIP' | 'EXPORT' | 'SCRAP';
+  summary: string;
 }
 
 export interface CustomAsicInventoryItem {
@@ -1049,6 +1318,7 @@ export interface CustomAsicInventoryItem {
   partCategory?: PartCategory;
   architecture?: FabArchitectureId;
   subFeature?: FabSubFeatureId;
+  branch?: TechBranch;
   customSpec?: CustomComponentSpec;
   algo: MiningAlgorithm;
   processNode: ChipProcessNode;
@@ -1060,14 +1330,23 @@ export interface CustomAsicInventoryItem {
   qualityGrade?: ChipQualityGrade;
   /** Batch yield multiplier this stack was manufactured at (0.95-1.05). */
   qualityRoll?: number;
+  serialNumbers?: string[];
+  batchId?: string;
 }
 
 export interface FabState {
   linesCount: number;
   blueprints: CustomChipBlueprint[];
+  draftBlueprints?: CustomChipBlueprint[];
   productionQueue: FabProductionOrder[];
   inventory: CustomAsicInventoryItem[];
+  batchRecords?: FabBatchRecord[];
+  serialRegistry?: SerializedComponentRecord[];
+  manufacturingHistory?: ManufacturingHistoryEntry[];
+  nextBatchSeq?: number;
+  nextSerialSeq?: number;
   totalUnitsManufactured: number;
+  totalUnitsScrapped?: number;
   totalExportRevenueUsd: number;
 }
 
@@ -1091,6 +1370,46 @@ export interface ShortPosition {
 }
 
 export type OnboardingMode = 'GUIDED' | 'VETERAN';
+
+export type GuidedPaceMode = 'SLOW' | 'NORMAL' | 'FAST';
+
+export type GuidedSystemStatus =
+  | 'LOCKED'
+  | 'ENCOUNTERED'
+  | 'TASK_ACTIVE'
+  | 'LEARNED'
+  | 'DISMISSED';
+
+export interface GuidedOnboardingState {
+  paused: boolean;
+  pace: GuidedPaceMode;
+  currentStageIdx: number;
+  systemStatuses: Record<string, GuidedSystemStatus>;
+  completedChecklistIds: string[];
+  revisitedTopics: string[];
+}
+
+export interface CareerPreset {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  isBuiltIn?: boolean;
+  includeCash: boolean;
+  startingCash: number;
+  difficulty: DifficultyLevel;
+  onboardingMode: OnboardingMode;
+  includeFacility: boolean;
+  startingFacilityId: string;
+  powerContractId: PowerContractId;
+  includeMarketRules: boolean;
+  marketRegime: MarketRegime;
+  operatingCostMult: number;
+  unlockAllCoins: boolean;
+  unlockAllResearch: boolean;
+  includeStarterRig: boolean;
+  starterRigConfig: Omit<RigBuildConfig, 'name'>;
+}
 
 export interface SaveFileEnvelope {
   format: 'BLOCKWORKS_SAVE_V2';

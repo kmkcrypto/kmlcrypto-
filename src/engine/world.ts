@@ -32,9 +32,12 @@ const BLOCK_REWARD_COINS: Record<CoinSymbol, number> = {
   BTC: 3.125,
   LTC: 12.5,
   DOGE: 10_000,
+  RVN: 2_500,
   XMR: 0.6,
   ETH: 2,
+  ZEC: 2.5,
   XCH: 2,
+  QBC: 4.5,
 };
 
 const AI_POOLS: Array<{ id: string; name: string; hashIndex: number }> = [
@@ -131,7 +134,7 @@ export function stepSharedWorld(
   const playerHash = Math.max(0, Math.round(playerHashIndex));
   const totalHash = Math.max(1, networkHashIndex + playerHash);
   const share = playerHash / totalHash;
-  const blockRewardCoins = BLOCK_REWARD_COINS[coin];
+  const blockRewardCoins = BLOCK_REWARD_COINS[coin] ?? state.coins[coin]?.baseStepCoins * 25 ?? 2;
 
   // Deterministic block-winner draw so a save replays identically.
   const winnerRoll = roll(world.worldId, height, 'winner');

@@ -110,13 +110,19 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
     const runSeed = typeof candidate.runSeed === 'string' && candidate.runSeed ? candidate.runSeed : generateRandomSeed();
     const defaultCoins = createInitialCoins(runSeed);
     const migratedCoins = { ...defaultCoins };
-    (Object.keys(defaultCoins) as CoinSymbol[]).forEach((sym) => {
+    (Object.keys(candidate.coins) as CoinSymbol[]).forEach((sym) => {
       const savedCoin = candidate.coins?.[sym];
       if (savedCoin && typeof savedCoin.tier === 'number' && typeof savedCoin.priceUsd === 'number') {
-        migratedCoins[sym] = {
-          ...defaultCoins[sym],
-          ...savedCoin,
-        };
+        if (defaultCoins[sym]) {
+          migratedCoins[sym] = {
+            ...defaultCoins[sym],
+            ...savedCoin,
+          };
+        } else if (savedCoin.isPlayerCreated) {
+          migratedCoins[sym] = {
+            ...savedCoin,
+          };
+        }
       }
     });
 
@@ -218,6 +224,14 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
         blackMarketRefreshStep: stepCount + 15,
         shellCoins: [],
         raidCooldownStep: 0,
+        suspiciousActivityScore: 0,
+        investigationStage: 'NONE',
+        investigationStepsRemaining: 0,
+        scandalMarks: 0,
+        marketConfidencePenaltyPct: 0,
+        retaliationRiskPct: 0,
+        preparedRaid: null,
+        operationRecords: [],
         ...(candidate.underground ?? {}),
       },
       pendingEvent: candidate.pendingEvent ?? null,
@@ -264,6 +278,7 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
           : stepCount > 5
           ? 'VETERAN'
           : 'GUIDED',
+      guidedOnboarding: candidate.guidedOnboarding,
       seenTutorials: Array.isArray(candidate.seenTutorials)
         ? candidate.seenTutorials.filter((id): id is string => typeof id === 'string')
         : [],
@@ -272,12 +287,13 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
         : [],
       devMode: Boolean(candidate.devMode),
       devUnlockAll: Boolean(candidate.devUnlockAll),
-      wallet: buildDefaultWallet(candidate.wallet),
-      walletCostBasis: buildDefaultWallet(candidate.walletCostBasis),
+      wallet: buildDefaultWallet(candidate.wallet, migratedCoins),
+      walletCostBasis: buildDefaultWallet(candidate.walletCostBasis, migratedCoins),
       limitOrders: Array.isArray(candidate.limitOrders) ? candidate.limitOrders : [],
       shortPositions: Array.isArray(candidate.shortPositions) ? candidate.shortPositions : [],
       fab: buildDefaultFab(candidate.fab),
       scenarioId: candidate.scenarioId,
+      activePresetId: candidate.activePresetId,
       world: {
         ...buildDefaultWorld(candidate.runSeed),
         ...(candidate.world && typeof candidate.world === 'object' ? candidate.world : {}),

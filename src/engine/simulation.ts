@@ -75,15 +75,26 @@ import {
   stepExchangeOrdersAndShorts,
 } from './exchange';
 import {
+  checkRigCoinCompatibility,
+  createPlayerCoin,
+  CreatePlayerCoinInput,
+  formatCoinsCatalogReport,
+} from './coins';
+import {
   buildDefaultFab,
   buildFabLine,
+  compareBlueprints,
   CustomBlueprintDesignInput,
+  deleteDraftBlueprint,
   deployCustomAsicToRig,
   deployCustomInventoryToRig,
   designCustomChipBlueprint,
   designCustomComponentBlueprint,
+  FabComponentParamsInput,
+  formatBlueprintComparisonReport,
   formatCustomComponentSummaryLine,
   formatFabStatusReport,
+  formatManufacturingHistoryReport,
   getFabCycleUpkeep,
   getFabEngineeringPointBudget,
   getFabInventoryValueUsd,
@@ -93,10 +104,15 @@ import {
   getUnlockedFabCategories,
   getUnlockedFabNodes,
   getUnlockedFabSubFeatures,
+  inspectBatchReport,
+  inspectSerialReport,
   inventoryItemToCustomSpec,
   isFabUnlocked,
   previewCustomComponentDesign,
   queueFabProduction,
+  reviseBlueprint,
+  runPrototypeTest,
+  saveDraftBlueprint,
   sellCustomAsicsWholesale,
   stepFabProduction,
   stripCustomAsicFromRig,
@@ -116,7 +132,17 @@ import {
   stepRivalSyndicates,
 } from './rivals';
 import { analyzeCoinForecast, formatMarketForecastReport } from './marketForecast';
-import { stepShellCoins } from './underground';
+import {
+  advanceUndergroundInvestigation,
+  complyWithAudit,
+  developShellCoin,
+  executePreparedRaid,
+  formatUndergroundReport,
+  payComplianceSettlement,
+  prepareVaultRaid,
+  seedShellCoinLiquidity,
+  stepShellCoins,
+} from './underground';
 import { archiveSeason, getSeasonId, getSeasonLabel } from './leaderboard';
 import {
   buildDefaultStats,
@@ -160,7 +186,7 @@ import {
   getRigGeneration,
 } from './usedMarket';
 
-export type { CustomBlueprintDesignInput };
+export type { CustomBlueprintDesignInput, FabComponentParamsInput, CreatePlayerCoinInput };
 
 export {
   analyzeCoinForecast,
@@ -169,23 +195,34 @@ export {
   buildFabLine,
   calculateRigResaleValue,
   cancelLimitOrder,
+  checkRigCoinCompatibility,
   closeShortPosition,
+  compareBlueprints,
+  complyWithAudit,
   computeAverageRigHealth,
   computeCompanyValuation,
   computeShortEquity,
   computeValuationBreakdown,
   createInitialComponentHealth,
   createInitialRivals,
+  createPlayerCoin,
+  deleteDraftBlueprint,
   deployCustomAsicToRig,
   deployCustomInventoryToRig,
   designCustomChipBlueprint,
   designCustomComponentBlueprint,
+  developShellCoin,
   ensureRigComponentHealth,
+  executePreparedRaid,
   executeSpotBuy,
   executeSpotSell,
+  formatBlueprintComparisonReport,
+  formatCoinsCatalogReport,
   formatCustomComponentSummaryLine,
   formatFabStatusReport,
+  formatManufacturingHistoryReport,
   formatMarketForecastReport,
+  formatUndergroundReport,
   formatWalletAndExchangeReport,
   generateContractBoard,
   generateUsedMarketListings,
@@ -204,13 +241,21 @@ export {
   getUnlockedFabNodes,
   getUnlockedFabSubFeatures,
   getWalletMarketValueUsd,
+  inspectBatchReport,
+  inspectSerialReport,
   inventoryItemToCustomSpec,
   investigateRivalSyndicate,
   isFabUnlocked,
   openShortPosition,
+  payComplianceSettlement,
   placeLimitOrder,
+  prepareVaultRaid,
   previewCustomComponentDesign,
   queueFabProduction,
+  reviseBlueprint,
+  runPrototypeTest,
+  saveDraftBlueprint,
+  seedShellCoinLiquidity,
   sellCustomAsicsWholesale,
   stripCustomAsicFromRig,
   stripCustomPartFromRig,
@@ -501,9 +546,11 @@ export function computeRigTelemetry(
   activeRigCount = 1,
   facilityUpgrades?: Partial<Record<FacilityUpgradeId, number>>,
   electricianPowerSave = 0,
-  facilityExtraRooms = 0
+  facilityExtraRooms = 0,
+  coinsMap?: Record<CoinSymbol, CoinMarketState>
 ): ComputedRigTelemetry {
-  const { chassis, compute, gpus, storage, psu, cooling, os } = getPartBundle(rig);
+  const bundle = getPartBundle(rig);
+  const { chassis, compute, gpus, storage, psu, cooling, os } = bundle;
   const ocRatio = Math.max(0.8, Math.min(1.5, rig.overclockPct / 100));
   const undervoltMult = unlockedResearch.includes('res_undervolt') ? 0.88 : 1.0;
   const distLvl = facilityUpgrades?.power_distribution ?? 0;
@@ -619,13 +666,25 @@ export function computeRigTelemetry(
     )
   );
 
-  const algos: MiningAlgorithm[] = ['SHA256', 'SCRYPT', 'RANDOMX', 'ETHASH', 'POST'];
+  const algos: MiningAlgorithm[] = [
+    'SHA256',
+    'SCRYPT',
+    'RANDOMX',
+    'ETHASH',
+    'POST',
+    'KAWPOW',
+    'EQUIHASH',
+    'QHASH',
+  ];
   const baseHashrateByAlgo: Record<MiningAlgorithm, number> = {
     SHA256: 0,
     SCRYPT: 0,
     RANDOMX: 0,
     ETHASH: 0,
     POST: 0,
+    KAWPOW: 0,
+    EQUIHASH: 0,
+    QHASH: 0,
   };
 
   for (const algo of algos) {
@@ -644,16 +703,24 @@ export function computeRigTelemetry(
       gpus.reduce((s, g) => s + (g.hashrates[customAlgo] ?? 0), 0);
   }
 
-  const algoMap: Record<CoinSymbol, MiningAlgorithm> = {
+  const fallbackAlgoMap: Record<string, MiningAlgorithm> = {
     BTC: 'SHA256',
     LTC: 'SCRYPT',
     DOGE: 'SCRYPT',
     XMR: 'RANDOMX',
     ETH: 'ETHASH',
     XCH: 'POST',
+    RVN: 'KAWPOW',
+    ZEC: 'EQUIHASH',
+    QBC: 'QHASH',
   };
-  const targetAlgo = algoMap[rig.targetCoin];
-  const baseHash = baseHashrateByAlgo[targetAlgo];
+  const coinObj = coinsMap?.[rig.targetCoin];
+  const targetAlgo: MiningAlgorithm =
+    coinObj?.algorithm ?? fallbackAlgoMap[rig.targetCoin] ?? 'SHA256';
+  const baseHash = baseHashrateByAlgo[targetAlgo] ?? 0;
+  const compatFactor = coinObj
+    ? checkRigCoinCompatibility(rig, coinObj, bundle).efficiencyMult
+    : 1.0;
 
   const currentTemp = rig.temperatureC ?? equilibriumTempC;
   let thermalFactor = 1.0;
@@ -683,6 +750,7 @@ export function computeRigTelemetry(
     thermalFactor *
     healthFactor *
     condTierFactor *
+    compatFactor *
     (isUnderpowered ? 0 : 1);
 
   return {
@@ -833,7 +901,8 @@ export function estimateFleetHashIndex(state: GameState): number {
       Math.max(1, enabled.length),
       state.facilityUpgrades,
       0,
-      state.facilityExtraRooms ?? 0
+      state.facilityExtraRooms ?? 0,
+      state.coins
     );
     hash += t.effectiveHashrate;
   }
@@ -919,7 +988,8 @@ export function getFacilityTotals(state: GameState): {
       enabledCount,
       state.facilityUpgrades,
       elecBonus.powerWasteReduction,
-      state.facilityExtraRooms ?? 0
+      state.facilityExtraRooms ?? 0,
+      state.coins
     );
     totalWatts += t.wallWatts;
     if (t.noiseDba > peakNoise) {
@@ -1175,8 +1245,8 @@ export function createNewGameState(
     usedMarketRefreshStep: 8,
     activeMarketModifiers: [],
     coins,
-    wallet: buildDefaultWallet(),
-    walletCostBasis: buildDefaultWallet(),
+    wallet: buildDefaultWallet(undefined, coins),
+    walletCostBasis: buildDefaultWallet(undefined, coins),
     limitOrders: [],
     shortPositions: [],
     fab: buildDefaultFab(),
@@ -1205,6 +1275,14 @@ export function createNewGameState(
       blackMarketRefreshStep: 15,
       shellCoins: [],
       raidCooldownStep: 0,
+      suspiciousActivityScore: 0,
+      investigationStage: 'NONE',
+      investigationStepsRemaining: 0,
+      scandalMarks: 0,
+      marketConfidencePenaltyPct: 0,
+      retaliationRiskPct: 0,
+      preparedRaid: null,
+      operationRecords: [],
     },
     pendingEvent: null,
     ledger: [],
@@ -2047,13 +2125,20 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     0
   );
 
+  const confidenceDragMult = Math.max(
+    0.72,
+    1 - (prev.underground?.marketConfidencePenaltyPct ?? 0) / 100
+  );
+
   const nextCoins: Record<CoinSymbol, CoinMarketState> = { ...prev.coins };
   (Object.keys(nextCoins) as CoinSymbol[]).forEach((sym) => {
     const coin = nextCoins[sym];
     const logGap = Math.log(coin.basePriceUsd / Math.max(0.00001, coin.priceUsd));
     const pull = logGap * 0.045;
 
-    const baseVol = sym === 'DOGE' ? 0.07 : sym === 'XCH' ? 0.048 : 0.036;
+    const baseVol =
+      0.036 *
+      (coin.volatilityMult ?? (sym === 'DOGE' ? 1.94 : sym === 'XCH' ? 1.33 : 1.0));
     const randWave = (stepRng() - 0.5) * 2 * baseVol * regimeSpec.volatilityMult;
     const prBoost = prImpulseByCoin[sym] ?? 0;
 
@@ -2062,6 +2147,22 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       Math.min(100, coin.sentiment * 0.95 + (prSentimentByCoin[sym] ?? 0))
     );
     const sentimentDrift = (nextSentiment / 100) * 0.006;
+
+    let nextCreatorMeta = coin.creatorMeta;
+    let customAdoptionDrift = 0;
+    if (coin.isPlayerCreated && nextCreatorMeta) {
+      const hasActiveMiners = prev.rigs.some((r) => r.enabled && r.targetCoin === sym);
+      const adoptDelta = (hasActiveMiners ? 0.6 : -0.25) + (nextSentiment > 10 ? 0.35 : 0);
+      const nextAdoption = Math.max(
+        5,
+        Math.min(100, Number((nextCreatorMeta.adoptionScore + adoptDelta).toFixed(2)))
+      );
+      nextCreatorMeta = {
+        ...nextCreatorMeta,
+        adoptionScore: nextAdoption,
+      };
+      customAdoptionDrift = ((nextAdoption - 35) / 100) * 0.008;
+    }
 
     let nextHalvingRem = coin.stepsUntilHalving - 1;
     let nextHalvingCount = coin.halvingCount;
@@ -2091,6 +2192,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       1 + 0.0022 * (1 + Math.min(1.2, activeRivalFactor / 7500));
     const nextDiff = Number(Math.min(12, coin.networkDifficulty * diffStepScale).toFixed(3));
 
+    const scandalDrag = coin.isPlayerCreated ? (confidenceDragMult - 1) * 0.15 : 0;
     const multiplier = Math.max(
       0.55,
       1 +
@@ -2100,6 +2202,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
         modCoinDrift +
         prBoost +
         sentimentDrift +
+        customAdoptionDrift +
+        scandalDrag +
         halvingSupplyShock
     );
     const nextPrice = Math.max(0.001, coin.priceUsd * multiplier);
@@ -2118,6 +2222,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       stepsUntilHalving: nextHalvingRem,
       halvingCount: nextHalvingCount,
       blockRewardScale: nextBlockScale,
+      creatorMeta: nextCreatorMeta,
     };
   });
 
@@ -2170,7 +2275,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       enabledRigsCount,
       prev.facilityUpgrades,
       elecBonus.powerWasteReduction,
-      prev.facilityExtraRooms ?? 0
+      prev.facilityExtraRooms ?? 0,
+      nextCoins
     );
     totalWallWatts += t.wallWatts;
     if (t.noiseDba > peakNoiseDba) {
@@ -2198,8 +2304,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   const exStep = stepExchangeOrdersAndShorts(
     {
       cash: prev.cash,
-      wallet: buildDefaultWallet(prev.wallet),
-      walletCostBasis: buildDefaultWallet(prev.walletCostBasis),
+      wallet: buildDefaultWallet(prev.wallet, nextCoins),
+      walletCostBasis: buildDefaultWallet(prev.walletCostBasis, nextCoins),
       limitOrders: prev.limitOrders ?? [],
       shortPositions: prev.shortPositions ?? [],
       unlockedResearch: nextUnlocked,
@@ -2240,11 +2346,14 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     );
   }
 
-  const autoSellMult = getAutoSellMultiplier({
-    unlockedResearch: nextUnlocked,
-    employees: nextEmployees,
-    strikeStepsRemaining: nextStrikeSteps,
-  });
+  const sanctionPayoutMult =
+    prev.underground?.investigationStage === 'SANCTIONED' ? 0.85 : 1.0;
+  const autoSellMult =
+    getAutoSellMultiplier({
+      unlockedResearch: nextUnlocked,
+      employees: nextEmployees,
+      strikeStepsRemaining: nextStrikeSteps,
+    }) * sanctionPayoutMult;
 
   // 7. Step each mining rig + condition wear, failures, auto-maintenance, and payouts
   const nextRigs: MiningRig[] = prev.rigs.map((rig) => {
@@ -2288,7 +2397,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     }
 
     const coin = nextCoins[rig.targetCoin];
-    if (!coin.unlocked) {
+    if (!coin || !coin.unlocked) {
       return {
         ...rig,
         ageSteps: baseAge,
@@ -2308,7 +2417,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       enabledRigsCount,
       prev.facilityUpgrades,
       elecBonus.powerWasteReduction,
-      prev.facilityExtraRooms ?? 0
+      prev.facilityExtraRooms ?? 0,
+      nextCoins
     );
 
     let nextTemp = Math.round(rig.temperatureC * 0.4 + telemetry.equilibriumTempC * 0.6);
@@ -2349,7 +2459,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       enabledRigsCount,
       prev.facilityUpgrades,
       elecBonus.powerWasteReduction,
-      prev.facilityExtraRooms ?? 0
+      prev.facilityExtraRooms ?? 0,
+      nextCoins
     );
 
     // Subtle generational competitiveness scaling: older hardware still mines profitably on matched tiers,
@@ -2388,6 +2499,22 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     }
 
     if (minedCoins > 0) {
+      const targetC = nextCoins[rig.targetCoin];
+      if (targetC.isPlayerCreated && targetC.creatorMeta && targetC.creatorMeta.creatorFeePct > 0) {
+        const feeUsd = Math.max(0, minedCoins * targetC.priceUsd * (targetC.creatorMeta.creatorFeePct / 100));
+        if (feeUsd > 0) {
+          nextCash += feeUsd;
+          stepMiningUsd += feeUsd;
+          nextStats.totalRevenueUsd += feeUsd;
+        }
+        nextCoins[rig.targetCoin] = {
+          ...targetC,
+          creatorMeta: {
+            ...targetC.creatorMeta,
+            totalSupplyMinted: targetC.creatorMeta.totalSupplyMinted + minedCoins,
+          },
+        };
+      }
       if (isHold) {
         nextWallet[rig.targetCoin] = (nextWallet[rig.targetCoin] ?? 0) + minedCoins;
         nextCoins[rig.targetCoin] = {
@@ -2643,7 +2770,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   }
 
   const shellStep = stepShellCoins(nextUnderground, nextStep, prev.runSeed);
-  nextUnderground.shellCoins = shellStep.underground.shellCoins;
+  let nextUgAfterShell = shellStep.underground;
   for (const dead of shellStep.collapsed) {
     pushNews(
       `Shell Coin Collapsed: $${dead.ticker}`,
@@ -2668,6 +2795,23 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   }
 
   const nextScrutiny = Math.max(0, Math.min(100, prev.regulatoryScrutiny + stepScrutinyDelta));
+  const invStep = advanceUndergroundInvestigation(
+    nextUgAfterShell,
+    nextScrutiny,
+    nextStep,
+    stepLabel,
+    prev.runSeed
+  );
+  nextUgAfterShell = invStep.underground;
+  if (invStep.news.length > 0) newNews.unshift(...invStep.news);
+  if (invStep.alertHit) alertHit = true;
+  if (invStep.sanctionFineUsd > 0) {
+    nextCash -= invStep.sanctionFineUsd;
+    nextStats.totalFinesAndBribesUsd += invStep.sanctionFineUsd;
+    pushTx('EVENT', -invStep.sanctionFineUsd, 'Regulatory sanctions compliance penalty');
+  }
+  Object.assign(nextUnderground, nextUgAfterShell);
+
   const nextCredibility = Math.min(100, prev.mediaCredibility + 0.08);
 
   // 9. Update rival companies & market share

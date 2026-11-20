@@ -8,9 +8,11 @@ import {
   MiningRig,
   SandboxConfig,
 } from '../types/game';
+import { createPlayerCoin } from './coins';
 import { createInitialComponentHealth } from './usedMarket';
 import { createNewGameState, getFacility } from './simulation';
 import { buildDefaultFab } from './fab';
+import { launchShellCoin, prepareVaultRaid } from './underground';
 import { buildDefaultWorld, stepSharedWorld } from './world';
 
 /**
@@ -80,6 +82,27 @@ export const SCENARIOS: ScenarioSpec[] = [
       'Industrial fleet connected to the simulated shared blockchain world with live block competition.',
   },
   {
+    id: 'QUANTUM_PHOTONIC',
+    name: 'Quantum vs Photonic Lab',
+    tagline: 'Gen-7 · Dual branch R&D',
+    description:
+      'Dual Gen-7 Cryo-Quantum QPU and Photonic Optical QGPU clusters with 3 fab lines for branch comparison.',
+  },
+  {
+    id: 'UNDERGROUND_CRISIS',
+    name: 'Underground Audit Crisis',
+    tagline: 'Heat 68 · Formal Audit',
+    description:
+      'Syndicate under FORMAL_AUDIT with active shell tokens, prepared rival raid dossier, and compliance choices.',
+  },
+  {
+    id: 'CUSTOM_COIN_EMPIRE',
+    name: 'Custom Coin Economy',
+    tagline: 'Mainnet · Multi-Algo Fleet',
+    description:
+      'Operates player-launched mainnet coin alongside RVN/ZEC/QBC rigs with spot liquidity and creator fees.',
+  },
+  {
     id: 'CUSTOM',
     name: 'Custom Scenario',
     tagline: 'Everything unlocked',
@@ -96,6 +119,9 @@ const SCENARIO_SEED: Record<DevScenarioId, string> = {
   GEN7: 'DEV-GEN7',
   MANUFACTURING: 'DEV-FAB',
   MULTIPLAYER: 'DEV-WORLD',
+  QUANTUM_PHOTONIC: 'DEV-QP-LAB',
+  UNDERGROUND_CRISIS: 'DEV-UG-CRISIS',
+  CUSTOM_COIN_EMPIRE: 'DEV-CUSTOM-COIN',
   CUSTOM: 'DEV-CUSTOM',
 };
 
@@ -369,6 +395,118 @@ export function createScenarioState(id: DevScenarioId): GameState {
         unlockedResearch: researchClosure(['res_gen4_hyperhash', 'res_secondary_broker']),
         world,
         employees: buildEmployees(['TECHNICIAN', 'MANAGER']),
+      };
+    }
+    case 'QUANTUM_PHOTONIC': {
+      const s = withRigs('fac_megafarm', gen7Parts, 3, 180_000_000);
+      const qRig1 = makeScenarioRig(
+        base.rigs[0],
+        0,
+        {
+          chassisId: 'chassis_quantum_cryo_bay',
+          computeId: 'asic_quantum_qpu_cryo',
+          storageId: 'stor_photonic_holo_2560tb',
+          psuId: 'psu_24000w_supercond',
+          coolingId: 'cool_quantum_dilution',
+          osId: 'os_quantum_qec_kernel',
+          targetCoin: 'QBC',
+        },
+        'fac_megafarm'
+      );
+      const qRig2 = makeScenarioRig(
+        base.rigs[0],
+        1,
+        {
+          chassisId: 'chassis_photonic_optical_matrix',
+          computeId: 'asic_photonic_sha_core',
+          gpuIds: ['gpu_photonic_qgpu', 'gpu_photonic_qgpu'],
+          storageId: 'stor_photonic_holo_2560tb',
+          psuId: 'psu_24000w_supercond',
+          coolingId: 'cool_photonic_liquid_mesh',
+          osId: 'os_quantum_qec_kernel',
+          targetCoin: 'QBC',
+        },
+        'fac_megafarm'
+      );
+      return {
+        ...s,
+        rigs: [qRig1, qRig2, ...s.rigs.slice(2)],
+        unlockedResearch: researchClosure([
+          'res_gen7_quantum_photonic',
+          'res_gen7_dilution_cryo',
+          'res_gen7_photonic_interconnect',
+          'res_gen7_qec_verification',
+          'res_wafer_lithography',
+        ]),
+        fab: { ...buildDefaultFab(), linesCount: 3 },
+        employees: buildEmployees(['RESEARCHER', 'RESEARCHER', 'SYS_ENGINEER', 'ELECTRICIAN', 'TECHNICIAN']),
+      };
+    }
+    case 'UNDERGROUND_CRISIS': {
+      let s = withRigs('fac_warehouse', industrialParts, 5, 140_000);
+      s = {
+        ...s,
+        regulatoryScrutiny: 68,
+        mediaCredibility: 24,
+        unlockedResearch: researchClosure(['res_gen4_hyperhash', 'res_secondary_broker']),
+        employees: buildEmployees(['TECHNICIAN', 'PR_STRATEGIST', 'MANAGER']),
+      };
+      const sc = launchShellCoin(s, 'SHDW', 'Shadow Protocol');
+      if (sc.ok) s = sc.nextState;
+      const prep = prepareVaultRaid(s, s.rivals[0].id);
+      if (prep.ok) s = prep.nextState;
+      return {
+        ...s,
+        regulatoryScrutiny: 68,
+        underground: {
+          ...s.underground,
+          investigationStage: 'FORMAL_AUDIT',
+          investigationStepsRemaining: 10,
+          suspiciousActivityScore: 72,
+          scandalMarks: 2,
+          marketConfidencePenaltyPct: 8,
+        },
+      };
+    }
+    case 'CUSTOM_COIN_EMPIRE': {
+      let s = withRigs('fac_industrial', gen5Parts, 4, 8_500_000);
+      s = {
+        ...s,
+        unlockedResearch: researchClosure(['res_gen5_exascale', 'res_quant_desk', 'res_wafer_lithography']),
+        employees: buildEmployees(['ANALYST', 'PR_STRATEGIST', 'SYS_ENGINEER', 'TECHNICIAN', 'MANAGER']),
+      };
+      const launched = createPlayerCoin(s, {
+        symbol: 'NOVA',
+        name: 'NovaHash Network',
+        algorithm: 'SHA256',
+        initialLiquidityUsd: 250_000,
+        halvingEverySteps: 90,
+        creatorFeePct: 2.5,
+      });
+      if (launched.ok) {
+        s = launched.nextState;
+      }
+      const gpuRig = makeScenarioRig(
+        base.rigs[0],
+        4,
+        {
+          chassisId: 'chassis_open_gpu_gen5',
+          computeId: 'cpu_epyc_9654',
+          gpuIds: ['gpu_rtx5090_ai', 'gpu_rtx5090_ai', 'gpu_rtx5090_ai'],
+          storageId: 'stor_exascale_960tb',
+          psuId: 'psu_9000w_hvdc',
+          coolingId: 'cool_two_phase_immersion',
+          osId: 'os_quantum_stratum',
+          targetCoin: 'RVN',
+        },
+        'fac_industrial'
+      );
+      return {
+        ...s,
+        rigs: [
+          ...s.rigs.map((r, i) => ({ ...r, targetCoin: i < 2 ? 'NOVA' : r.targetCoin })),
+          gpuRig,
+        ],
       };
     }
     case 'CUSTOM':

@@ -40,6 +40,16 @@ export function formatHashrate(mhEquivalent: number, algo: MiningAlgorithm): str
     if (mhEquivalent >= 1000) return `${(mhEquivalent / 1000).toFixed(2)} PiB`;
     return `${mhEquivalent.toFixed(1)} TiB`;
   }
+  if (algo === 'EQUIHASH') {
+    if (mhEquivalent >= 1_000_000) return `${(mhEquivalent / 1_000_000).toFixed(2)} MSol/s`;
+    if (mhEquivalent >= 1000) return `${(mhEquivalent / 1000).toFixed(2)} KSol/s`;
+    return `${mhEquivalent.toFixed(1)} Sol/s`;
+  }
+  if (algo === 'QHASH') {
+    if (mhEquivalent >= 1_000_000) return `${(mhEquivalent / 1_000_000).toFixed(2)} GQ/s`;
+    if (mhEquivalent >= 1000) return `${(mhEquivalent / 1000).toFixed(2)} kQ/s`;
+    return `${mhEquivalent.toFixed(1)} Q/s`;
+  }
   if (mhEquivalent < 0.001) {
     return `${(mhEquivalent * 1_000_000).toFixed(0)} H/s`;
   }

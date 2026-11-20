@@ -2,29 +2,33 @@ import {
   CHASSIS_PARTS,
   FACILITY_TIERS,
   GPU_PARTS,
-  PSU_PARTS,
   RESEARCH_NODES,
 } from '../data/catalog';
 import {
+  BlueprintRevisionEntry,
   ChipProcessNode,
   ChipQualityGrade,
   CustomAsicInventoryItem,
-  CustomAsicSpec,
   CustomChipBlueprint,
   CustomComponentSpec,
   DesignProfile,
   FabArchitectureId,
+  FabBatchRecord,
+  FabComponentParams,
   FabEngineeringAllocation,
   FabProductionOrder,
   FabState,
   FabSubFeatureId,
   GameState,
   HardwareGen,
+  ManufacturingHistoryEntry,
   MiningAlgorithm,
   NewsItem,
   PartCategory,
-  RepairComponentSlot,
+  PrototypeTestReport,
   RigCustomPartsMap,
+  SerializedComponentRecord,
+  TechBranch,
   TransactionEntry,
 } from '../types/game';
 import { formatHashrate, formatStepLabel, formatUsd } from '../utils/format';
@@ -98,22 +102,22 @@ export interface FabCategorySpec {
 export const FAB_CATEGORY_SPECS: FabCategorySpec[] = [
   {
     id: 'compute',
-    label: 'Compute Silicon (ASIC / CPU / FPGA)',
+    label: 'Compute Silicon (ASIC / CPU / FPGA / QPU)',
     shortLabel: 'COMPUTE',
-    summary: 'Custom ASIC blades, multi-chiplet RandomX CPUs & reconfigurable FPGA cores.',
+    summary: 'Custom ASIC blades, multi-chiplet RandomX CPUs, FPGA cores, & Gen-7 Quantum/Photonic dies.',
   },
   {
     id: 'gpu',
-    label: 'Accelerator Cards (Mining & AI GPUs)',
+    label: 'Accelerator Cards (Mining, AI & QGPU)',
     shortLabel: 'GPU',
     researchRequired: 'res_gpu_kernel',
-    summary: 'Binned GDDR/HBM cards tuned for Ethash, Scrypt & multi-algo density.',
+    summary: 'Binned GDDR/HBM/Optical cards tuned for Ethash, KawPoW, Equihash, Scrypt & QHash.',
   },
   {
     id: 'chassis',
     label: 'Thermal Enclosures & Rack Chassis',
     shortLabel: 'CHASSIS',
-    summary: 'Open 8–12 GPU frames, high-density ASIC shelves, or baffled converged racks.',
+    summary: 'Open 6–12 GPU frames, ASIC shelves, hybrid ASIC+GPU pods, or Cryo/Optical backplanes.',
   },
   {
     id: 'storage',
@@ -125,13 +129,13 @@ export const FAB_CATEGORY_SPECS: FabCategorySpec[] = [
     id: 'psu',
     label: 'GaN & HVDC Power Delivery Units',
     shortLabel: 'PSU',
-    summary: 'Ultra-high-efficiency 99%+ power stages from 1.2 kW silent rails to 22 kW HVDC.',
+    summary: 'Ultra-high-efficiency 99%+ power stages from 1.2 kW silent rails to 24 kW HVDC.',
   },
   {
     id: 'cooling',
     label: 'Vapor, Liquid & Cryo Immersion Loops',
     shortLabel: 'COOLING',
-    summary: 'High-CFM vapor chambers, cold-plate manifolds & sub-48 dBA dielectric tanks.',
+    summary: 'High-CFM vapor chambers, cold-plate manifolds, immersion tanks & He-3 dilution loops.',
   },
   {
     id: 'os',
@@ -154,9 +158,9 @@ export const FAB_ARCHITECTURES: FabArchitectureSpec[] = [
   {
     id: 'ASIC_BLADE',
     category: 'compute',
-    label: 'Monolithic ASIC Blade',
+    label: 'Monolithic ASIC / QPU Blade',
     researchRequired: 'res_wafer_lithography',
-    blurb: 'Extreme single-algo silicon; seats inside ASIC Racks & Converged Racks.',
+    blurb: 'Extreme primary-algo silicon or Gen-7 QPU; seats inside ASIC Racks & Converged Racks.',
   },
   {
     id: 'CHIPLET_CPU',
@@ -167,7 +171,7 @@ export const FAB_ARCHITECTURES: FabArchitectureSpec[] = [
   {
     id: 'HYBRID_FPGA',
     category: 'compute',
-    label: 'Reconfigurable FPGA Matrix',
+    label: 'Reconfigurable FPGA / Optical Matrix',
     researchRequired: 'res_fpga_gateware',
     blurb: 'Dual-algo gateware (primary + secondary trickle); fits GPU frames & ASIC shelves.',
   },
@@ -176,14 +180,14 @@ export const FAB_ARCHITECTURES: FabArchitectureSpec[] = [
     id: 'HASH_CORE',
     category: 'gpu',
     label: 'Dense Compute Shader Core',
-    blurb: 'Balanced core/VRAM layout for Ethash & Scrypt multi-GPU rigs.',
+    blurb: 'Balanced core/VRAM layout for Ethash, KawPoW, Equihash & Scrypt multi-GPU rigs.',
   },
   {
     id: 'HBM_MONSTER',
     category: 'gpu',
-    label: 'Wide-Bus HBM3 Accelerator',
+    label: 'Wide-Bus HBM3 / Optical Accelerator',
     researchRequired: 'res_gen3_silicon',
-    blurb: '+28% memory-bound Ethash throughput, higher die cost & thermal output.',
+    blurb: '+28% memory-bound DAG throughput, wider VRAM capacity, higher die cost.',
   },
   {
     id: 'LOW_VOLT_CARD',
@@ -196,14 +200,14 @@ export const FAB_ARCHITECTURES: FabArchitectureSpec[] = [
     id: 'OPEN_GPU_FRAME',
     category: 'chassis',
     label: 'Modular Open GPU Mining Frame',
-    blurb: '8–12 GPU riser slots + heavy passive convective cooling.',
+    blurb: '6–12 GPU riser slots + heavy passive convective cooling.',
   },
   {
     id: 'ASIC_BLADE_SHELF',
     category: 'chassis',
-    label: 'High-Density ASIC Blade Shelf',
+    label: 'High-Density ASIC / Cryo Blade Shelf',
     researchRequired: 'res_wafer_lithography',
-    blurb: 'Reinforced blind-mate ASIC rack enclosure with dual airflow plenums.',
+    blurb: 'Reinforced blind-mate ASIC rack enclosure with dual airflow / cryo plenums.',
   },
   {
     id: 'SEALED_BAFFLE',
@@ -214,9 +218,9 @@ export const FAB_ARCHITECTURES: FabArchitectureSpec[] = [
   {
     id: 'CONVERGED_SUPER',
     category: 'chassis',
-    label: 'Converged Hybrid AI/Mining Rack',
+    label: 'Converged Hybrid ASIC+GPU Super-Rack',
     researchRequired: 'res_gen4_hyperhash',
-    blurb: 'Seats BOTH up to 10 GPUs AND custom ASIC blades with integrated liquid bus.',
+    blurb: 'Seats BOTH up to 10 GPUs AND a custom ASIC/QPU blade with optional Cryo/Optical bus.',
   },
   // STORAGE
   {
@@ -230,7 +234,7 @@ export const FAB_ARCHITECTURES: FabArchitectureSpec[] = [
     id: 'HIGH_BW_DDR',
     category: 'storage',
     label: 'Low-Latency ECC HBM-RAM Bank',
-    blurb: 'Maximizes `% efficiencyBonus` (+10% to +26% fleet hash) on low watts.',
+    blurb: 'Maximizes `% efficiencyBonus` (+10% to +30% fleet hash) on low watts.',
   },
   {
     id: 'HYBRID_CACHE',
@@ -243,14 +247,14 @@ export const FAB_ARCHITECTURES: FabArchitectureSpec[] = [
     id: 'GAN_HIGH_EFF',
     category: 'psu',
     label: 'Gallium-Nitride (GaN) Active Stage',
-    blurb: 'Ultra-high 95%–99.4% conversion efficiency, cutting wall watts & bill overhead.',
+    blurb: 'Ultra-high 95%–99.6% conversion efficiency, cutting wall watts & bill overhead.',
   },
   {
     id: 'INDUSTRIAL_RAIL',
     category: 'psu',
     label: '3-Phase HVDC Megawatt Busbar',
     researchRequired: 'res_smart_pdu',
-    blurb: 'Massive 3.5 kW–22 kW maxWatts rating for extreme OC ASICs and 10-GPU clusters.',
+    blurb: 'Massive 3.5 kW–26 kW maxWatts rating for extreme OC ASICs and 10-GPU clusters.',
   },
   {
     id: 'SILENT_PASSIVE',
@@ -270,34 +274,34 @@ export const FAB_ARCHITECTURES: FabArchitectureSpec[] = [
     category: 'cooling',
     label: 'Direct-to-Chip Cold-Plate Loop',
     researchRequired: 'res_vapor_chambers',
-    blurb: 'Heavy closed-loop thermal capacity (-120°C to -260°C) with low noise.',
+    blurb: 'Heavy closed-loop thermal capacity (-120°C to -280°C) with low noise.',
   },
   {
     id: 'CRYO_IMMERSION',
     category: 'cooling',
-    label: 'Two-Phase Fluorinert Immersion Tank',
+    label: 'Two-Phase Immersion / Cryo Dilution Tank',
     researchRequired: 'res_immersion_cooling',
-    blurb: 'Full immersion tank: caps rig acoustics <=48 dBA with extreme -°C dissipation.',
+    blurb: 'Full immersion / He-3 tank: caps rig acoustics <=48 dBA with extreme -°C dissipation.',
   },
   // OS
   {
     id: 'BARE_METAL_ASM',
     category: 'os',
     label: 'Zero-Overhead Assembly Kernel',
-    blurb: 'Maximum raw `hashrateMultiplier` (+14% to +42%) bypassing OS abstractions.',
+    blurb: 'Maximum raw `hashrateMultiplier` (+14% to +46%) bypassing OS abstractions.',
   },
   {
     id: 'UNDERCLOCK_SCHED',
     category: 'os',
     label: 'Dynamic DVFS Power Governor',
-    blurb: 'Drives `powerMultiplier` down (0.76x–0.90x) to slash kW draw & thermal load.',
+    blurb: 'Drives `powerMultiplier` down (0.74x–0.90x) to slash kW draw & thermal load.',
   },
   {
     id: 'SELF_HEAL_RT',
     category: 'os',
     label: 'ECC Watchdog & Self-Heal RTOS',
     researchRequired: 'res_predictive_telemetry',
-    blurb: 'Up to +65% `stabilityBonus` + balanced hash/power gains, curbing faults & wear.',
+    blurb: 'Up to +72% `stabilityBonus` + balanced hash/power gains, curbing faults & wear.',
   },
 ];
 
@@ -400,10 +404,13 @@ export function getFocusOptionsForDesign(
   if (category === 'compute' || category === 'gpu') {
     if (category === 'gpu') {
       return [
-        { id: 'ETHASH', label: 'Ethash Primary (+Scrypt/RandomX secondary)', blurb: 'Memory-hard Ethereum Classic / Ethash specialization.' },
-        { id: 'SCRYPT', label: 'Scrypt Compute Focus (+Ethash secondary)', blurb: 'Tuned for Litecoin/Dogecoin GPU kernels.' },
+        { id: 'ETHASH', label: 'Ethash Primary (+KawPoW/Equihash secondary)', blurb: 'Memory-hard Ethash / Ethereum Classic specialization.' },
+        { id: 'KAWPOW', label: 'KawPoW ProgPoW Focus (+Ethash/Equihash)', blurb: 'Balanced ALU + GDDR6X focus for Ravencoin (RVN).' },
+        { id: 'EQUIHASH', label: 'Equihash Solver Focus (+KawPoW)', blurb: 'Wide-bus solver acceleration for Zcash (ZEC).' },
+        { id: 'SCRYPT', label: 'Scrypt Compute Focus (+Ethash)', blurb: 'Tuned for Litecoin/Dogecoin GPU kernels.' },
         { id: 'RANDOMX', label: 'RandomX General Compute (+Ethash)', blurb: 'Hybrid L1/cache compute bias for Monero.' },
-        { id: 'SHA256', label: 'SHA-256 CUDA Hash Core', blurb: 'Integer ALU optimization for SHA-256 workloads.' },
+        { id: 'SHA256', label: 'SHA-256 CUDA/Optical Hash Core', blurb: 'Integer ALU optimization for SHA-256 workloads.' },
+        { id: 'QHASH', label: 'QHash Quantum-Hybrid Kernel', blurb: 'Post-quantum lattice proof tensor pipeline for QBC.' },
       ];
     }
     return [
@@ -411,20 +418,25 @@ export function getFocusOptionsForDesign(
       { id: 'SCRYPT', label: 'SCRYPT (Litecoin / Dogecoin)', blurb: 'Memory-hard GH/s Scrypt pipeline.' },
       { id: 'RANDOMX', label: 'RANDOMX (Monero L3 Cache)', blurb: 'Low-wattage CPU/Gateware cache lane.' },
       { id: 'ETHASH', label: 'ETHASH (DAG Compute Engine)', blurb: 'Wide-bus DAG hashing core.' },
+      { id: 'KAWPOW', label: 'KAWPOW (Ravencoin ProgPoW Core)', blurb: 'ProgPoW DAG + high-bandwidth memory core.' },
+      { id: 'EQUIHASH', label: 'EQUIHASH (Zcash Memory-Hard Core)', blurb: 'Solver array for Zcash Equihash proofs.' },
       { id: 'POST', label: 'POST (Chia Co-Processor)', blurb: 'Compression & lookup accelerator for PoST.' },
+      { id: 'QHASH', label: 'QHASH (QubitCoin Post-Quantum Core)', blurb: 'Native lattice / quantum-resistant QHash core.' },
     ];
   }
   if (category === 'chassis') {
     if (architecture === 'ASIC_BLADE_SHELF') {
       return [
         { id: 'SINGLE_BLADE', label: 'High-Airflow 1-Blade ASIC Bay', blurb: 'Compact, cool, quiet 1-blade ASIC rack.' },
-        { id: 'HYDRO_BAY', label: 'Industrial Hydro ASIC Shelf', blurb: 'Extra -18°C chassis cooling for 6–10 kW custom ASICs.' },
+        { id: 'HYDRO_BAY', label: 'Industrial Hydro / Cryo ASIC Shelf', blurb: 'Extra -18°C chassis cooling for 6–12 kW custom ASICs/QPUs.' },
       ];
     }
     if (architecture === 'CONVERGED_SUPER') {
       return [
         { id: 'HYBRID_8_1', label: '8-GPU + 1-ASIC Converged Pod', blurb: 'Accepts BOTH multi-GPU rigs and custom ASIC blades.' },
         { id: 'HYBRID_10_1', label: '10-GPU + 1-ASIC Hyperscale Pod', blurb: 'Maximum density converged AI + ASIC chassis.' },
+        { id: 'HYBRID_CRYO_6_1', label: 'Gen-7 Cryo 6-QGPU + 1-QPU Bay', blurb: 'Cryo-rated superconducting bay for Quantum ASICs + accelerators.' },
+        { id: 'HYBRID_OPTICAL_8_1', label: 'Gen-7 Optical 8-QGPU + 1-Photonic Bay', blurb: 'All-optical WDM backplane for Photonic ASICs + QGPUs.' },
       ];
     }
     return [
@@ -443,8 +455,8 @@ export function getFocusOptionsForDesign(
   if (category === 'psu') {
     return [
       { id: 'HIGH_WATTS', label: 'Max Capacity Rail (High kW)', blurb: 'Pushes maxWatts cap as high as possible.' },
-      { id: 'ULTRA_EFF', label: 'Ultra-Efficiency Stage (Lowest Loss)', blurb: 'Maximizes PSU efficiency (up to 99.4%) & quietness.' },
-      { id: 'BALANCED_RAIL', label: 'Balanced Industrial Rail', blurb: 'Solid headroom and 95%–98.5% efficiency.' },
+      { id: 'ULTRA_EFF', label: 'Ultra-Efficiency Stage (Lowest Loss)', blurb: 'Maximizes PSU efficiency (up to 99.6%) & quietness.' },
+      { id: 'BALANCED_RAIL', label: 'Balanced Industrial Rail', blurb: 'Solid headroom and 95%–98.8% efficiency.' },
     ];
   }
   if (category === 'cooling') {
@@ -452,6 +464,7 @@ export function getFocusOptionsForDesign(
       { id: 'MAX_THERMAL', label: 'Maximum -°C Heat Extraction', blurb: 'Maximum coolingPowerC for extreme 150% overclocks.' },
       { id: 'SILENT_FLOW', label: 'Acoustic-Damped Low-dBA Mode', blurb: 'Minimizes noiseDba and pump watts.' },
       { id: 'BALANCED_THERMAL', label: 'Balanced Static-Flow Curve', blurb: 'Strong cooling per watt & moderate footprint.' },
+      { id: 'CRYO_LOOP', label: 'Cryo-Rated Sub-Zero Dilution Loop', blurb: 'Cryo-rated thermal loop required for Gen-7 Quantum QPUs.' },
     ];
   }
   // OS
@@ -531,9 +544,6 @@ function qualityGradeFromRoll(roll: number): { grade: ChipQualityGrade; mult: nu
   return { grade: 'C', mult: 0.94 };
 }
 
-/**
- * Silicon nodes gate directly on hardware research tiers.
- */
 const NODE_RESEARCH: Record<ChipProcessNode, string> = {
   '7nm': 'res_asic_tapeout',
   '5nm': 'res_gen3_silicon',
@@ -730,6 +740,22 @@ const BASE_ALGO_HASHRATES: Record<MiningAlgorithm, Record<ChipProcessNode, numbe
     '1nm': 1550,
     photonic: 2450,
   },
+  KAWPOW: {
+    '7nm': 110,
+    '5nm': 185,
+    '3nm': 295,
+    '2nm': 640,
+    '1nm': 1850,
+    photonic: 6400,
+  },
+  EQUIHASH: {
+    '7nm': 460,
+    '5nm': 890,
+    '3nm': 1800,
+    '2nm': 4200,
+    '1nm': 8800,
+    photonic: 22000,
+  },
   POST: {
     '7nm': 340,
     '5nm': 520,
@@ -737,6 +763,14 @@ const BASE_ALGO_HASHRATES: Record<MiningAlgorithm, Record<ChipProcessNode, numbe
     '2nm': 1400,
     '1nm': 2750,
     photonic: 5400,
+  },
+  QHASH: {
+    '7nm': 12,
+    '5nm': 24,
+    '3nm': 48,
+    '2nm': 110,
+    '1nm': 280,
+    photonic: 6800,
   },
 };
 
@@ -808,10 +842,17 @@ export function buildDefaultFab(prev?: Partial<FabState>): FabState {
         ? Math.max(0, Math.min(3, Math.floor(prev.linesCount)))
         : 0,
     blueprints: Array.isArray(prev?.blueprints) ? prev.blueprints : [],
+    draftBlueprints: Array.isArray(prev?.draftBlueprints) ? prev.draftBlueprints : [],
     productionQueue: Array.isArray(prev?.productionQueue) ? prev.productionQueue : [],
     inventory: Array.isArray(prev?.inventory) ? prev.inventory : [],
+    batchRecords: Array.isArray(prev?.batchRecords) ? prev.batchRecords : [],
+    serialRegistry: Array.isArray(prev?.serialRegistry) ? prev.serialRegistry : [],
+    manufacturingHistory: Array.isArray(prev?.manufacturingHistory) ? prev.manufacturingHistory : [],
+    nextBatchSeq: typeof prev?.nextBatchSeq === 'number' ? prev.nextBatchSeq : 1,
+    nextSerialSeq: typeof prev?.nextSerialSeq === 'number' ? prev.nextSerialSeq : 1,
     totalUnitsManufactured:
       typeof prev?.totalUnitsManufactured === 'number' ? prev.totalUnitsManufactured : 0,
+    totalUnitsScrapped: typeof prev?.totalUnitsScrapped === 'number' ? prev.totalUnitsScrapped : 0,
     totalExportRevenueUsd:
       typeof prev?.totalExportRevenueUsd === 'number' ? prev.totalExportRevenueUsd : 0,
   };
@@ -848,6 +889,22 @@ export function isFabUnlocked(
     };
   }
   return { ok: true };
+}
+
+function appendFabHistory(
+  history: ManufacturingHistoryEntry[] | undefined,
+  step: number,
+  kind: ManufacturingHistoryEntry['kind'],
+  summary: string
+): ManufacturingHistoryEntry[] {
+  const entry: ManufacturingHistoryEntry = {
+    id: `fabhist_${step}_${kind}_${Math.random().toString(36).slice(2, 6)}`,
+    step,
+    stepLabel: formatStepLabel(step),
+    kind,
+    summary,
+  };
+  return [entry, ...(history ?? [])].slice(0, 120);
 }
 
 export function buildFabLine(state: GameState): {
@@ -916,13 +973,135 @@ export function buildFabLine(state: GameState): {
   };
 }
 
+export function getDefaultComponentParams(
+  category: PartCategory,
+  processNode: ChipProcessNode,
+  branch?: TechBranch
+): FabComponentParams {
+  const effectiveBranch: TechBranch =
+    branch ?? (processNode === 'photonic' ? 'PHOTONIC' : 'SILICON');
+  if (category === 'compute') {
+    if (effectiveBranch === 'QUANTUM') {
+      return {
+        branch: 'QUANTUM',
+        layoutTopology: 'CHIPLET_QUAD',
+        qubitTopology: 'SURFACE_CODE',
+        logicalQubits: 512,
+        coherenceTimeUs: 450,
+        cryoTargetMk: 20,
+        voltageBiasPct: 100,
+        clockBiasPct: 100,
+      };
+    }
+    if (effectiveBranch === 'PHOTONIC') {
+      return {
+        branch: 'PHOTONIC',
+        layoutTopology: 'MESH_TENSOR',
+        waveguideLanes: 24,
+        laserWavelengthNm: 1550,
+        wdmChannels: 16,
+        opticalSwitchMode: 'MZ_INTERFERO',
+        voltageBiasPct: 100,
+        clockBiasPct: 100,
+      };
+    }
+    return {
+      branch: 'SILICON',
+      layoutTopology: 'MONOLITHIC',
+      memoryBusWidth: 256,
+      sramCacheMb: 64,
+      voltageBiasPct: 100,
+      clockBiasPct: 100,
+    };
+  }
+  if (category === 'gpu') {
+    return {
+      branch: effectiveBranch,
+      gpuComputeArch: effectiveBranch === 'PHOTONIC' ? 'OPTICAL_SHADER' : 'SIMD_DENSE',
+      vramType: effectiveBranch === 'PHOTONIC' ? 'OPTICAL_MEM' : processNode === '1nm' || processNode === '2nm' ? 'HBM3' : 'GDDR6X',
+      vramGb: processNode === 'photonic' ? 96 : processNode === '1nm' ? 48 : processNode === '2nm' ? 32 : 16,
+      workloadBias: effectiveBranch !== 'SILICON' ? 'AI_CONVERGED' : 'ETHASH_DAG',
+      voltageBiasPct: 100,
+      clockBiasPct: 100,
+    };
+  }
+  if (category === 'chassis') {
+    return {
+      branch: effectiveBranch,
+      hybridAsicSupport: effectiveBranch !== 'SILICON',
+      isCryoRated: effectiveBranch === 'QUANTUM',
+      isOpticalBackplane: effectiveBranch === 'PHOTONIC',
+    };
+  }
+  if (category === 'storage') {
+    return { branch: effectiveBranch, eccDepth: 2 };
+  }
+  if (category === 'psu') {
+    return { branch: effectiveBranch, railPhases: 12 };
+  }
+  if (category === 'cooling') {
+    return {
+      branch: effectiveBranch,
+      flowGeometry: effectiveBranch === 'QUANTUM' ? 'CRYO_CASCADE' : 'JET_IMPINGEMENT',
+      isCryoRated: effectiveBranch === 'QUANTUM',
+    };
+  }
+  return { branch: effectiveBranch, schedulerTickHz: 1000 };
+}
+
+export function computeManufacturabilityPct(
+  processNode: ChipProcessNode,
+  partCategory: PartCategory,
+  eng: FabEngineeringAllocation,
+  params: FabComponentParams,
+  researcherSkill: number,
+  subFeature: FabSubFeatureId
+): number {
+  const nodeBase: Record<ChipProcessNode, number> = {
+    '7nm': 92,
+    '5nm': 89,
+    '3nm': 85,
+    '2nm': 81,
+    '1nm': 77,
+    photonic: 74,
+  };
+  let score = nodeBase[processNode] ?? 84;
+  score += Math.max(0, eng.reliability - 2) * 3.5;
+  score -= Math.max(0, eng.density - 3) * 2.5;
+  if (subFeature === 'ECC_SHIELD') score += 4;
+  if (subFeature === 'REDUNDANT_VRM') score += 3;
+  score += Math.max(0, researcherSkill - 1) * 2.2;
+
+  if (params.layoutTopology === 'CHIPLET_QUAD') score -= 4;
+  if (params.layoutTopology === 'MESH_TENSOR') score -= 7;
+  if ((params.clockBiasPct ?? 100) > 105) score -= ((params.clockBiasPct ?? 100) - 105) * 0.65;
+  if ((params.voltageBiasPct ?? 100) > 105) score -= ((params.voltageBiasPct ?? 100) - 105) * 0.55;
+
+  if (partCategory === 'compute' && params.branch === 'QUANTUM') {
+    const q = params.logicalQubits ?? 512;
+    if (q > 1024) score -= 7;
+    if (params.qubitTopology === 'TOPOLOGICAL_BRAID') score -= 5;
+  }
+  if (partCategory === 'compute' && params.branch === 'PHOTONIC') {
+    const w = params.wdmChannels ?? 16;
+    if (w > 24) score -= 5;
+  }
+  if (partCategory === 'gpu' && (params.vramGb ?? 16) >= 64) {
+    score -= 4;
+  }
+
+  return Math.round(Math.max(38, Math.min(99, score)));
+}
+
 export interface CustomBlueprintDesignInput {
   name: string;
   partCategory: PartCategory;
   architecture: FabArchitectureId;
   processNode: ChipProcessNode;
   focus: string;
+  branch?: TechBranch;
   engineering?: FabEngineeringAllocation;
+  componentParams?: FabComponentParams;
   subFeature?: FabSubFeatureId;
   profile?: DesignProfile;
 }
@@ -935,7 +1114,10 @@ export interface CustomBlueprintPreviewResult {
   designProfile: DesignProfile;
   qualityGrade: ChipQualityGrade;
   qualityMult: number;
+  manufacturabilityPct: number;
+  branch: TechBranch;
   engineering: FabEngineeringAllocation;
+  componentParams: FabComponentParams;
   subFeature: FabSubFeatureId;
   spec: CustomComponentSpec;
   algo: MiningAlgorithm;
@@ -965,6 +1147,23 @@ export function previewCustomComponentDesign(
     reliability: clampPt(rawEng.reliability),
   };
 
+  const inferredBranch: TechBranch =
+    input.branch ??
+    input.componentParams?.branch ??
+    (processNode === 'photonic'
+      ? focus.toUpperCase() === 'QHASH' &&
+        state.unlockedResearch.includes('res_gen7_quantum_coherence') &&
+        !state.unlockedResearch.includes('res_gen7_photonic_waveguides')
+        ? 'QUANTUM'
+        : 'PHOTONIC'
+      : 'SILICON');
+
+  const params: FabComponentParams = {
+    ...getDefaultComponentParams(partCategory, processNode, inferredBranch),
+    ...(input.componentParams ?? {}),
+    branch: inferredBranch,
+  };
+
   const failRes = (reason: string): CustomBlueprintPreviewResult => ({
     ok: false,
     reason,
@@ -973,13 +1172,17 @@ export function previewCustomComponentDesign(
     designProfile: profile,
     qualityGrade: 'B',
     qualityMult: 1,
+    manufacturabilityPct: 0,
+    branch: inferredBranch,
     engineering: eng,
+    componentParams: params,
     subFeature: subSpec.id,
     spec: {
       blueprintId: blueprintIdPreview,
       partCategory,
       architecture,
       subFeature: subSpec.id,
+      branch: inferredBranch,
       name: input.name,
       processNode,
       generation: NODE_GENERATION[processNode],
@@ -1009,6 +1212,33 @@ export function previewCustomComponentDesign(
   if (nodeResearchId && !state.devUnlockAll && !state.unlockedResearch.includes(nodeResearchId)) {
     const node = RESEARCH_NODES.find((n) => n.id === nodeResearchId);
     return failRes(`${processNode} process requires R&D "${node?.name ?? nodeResearchId}".`);
+  }
+
+  // Distinct Gen-7 branch R&D gates when targeting explicit Quantum vs Photonic sub-parameters
+  if (
+    processNode === 'photonic' &&
+    inferredBranch === 'QUANTUM' &&
+    !state.devUnlockAll &&
+    !state.unlockedResearch.includes('res_gen7_quantum_coherence') &&
+    !state.unlockedResearch.includes('res_gen7_quantum_photonic')
+  ) {
+    return failRes('Quantum branch requires R&D "Quantum Coherence & Surface-Code QPU".');
+  }
+  if (
+    inferredBranch === 'QUANTUM' &&
+    params.qubitTopology === 'TOPOLOGICAL_BRAID' &&
+    !state.devUnlockAll &&
+    !state.unlockedResearch.includes('res_gen7_quantum_coherence')
+  ) {
+    return failRes('Topological Braid Qubit topology requires R&D "Quantum Coherence & Surface-Code QPU".');
+  }
+  if (
+    inferredBranch === 'PHOTONIC' &&
+    (params.wdmChannels ?? 16) > 20 &&
+    !state.devUnlockAll &&
+    !state.unlockedResearch.includes('res_gen7_photonic_waveguides')
+  ) {
+    return failRes('Dense WDM (>20 channels) requires R&D "Silicon-Photonic WDM Waveguides".');
   }
 
   const archSpec = FAB_ARCHITECTURES.find(
@@ -1045,24 +1275,43 @@ export function previewCustomComponentDesign(
   const skillBonusMult = 1 + Math.max(0, maxResearcherSkill - 1) * 0.05;
   const yieldCut = state.unlockedResearch.includes('res_wafer_lithography') ? 0.94 : 1.0;
 
-  // Center engineering sliders around baseline 2 so reference shortcut designs stay balanced
   const densDelta = eng.density - 2;
   const effDelta = eng.efficiency - 2;
   const thermDelta = eng.thermals - 2;
   const relDelta = eng.reliability - 2;
 
-  const densOutputMult = 1 + densDelta * 0.065;
-  const effWattMult = Math.max(0.72, 1 - effDelta * 0.055);
-  const thermHeatMult = Math.max(0.7, 1 - thermDelta * 0.07);
+  const clockRatio = Math.max(0.85, Math.min(1.25, (params.clockBiasPct ?? 100) / 100));
+  const voltRatio = Math.max(0.85, Math.min(1.2, (params.voltageBiasPct ?? 100) / 100));
+  const layoutMult =
+    params.layoutTopology === 'MESH_TENSOR'
+      ? 1.15
+      : params.layoutTopology === 'CHIPLET_QUAD'
+      ? 1.09
+      : 1.0;
+  const layoutCostMult =
+    params.layoutTopology === 'MESH_TENSOR'
+      ? 1.12
+      : params.layoutTopology === 'CHIPLET_QUAD'
+      ? 1.06
+      : 1.0;
+
+  const densOutputMult = (1 + densDelta * 0.065) * layoutMult * (0.9 + clockRatio * 0.1);
+  const effWattMult = Math.max(
+    0.7,
+    (1 - effDelta * 0.055) * Math.pow(voltRatio, 1.45) * (0.92 + clockRatio * 0.08)
+  );
+  const thermHeatMult = Math.max(
+    0.68,
+    (1 - thermDelta * 0.07) * Math.pow(voltRatio, 1.3)
+  );
   const thermNoiseDelta = -thermDelta * 2 + subSpec.noiseDelta;
   const engCostMult = Math.max(
     0.88,
-    1 + densDelta * 0.045 + effDelta * 0.04 + thermDelta * 0.03 + relDelta * 0.04
+    (1 + densDelta * 0.045 + effDelta * 0.04 + thermDelta * 0.03 + relDelta * 0.04) * layoutCostMult
   );
 
-  // First-silicon quality: reliability allocation & ECC shield narrow floor upward
   const rawRoll = createSeededRng(
-    `${state.runSeed}|proto|${cleanName}|${partCategory}|${architecture}|${focus}|${processNode}|${profile}|${subSpec.id}`
+    `${state.runSeed}|proto|${cleanName}|${partCategory}|${architecture}|${focus}|${processNode}|${profile}|${subSpec.id}|${inferredBranch}`
   )();
   const floorLift = Math.max(0, relDelta * 0.05 + subSpec.qualityFloorBoost);
   const boostedRoll = Math.min(0.999, rawRoll + floorLift * (1 - rawRoll));
@@ -1072,9 +1321,25 @@ export function previewCustomComponentDesign(
   );
 
   const wearResistance = Number(
-    Math.max(0, Math.min(0.36, Math.max(0, relDelta) * 0.05 + subSpec.wearResistance)).toFixed(2)
+    Math.max(
+      0,
+      Math.min(
+        0.4,
+        Math.max(0, relDelta) * 0.05 +
+          subSpec.wearResistance +
+          ((params.eccDepth ?? 1) - 1) * 0.02
+      )
+    ).toFixed(2)
   );
   const wholesalePrestigeMult = 1 + Math.max(0, relDelta) * 0.04;
+  const manufacturabilityPct = computeManufacturabilityPct(
+    processNode,
+    partCategory,
+    eng,
+    params,
+    maxResearcherSkill,
+    subSpec.id
+  );
 
   const nodeMult =
     processNode === '7nm'
@@ -1097,7 +1362,7 @@ export function previewCustomComponentDesign(
       (eng.reliability >= 4 ? 1 : 0)
   );
 
-  let nreBase =
+  const nreBase =
     partCategory === 'compute'
       ? spec.nreUsd
       : partCategory === 'gpu'
@@ -1111,7 +1376,7 @@ export function previewCustomComponentDesign(
       : partCategory === 'cooling'
       ? Math.round(spec.nreUsd * 0.6)
       : Math.round(spec.nreUsd * 0.45);
-  const nreCostUsd = Math.round(nreBase + subSpec.nreAddUsd);
+  const nreCostUsd = Math.round((nreBase + subSpec.nreAddUsd) * layoutCostMult);
 
   let baseUnitUsd =
     partCategory === 'compute'
@@ -1135,9 +1400,11 @@ export function previewCustomComponentDesign(
 
   let customSpec: CustomComponentSpec = {
     blueprintId: blueprintIdPreview,
+    revisionNumber: 1,
     partCategory,
     architecture,
     subFeature: subSpec.id,
+    branch: inferredBranch,
     name: cleanName,
     processNode,
     generation,
@@ -1146,10 +1413,22 @@ export function previewCustomComponentDesign(
     qualityGrade,
     qualityRoll: qualityMult,
     wearResistance,
+    manufacturabilityPct,
+    componentParams: params,
   };
 
   if (partCategory === 'compute') {
-    algo = (['SHA256', 'SCRYPT', 'RANDOMX', 'ETHASH', 'POST'].includes(focus.toUpperCase())
+    const validAlgos: MiningAlgorithm[] = [
+      'SHA256',
+      'SCRYPT',
+      'RANDOMX',
+      'ETHASH',
+      'KAWPOW',
+      'EQUIHASH',
+      'POST',
+      'QHASH',
+    ];
+    algo = (validAlgos.includes(focus.toUpperCase() as MiningAlgorithm)
       ? focus.toUpperCase()
       : 'SHA256') as MiningAlgorithm;
 
@@ -1161,7 +1440,39 @@ export function previewCustomComponentDesign(
         : 0.55;
     const archWattMult =
       architecture === 'ASIC_BLADE' ? 1.0 : architecture === 'HYBRID_FPGA' ? 0.42 : 0.22;
-    const isPowerAsic = (algo === 'SHA256' || algo === 'SCRYPT') && architecture === 'ASIC_BLADE';
+    const isPowerAsic =
+      (algo === 'SHA256' || algo === 'SCRYPT' || algo === 'KAWPOW' || algo === 'QHASH') &&
+      architecture === 'ASIC_BLADE';
+
+    let branchMult = 1.0;
+    let branchWattMult = 1.0;
+    let branchHeatMult = 1.0;
+    if (inferredBranch === 'QUANTUM') {
+      const qubitFactor = 0.85 + Math.min(2048, params.logicalQubits ?? 512) / 2560;
+      const topoMult =
+        params.qubitTopology === 'TOPOLOGICAL_BRAID'
+          ? 1.24
+          : params.qubitTopology === 'ANNEAL_LATTICE'
+          ? 1.12
+          : 1.0;
+      branchMult = qubitFactor * topoMult * (algo === 'QHASH' || algo === 'EQUIHASH' ? 1.25 : 1.0);
+      branchWattMult = 1.06;
+      branchHeatMult = 1.08;
+    } else if (inferredBranch === 'PHOTONIC') {
+      const wdmFactor = 0.88 + Math.min(32, params.wdmChannels ?? 16) / 64;
+      const laneFactor = 0.92 + Math.min(64, params.waveguideLanes ?? 24) / 160;
+      branchMult = wdmFactor * laneFactor * (algo === 'SHA256' || algo === 'KAWPOW' ? 1.14 : 1.0);
+      branchWattMult = 0.82;
+      branchHeatMult = 0.78;
+    }
+
+    const busMult =
+      (algo === 'ETHASH' || algo === 'KAWPOW' || algo === 'EQUIHASH') &&
+      (params.memoryBusWidth ?? 256) >= 512
+        ? 1.16
+        : 1.0;
+    const sramMult =
+      (algo === 'RANDOMX' || algo === 'QHASH') && (params.sramCacheMb ?? 64) >= 128 ? 1.18 : 1.0;
 
     const rawHash =
       BASE_ALGO_HASHRATES[algo][processNode] *
@@ -1170,7 +1481,10 @@ export function previewCustomComponentDesign(
       profileSpec.hashMult *
       densOutputMult *
       subSpec.perfMult *
-      qualityMult;
+      qualityMult *
+      branchMult *
+      busMult *
+      sramMult;
     primaryHashRate = algo === 'RANDOMX' ? Number(rawHash.toFixed(4)) : Math.round(rawHash);
 
     const baseW = isPowerAsic ? spec.asicWatts : spec.compactWatts;
@@ -1182,18 +1496,16 @@ export function previewCustomComponentDesign(
           profileSpec.wattMult *
           effWattMult *
           (1 + Math.max(0, densDelta) * 0.06) *
-          subSpec.wattMult
+          subSpec.wattMult *
+          branchWattMult
       )
     );
     const baseH = isPowerAsic ? spec.asicHeatC : spec.compactHeatC;
     primaryHeatC = Math.max(
       14,
-      Math.round(baseH * profileSpec.heatMult * thermHeatMult * subSpec.heatMult)
+      Math.round(baseH * profileSpec.heatMult * thermHeatMult * subSpec.heatMult * branchHeatMult)
     );
-    const noise = Math.max(
-      8,
-      Math.round((isPowerAsic ? 32 : 16) + thermNoiseDelta)
-    );
+    const noise = Math.max(8, Math.round((isPowerAsic ? 32 : 16) + thermNoiseDelta));
 
     const hashrates: Partial<Record<MiningAlgorithm, number>> = { [algo]: primaryHashRate };
     if (architecture === 'HYBRID_FPGA') {
@@ -1215,13 +1527,24 @@ export function previewCustomComponentDesign(
           : architecture === 'HYBRID_FPGA'
           ? 'FPGA'
           : 'CPU',
+      requiresCryoCooling: inferredBranch === 'QUANTUM',
+      requiresOpticalChassis: inferredBranch === 'PHOTONIC',
       hashrates,
       watts: primaryWatts,
       heatC: primaryHeatC,
       noiseDba: noise,
     };
   } else if (partCategory === 'gpu') {
-    algo = (['ETHASH', 'SCRYPT', 'RANDOMX', 'SHA256'].includes(focus.toUpperCase())
+    const validGpuAlgos: MiningAlgorithm[] = [
+      'ETHASH',
+      'KAWPOW',
+      'EQUIHASH',
+      'SCRYPT',
+      'RANDOMX',
+      'SHA256',
+      'QHASH',
+    ];
+    algo = (validGpuAlgos.includes(focus.toUpperCase() as MiningAlgorithm)
       ? focus.toUpperCase()
       : 'ETHASH') as MiningAlgorithm;
     const archHashMult =
@@ -1231,24 +1554,41 @@ export function previewCustomComponentDesign(
     if (architecture === 'HBM_MONSTER') baseUnitUsd = Math.round(baseUnitUsd * 1.22);
     if (architecture === 'LOW_VOLT_CARD') baseUnitUsd = Math.round(baseUnitUsd * 0.94);
 
+    const vramMult = params.vramType === 'OPTICAL_MEM' ? 1.18 : params.vramType === 'HBM3' ? 1.12 : 1.0;
+    const gpuArchBoost =
+      params.gpuComputeArch === 'OPTICAL_SHADER'
+        ? 1.16
+        : params.gpuComputeArch === 'TENSOR_MATRIX'
+        ? 1.1
+        : 1.0;
+    const vramGb = Math.max(8, Math.min(128, params.vramGb ?? (processNode === 'photonic' ? 96 : 24)));
+
     const ethBase =
       spec.gpuEthash *
       archHashMult *
+      vramMult *
+      gpuArchBoost *
       skillBonusMult *
       profileSpec.hashMult *
       densOutputMult *
       subSpec.perfMult *
       qualityMult;
     const ethRate = Math.round(ethBase);
+    const kawpowRate = Math.round(ethRate * (params.workloadBias === 'KAWPOW_ALU' ? 0.74 : 0.56));
+    const equihashRate = Math.round(ethRate * (params.workloadBias === 'EQUIHASH_MEM' ? 13.5 : 9.8));
     const scryptRate = Number((ethRate * 0.017).toFixed(2));
     const rxRate = Number((ethRate * 0.00003).toFixed(4));
     const shaRate = Math.round(ethRate * 1.6);
+    const qhashRate = Math.round(ethRate * (inferredBranch !== 'SILICON' ? 0.95 : 0.14));
 
     const hashrates: Partial<Record<MiningAlgorithm, number>> = {
-      ETHASH: algo === 'ETHASH' ? ethRate : Math.round(ethRate * 0.7),
+      ETHASH: algo === 'ETHASH' ? ethRate : Math.round(ethRate * 0.75),
+      KAWPOW: algo === 'KAWPOW' ? Math.round(kawpowRate * 1.25) : kawpowRate,
+      EQUIHASH: algo === 'EQUIHASH' ? Math.round(equihashRate * 1.25) : equihashRate,
       SCRYPT: algo === 'SCRYPT' ? Number((scryptRate * 1.45).toFixed(2)) : scryptRate,
       RANDOMX: algo === 'RANDOMX' ? Number((rxRate * 1.45).toFixed(4)) : rxRate,
       ...(algo === 'SHA256' ? { SHA256: shaRate } : {}),
+      ...(algo === 'QHASH' || inferredBranch !== 'SILICON' ? { QHASH: qhashRate } : {}),
     };
     primaryHashRate = hashrates[algo] ?? ethRate;
     primaryWatts = Math.max(
@@ -1266,11 +1606,18 @@ export function previewCustomComponentDesign(
       18,
       Math.round(spec.gpuHeatC * profileSpec.heatMult * thermHeatMult * subSpec.heatMult)
     );
-    const noise = Math.max(8, Math.round((architecture === 'LOW_VOLT_CARD' ? 10 : 15) + thermNoiseDelta));
+    const noise = Math.max(
+      8,
+      Math.round((architecture === 'LOW_VOLT_CARD' ? 10 : 15) + thermNoiseDelta)
+    );
 
     customSpec = {
       ...customSpec,
       algo,
+      vramGb,
+      requiresCryoCooling: inferredBranch === 'QUANTUM',
+      requiresOpticalChassis:
+        inferredBranch === 'PHOTONIC' || params.gpuComputeArch === 'OPTICAL_SHADER',
       hashrates,
       watts: primaryWatts,
       heatC: primaryHeatC,
@@ -1285,26 +1632,33 @@ export function previewCustomComponentDesign(
         ? focus === 'HYBRID_10_1'
           ? 10
           : 12
-        : focus === 'GPU_6'
+        : focus === 'HYBRID_CRYO_6_1' || focus === 'GPU_6'
         ? 6
         : isAsicRack
         ? 0
         : 8;
     const bonusSlot = !isAsicRack && eng.density >= 4 ? 1 : 0;
     const maxGpus = isAsicRack ? 0 : Math.min(14, baseGpuSlots + bonusSlot);
-    const maxStorage = isConverged ? 12 : Math.max(6, maxGpus + 2);
+    const maxStorage = isConverged ? 14 : Math.max(6, maxGpus + 2);
     const baseWatts = Math.max(
       25,
-      Math.round((isConverged ? 85 : isAsicRack ? 70 : 45) * effWattMult * profileSpec.wattMult)
+      Math.round((isConverged ? 90 : isAsicRack ? 70 : 45) * effWattMult * profileSpec.wattMult)
     );
+    const isCryoRated =
+      Boolean(params.isCryoRated) ||
+      focus === 'HYBRID_CRYO_6_1' ||
+      inferredBranch === 'QUANTUM';
+    const isOpticalBackplane =
+      Boolean(params.isOpticalBackplane) ||
+      focus === 'HYBRID_OPTICAL_8_1' ||
+      inferredBranch === 'PHOTONIC';
     const coolingBonus = Math.round(
-      (22 + nodeMult * 12 + (focus === 'HYDRO_BAY' ? 16 : 0)) *
+      (22 + nodeMult * 12 + (focus === 'HYDRO_BAY' || isCryoRated ? 18 : 0)) *
         (1 + thermDelta * 0.08) *
         (subSpec.id === 'GRAPHENE_TIM' ? 1.18 : 1)
     );
     const noiseMod = Math.round(
-      (architecture === 'SEALED_BAFFLE' ? -14 : isConverged ? -5 : 2) +
-        thermNoiseDelta * 0.7
+      (architecture === 'SEALED_BAFFLE' ? -14 : isConverged ? -6 : 2) + thermNoiseDelta * 0.7
     );
     if (isConverged) baseUnitUsd = Math.round(baseUnitUsd * 1.45);
     if (architecture === 'SEALED_BAFFLE') baseUnitUsd = Math.round(baseUnitUsd * 1.15);
@@ -1312,18 +1666,27 @@ export function previewCustomComponentDesign(
     primaryHashRate = maxGpus > 0 ? maxGpus : coolingBonus;
     primaryWatts = baseWatts;
     primaryHeatC = -coolingBonus;
+    const allowedBranches: TechBranch[] = ['SILICON'];
+    if (isCryoRated || inferredBranch === 'QUANTUM') allowedBranches.push('QUANTUM');
+    if (isOpticalBackplane || inferredBranch === 'PHOTONIC') allowedBranches.push('PHOTONIC');
+
     customSpec = {
       ...customSpec,
       maxGpus,
       maxStorage,
       isAsicRack,
       maxAsics,
+      supportsHybridAsicGpu: isConverged && maxAsics > 0 && maxGpus > 0,
+      allowedBranches,
+      isCryoRated,
+      isOpticalBackplane,
       baseWatts,
       coolingBonus,
       noiseModifier: noiseMod,
     };
   } else if (partCategory === 'storage') {
     algo = 'POST';
+    const eccBoost = ((params.eccDepth ?? 2) - 1) * 0.015;
     const ramBase = Math.round(32 * nodeMult * (focus === 'BANDWIDTH_EFF' ? 2 : 1));
     const tbBase =
       focus === 'CHIA_VAULT'
@@ -1335,14 +1698,14 @@ export function previewCustomComponentDesign(
       (tbBase * densOutputMult * profileSpec.hashMult * subSpec.perfMult * qualityMult).toFixed(1)
     );
     const effBase =
-      focus === 'BANDWIDTH_EFF'
+      (focus === 'BANDWIDTH_EFF'
         ? 0.11 + nodeMult * 0.042
         : focus === 'BALANCED_ARRAY'
         ? 0.08 + nodeMult * 0.025
-        : 0.06 + nodeMult * 0.015;
+        : 0.06 + nodeMult * 0.015) + eccBoost;
     const efficiencyBonus = Number(
       Math.min(
-        0.28,
+        0.32,
         effBase * (1 + Math.max(0, effDelta) * 0.08) * (architecture === 'HIGH_BW_DDR' ? 1.18 : 1)
       ).toFixed(3)
     );
@@ -1369,12 +1732,15 @@ export function previewCustomComponentDesign(
   } else if (partCategory === 'psu') {
     const focusMult =
       focus === 'HIGH_WATTS' ? 1.28 : focus === 'ULTRA_EFF' ? 0.85 : 1.05;
-    const archWattsMult = architecture === 'INDUSTRIAL_RAIL' ? 1.3 : architecture === 'SILENT_PASSIVE' ? 0.72 : 1.0;
+    const archWattsMult =
+      architecture === 'INDUSTRIAL_RAIL' ? 1.3 : architecture === 'SILENT_PASSIVE' ? 0.72 : 1.0;
+    const phaseBoost = 1 + Math.max(0, (params.railPhases ?? 12) - 12) * 0.012;
     const maxWatts = Math.round(
       3400 *
         nodeMult *
         focusMult *
         archWattsMult *
+        phaseBoost *
         densOutputMult *
         profileSpec.hashMult *
         subSpec.perfMult *
@@ -1384,7 +1750,7 @@ export function previewCustomComponentDesign(
       architecture === 'GAN_HIGH_EFF' ? 0.96 : architecture === 'SILENT_PASSIVE' ? 0.945 : 0.94;
     const efficiency = Number(
       Math.min(
-        0.995,
+        0.996,
         baseEff +
           nodeMult * 0.009 +
           effDelta * 0.004 +
@@ -1407,10 +1773,16 @@ export function previewCustomComponentDesign(
       noiseDba: noise,
     };
   } else if (partCategory === 'cooling') {
-    const isImmersion = architecture === 'CRYO_IMMERSION';
+    const isImmersion = architecture === 'CRYO_IMMERSION' || focus === 'CRYO_LOOP';
+    const isCryoRated =
+      Boolean(params.isCryoRated) ||
+      focus === 'CRYO_LOOP' ||
+      params.flowGeometry === 'CRYO_CASCADE' ||
+      inferredBranch === 'QUANTUM';
     const archCoolMult =
       isImmersion ? 1.45 : architecture === 'DIRECT_LIQUID' ? 1.2 : 0.95;
-    const focusCoolMult = focus === 'MAX_THERMAL' ? 1.18 : focus === 'SILENT_FLOW' ? 0.92 : 1.04;
+    const focusCoolMult =
+      focus === 'MAX_THERMAL' || focus === 'CRYO_LOOP' ? 1.2 : focus === 'SILENT_FLOW' ? 0.92 : 1.04;
     const coolingPowerC = Math.round(
       95 *
         nodeMult *
@@ -1447,33 +1819,38 @@ export function previewCustomComponentDesign(
       watts: primaryWatts,
       noiseDba: noise,
       isImmersion,
+      isCryoRated,
+      isCryoRatedCooling: isCryoRated,
     };
   } else {
     // OS kernel
-    const archHash = architecture === 'BARE_METAL_ASM' ? 1.12 : architecture === 'UNDERCLOCK_SCHED' ? 1.03 : 1.06;
+    const archHash =
+      architecture === 'BARE_METAL_ASM' ? 1.12 : architecture === 'UNDERCLOCK_SCHED' ? 1.03 : 1.06;
     const focusHash = focus === 'MAX_HASH' ? 1.08 : focus === 'ECO_GOV' ? 0.96 : 1.0;
+    const tickBoost = (params.schedulerTickHz ?? 1000) >= 2000 ? 1.03 : 1.0;
     const hashrateMultiplier = Number(
       Math.min(
-        1.48,
+        1.52,
         (1.06 + nodeMult * 0.085) *
           archHash *
           focusHash *
+          tickBoost *
           (1 + densDelta * 0.025) *
-          (profileSpec.hashMult >= 1 ? 1 + (profileSpec.hashMult - 1) * 0.5 : 1 - (1 - profileSpec.hashMult) * 0.4) *
+          (profileSpec.hashMult >= 1
+            ? 1 + (profileSpec.hashMult - 1) * 0.5
+            : 1 - (1 - profileSpec.hashMult) * 0.4) *
           Math.min(1.04, qualityMult)
       ).toFixed(3)
     );
-    const archPwr = architecture === 'UNDERCLOCK_SCHED' ? 0.88 : architecture === 'BARE_METAL_ASM' ? 0.98 : 0.93;
+    const archPwr =
+      architecture === 'UNDERCLOCK_SCHED' ? 0.88 : architecture === 'BARE_METAL_ASM' ? 0.98 : 0.93;
     const focusPwr = focus === 'ECO_GOV' ? 0.91 : focus === 'MAX_HASH' ? 1.03 : 0.96;
     const powerMultiplier = Number(
-      Math.max(
-        0.74,
-        archPwr * focusPwr * (1 - effDelta * 0.02) * profileSpec.wattMult
-      ).toFixed(3)
+      Math.max(0.72, archPwr * focusPwr * (1 - effDelta * 0.02) * profileSpec.wattMult).toFixed(3)
     );
     const stabilityBonus = Number(
       Math.min(
-        0.7,
+        0.74,
         (architecture === 'SELF_HEAL_RT' ? 0.34 : 0.16) +
           nodeMult * 0.07 +
           Math.max(0, relDelta) * 0.05 +
@@ -1520,7 +1897,10 @@ export function previewCustomComponentDesign(
     designProfile: profile,
     qualityGrade,
     qualityMult,
+    manufacturabilityPct,
+    branch: inferredBranch,
     engineering: eng,
+    componentParams: params,
     subFeature: subSpec.id,
     spec: customSpec,
     algo,
@@ -1530,26 +1910,39 @@ export function previewCustomComponentDesign(
   };
 }
 
+export function formatEngineeringPreviewReport(preview: CustomBlueprintPreviewResult): string {
+  if (!preview.ok) return `  PREVIEW ERROR: ${preview.reason}`;
+  const s = preview.spec;
+  return [
+    `  ENGINEERING PREVIEW: "${s.name}" [${s.partCategory.toUpperCase()} · ${s.processNode} · Branch: ${preview.branch}]`,
+    `    Architecture : ${s.architecture} · Profile: ${preview.designProfile} · Sub: ${preview.subFeature}`,
+    `    Spec Summary : ${formatCustomComponentSummaryLine(s)}`,
+    `    Est. Grade   : ${preview.qualityGrade} (${(preview.qualityMult * 100).toFixed(1)}%) · Manufacturability: ${preview.manufacturabilityPct}%`,
+    `    Tooling NRE  : ${formatUsd(preview.nreCostUsd)} · Unit Cost: ${formatUsd(s.unitCostUsd)} · Wholesale: ${formatUsd(s.wholesaleValueUsd)} · Wafer Steps: ${preview.waferSteps}`,
+  ].join('\n');
+}
+
 export function formatCustomComponentSummaryLine(spec: CustomComponentSpec): string {
+  const branchTag = spec.branch && spec.branch !== 'SILICON' ? `[${spec.branch}] ` : '';
   switch (spec.partCategory) {
     case 'compute': {
       const algo = spec.algo ?? 'SHA256';
       const h = spec.hashrates?.[algo] ?? 0;
-      return `${spec.computeKind ?? 'ASIC'} ${algo} @ ${formatHashrate(h, algo)}, ${spec.watts ?? 0}W, ${spec.heatC ?? 0}°C`;
+      return `${branchTag}${spec.computeKind ?? 'ASIC'} ${algo} @ ${formatHashrate(h, algo)}, ${spec.watts ?? 0}W, ${spec.heatC ?? 0}°C`;
     }
     case 'gpu': {
       const algo = spec.algo ?? 'ETHASH';
       const h = spec.hashrates?.[algo] ?? 0;
-      return `GPU ${algo} @ ${formatHashrate(h, algo)}, ${spec.watts ?? 0}W, ${spec.noiseDba ?? 14}dBA`;
+      return `${branchTag}GPU (${spec.vramGb ?? 16}GB) ${algo} @ ${formatHashrate(h, algo)}, ${spec.watts ?? 0}W, ${spec.noiseDba ?? 14}dBA`;
     }
     case 'chassis':
-      return `${spec.isAsicRack ? 'ASIC Rack' : `${spec.maxGpus ?? 8} GPU`} · -${spec.coolingBonus ?? 0}°C · ${spec.maxAsics ? 'ASIC-Ready' : 'GPU-Only'}`;
+      return `${branchTag}${spec.supportsHybridAsicGpu ? `Hybrid ${spec.maxGpus ?? 6}GPU+1ASIC` : spec.isAsicRack ? 'ASIC Rack' : `${spec.maxGpus ?? 8} GPU`} · -${spec.coolingBonus ?? 0}°C${spec.isCryoRated ? ' · CRYO' : ''}${spec.isOpticalBackplane ? ' · OPTICAL' : ''}`;
     case 'storage':
       return `${spec.storageTb ?? 0}TB · ${spec.ramGb ?? 0}GB RAM · +${Math.round((spec.efficiencyBonus ?? 0) * 100)}% eff`;
     case 'psu':
       return `${spec.maxWatts ?? 0}W cap · ${((spec.efficiency ?? 0.95) * 100).toFixed(1)}% eff · ${spec.noiseDba ?? 8}dBA`;
     case 'cooling':
-      return `-${spec.coolingPowerC ?? 0}°C · ${spec.watts ?? 0}W · ${spec.isImmersion ? 'Immersion' : `${spec.noiseDba ?? 10}dBA`}`;
+      return `${branchTag}-${spec.coolingPowerC ?? 0}°C · ${spec.watts ?? 0}W · ${spec.isCryoRated ? 'Cryo-Rated' : spec.isImmersion ? 'Immersion' : `${spec.noiseDba ?? 10}dBA`}`;
     case 'os':
       return `x${(spec.hashrateMultiplier ?? 1).toFixed(2)} hash · x${(spec.powerMultiplier ?? 1).toFixed(2)} pwr · +${Math.round((spec.stabilityBonus ?? 0) * 100)}% stab`;
   }
@@ -1581,15 +1974,30 @@ export function designCustomComponentBlueprint(
     };
   }
 
+  const revEntry: BlueprintRevisionEntry = {
+    revisionNumber: 1,
+    step: state.stepCount,
+    summary: `Initial tape-out (${input.processNode}, ${preview.branch}, ${preview.designProfile})`,
+    hashRate: preview.primaryHashRate,
+    watts: preview.primaryWatts,
+    heatC: preview.primaryHeatC,
+    manufacturabilityPct: preview.manufacturabilityPct,
+  };
+
   const bp: CustomChipBlueprint = {
     id: bpId,
     name: cleanName,
     partCategory: input.partCategory,
     architecture: input.architecture,
     subFeature: preview.subFeature,
+    branch: preview.branch,
     engineering: preview.engineering,
+    componentParams: preview.componentParams,
     customSpec: preview.spec,
     nreCostUsd: preview.nreCostUsd,
+    manufacturabilityPct: preview.manufacturabilityPct,
+    revisionNumber: 1,
+    revisionHistory: [revEntry],
     algo: preview.algo,
     processNode: input.processNode,
     unitCostUsd: preview.spec.unitCostUsd,
@@ -1613,24 +2021,402 @@ export function designCustomComponentBlueprint(
     description: `Tape-out ${input.partCategory} "${cleanName}" (${input.processNode})`,
   };
 
+  const nextHistory = appendFabHistory(
+    fab.manufacturingHistory,
+    state.stepCount,
+    'TAPEOUT',
+    `Taped out ${cleanName} rev 1 (${input.partCategory.toUpperCase()} · ${input.processNode} · ${preview.branch} · Mfg ${preview.manufacturabilityPct}%)`
+  );
+
   const profileSpec = DESIGN_PROFILE_SPECS[preview.designProfile];
   return {
     ok: true,
     nextState: {
       ...state,
       cash: state.cash - preview.nreCostUsd,
-      fab: { ...fab, blueprints: [...fab.blueprints, bp] },
+      fab: {
+        ...fab,
+        blueprints: [...fab.blueprints, bp],
+        manufacturingHistory: nextHistory,
+      },
       currentCycleStats: {
         ...state.currentCycleStats,
         otherSpendUsd: state.currentCycleStats.otherSpendUsd + preview.nreCostUsd,
       },
       transactions: [tx, ...(state.transactions ?? [])].slice(0, 200),
     },
-    summary: `Taped out ${input.partCategory.toUpperCase()} "${cleanName}" [${profileSpec.label} · Grade ${preview.qualityGrade}] (${formatCustomComponentSummaryLine(
+    summary: `Taped out ${input.partCategory.toUpperCase()} "${cleanName}" rev 1 [${profileSpec.label} · Grade ${preview.qualityGrade} · Mfg ${preview.manufacturabilityPct}%] (${formatCustomComponentSummaryLine(
       preview.spec
-    )}) for ${formatUsd(preview.nreCostUsd)} NRE. Unit cost: ${formatUsd(
+    )}) for ${formatUsd(preview.nreCostUsd)} NRE. Unit: ${formatUsd(
       preview.spec.unitCostUsd
-    )}, Wholesale: ${formatUsd(preview.spec.wholesaleValueUsd)}.`,
+    )}, Export: ${formatUsd(preview.spec.wholesaleValueUsd)}.`,
+  };
+}
+
+/** Save an un-funded draft blueprint to revisit & tape out later (Section 1). */
+export function saveDraftBlueprint(
+  state: GameState,
+  input: CustomBlueprintDesignInput
+): { ok: boolean; nextState: GameState; summary: string } {
+  const fab = buildDefaultFab(state.fab);
+  const cleanName = input.name.trim().slice(0, 28) || `Draft-${(fab.draftBlueprints?.length ?? 0) + 1}`;
+  const draftId = `draft_${state.stepCount}_${Math.random().toString(36).slice(2, 6)}`;
+  const preview = previewCustomComponentDesign(state, { ...input, name: cleanName }, draftId);
+  if (!preview.ok) {
+    return { ok: false, nextState: state, summary: preview.reason ?? 'Draft validation failed.' };
+  }
+
+  const draft: CustomChipBlueprint = {
+    id: draftId,
+    name: cleanName,
+    partCategory: input.partCategory,
+    architecture: input.architecture,
+    subFeature: preview.subFeature,
+    branch: preview.branch,
+    engineering: preview.engineering,
+    componentParams: preview.componentParams,
+    customSpec: preview.spec,
+    nreCostUsd: preview.nreCostUsd,
+    manufacturabilityPct: preview.manufacturabilityPct,
+    isDraft: true,
+    revisionNumber: 0,
+    algo: preview.algo,
+    processNode: input.processNode,
+    unitCostUsd: preview.spec.unitCostUsd,
+    waferSteps: preview.waferSteps,
+    hashRate: preview.primaryHashRate,
+    watts: preview.primaryWatts,
+    heatC: preview.primaryHeatC,
+    wholesaleValueUsd: preview.spec.wholesaleValueUsd,
+    createdStep: state.stepCount,
+    designProfile: preview.designProfile,
+    qualityGrade: preview.qualityGrade,
+    qualityMult: preview.qualityMult,
+  };
+
+  const filtered = (fab.draftBlueprints ?? []).filter(
+    (d) => d.name.toLowerCase() !== cleanName.toLowerCase()
+  );
+
+  return {
+    ok: true,
+    nextState: {
+      ...state,
+      fab: {
+        ...fab,
+        draftBlueprints: [...filtered, draft],
+        manufacturingHistory: appendFabHistory(
+          fab.manufacturingHistory,
+          state.stepCount,
+          'DRAFT',
+          `Saved draft blueprint "${cleanName}" (${input.partCategory.toUpperCase()} ${input.processNode})`
+        ),
+      },
+    },
+    summary: `Saved draft blueprint "${cleanName}" (${preview.manufacturabilityPct}% Mfg · NRE ${formatUsd(
+      preview.nreCostUsd
+    )}). Tape it out anytime with "fab draft tapeout <#>".`,
+  };
+}
+
+export function deleteDraftBlueprint(
+  state: GameState,
+  draftIdx: number
+): { ok: boolean; nextState: GameState; summary: string } {
+  const fab = buildDefaultFab(state.fab);
+  const target = fab.draftBlueprints?.[draftIdx];
+  if (!target) {
+    return { ok: false, nextState: state, summary: `Draft #${draftIdx + 1} not found.` };
+  }
+  return {
+    ok: true,
+    nextState: {
+      ...state,
+      fab: {
+        ...fab,
+        draftBlueprints: (fab.draftBlueprints ?? []).filter((_, i) => i !== draftIdx),
+      },
+    },
+    summary: `Deleted draft blueprint "${target.name}".`,
+  };
+}
+
+/** Create a numbered revision on an existing taped-out blueprint (40% NRE discount). */
+export function reviseBlueprint(
+  state: GameState,
+  blueprintIdx: number,
+  updates: Partial<CustomBlueprintDesignInput> & { revisionNote?: string }
+): { ok: boolean; nextState: GameState; summary: string } {
+  const fab = buildDefaultFab(state.fab);
+  const existing = fab.blueprints[blueprintIdx];
+  if (!existing) {
+    return { ok: false, nextState: state, summary: `Blueprint #${blueprintIdx + 1} not found.` };
+  }
+
+  const nextInput: CustomBlueprintDesignInput = {
+    name: existing.name,
+    partCategory: existing.partCategory ?? 'compute',
+    architecture: updates.architecture ?? existing.architecture ?? 'ASIC_BLADE',
+    processNode: updates.processNode ?? existing.processNode,
+    focus: updates.focus ?? existing.algo,
+    branch: updates.branch ?? existing.branch,
+    engineering: updates.engineering ?? existing.engineering,
+    componentParams: updates.componentParams ?? existing.componentParams,
+    subFeature: updates.subFeature ?? existing.subFeature,
+    profile: updates.profile ?? existing.designProfile ?? 'BALANCED',
+  };
+
+  const preview = previewCustomComponentDesign(state, nextInput, existing.id);
+  if (!preview.ok) {
+    return { ok: false, nextState: state, summary: preview.reason ?? 'Revision validation failed.' };
+  }
+
+  const revFee = Math.round(preview.nreCostUsd * 0.45);
+  if (state.cash < revFee) {
+    return {
+      ok: false,
+      nextState: state,
+      summary: `Blueprint revision fee (45% NRE) requires ${formatUsd(revFee)}.`,
+    };
+  }
+
+  const nextRev = (existing.revisionNumber ?? 1) + 1;
+  const revEntry: BlueprintRevisionEntry = {
+    revisionNumber: nextRev,
+    step: state.stepCount,
+    summary: updates.revisionNote ?? `Rev ${nextRev} (${preview.designProfile}, ${preview.subFeature})`,
+    hashRate: preview.primaryHashRate,
+    watts: preview.primaryWatts,
+    heatC: preview.primaryHeatC,
+    manufacturabilityPct: preview.manufacturabilityPct,
+  };
+
+  const updatedSpec: CustomComponentSpec = {
+    ...preview.spec,
+    revisionNumber: nextRev,
+  };
+
+  const updatedBp: CustomChipBlueprint = {
+    ...existing,
+    architecture: nextInput.architecture,
+    subFeature: preview.subFeature,
+    branch: preview.branch,
+    engineering: preview.engineering,
+    componentParams: preview.componentParams,
+    customSpec: updatedSpec,
+    manufacturabilityPct: preview.manufacturabilityPct,
+    revisionNumber: nextRev,
+    revisionHistory: [...(existing.revisionHistory ?? []), revEntry],
+    prototypeReport: undefined, // Reset validation after architectural revision
+    algo: preview.algo,
+    processNode: nextInput.processNode,
+    unitCostUsd: updatedSpec.unitCostUsd,
+    waferSteps: preview.waferSteps,
+    hashRate: preview.primaryHashRate,
+    watts: preview.primaryWatts,
+    heatC: preview.primaryHeatC,
+    wholesaleValueUsd: updatedSpec.wholesaleValueUsd,
+    designProfile: preview.designProfile,
+    qualityGrade: preview.qualityGrade,
+    qualityMult: preview.qualityMult,
+  };
+
+  const tx: TransactionEntry = {
+    id: `tx_fab_rev_${state.stepCount}_${Math.random().toString(36).slice(2, 6)}`,
+    step: state.stepCount,
+    stepLabel: formatStepLabel(state.stepCount),
+    category: 'FAB',
+    amountUsd: -revFee,
+    description: `Revision ${nextRev} for "${existing.name}"`,
+  };
+
+  return {
+    ok: true,
+    nextState: {
+      ...state,
+      cash: state.cash - revFee,
+      fab: {
+        ...fab,
+        blueprints: fab.blueprints.map((b, i) => (i === blueprintIdx ? updatedBp : b)),
+        manufacturingHistory: appendFabHistory(
+          fab.manufacturingHistory,
+          state.stepCount,
+          'REVISION',
+          `Revised "${existing.name}" to Rev ${nextRev} (Mfg ${preview.manufacturabilityPct}%, Unit ${formatUsd(updatedSpec.unitCostUsd)})`
+        ),
+      },
+      currentCycleStats: {
+        ...state.currentCycleStats,
+        otherSpendUsd: state.currentCycleStats.otherSpendUsd + revFee,
+      },
+      transactions: [tx, ...(state.transactions ?? [])].slice(0, 200),
+    },
+    summary: `Revised "${existing.name}" to Rev ${nextRev} for ${formatUsd(revFee)}! (${formatCustomComponentSummaryLine(
+      updatedSpec
+    )} · Mfg ${preview.manufacturabilityPct}%).`,
+  };
+}
+
+/** Compare any two taped-out blueprints side by side (Section 1). */
+export function compareBlueprints(
+  state: GameState,
+  idxA: number,
+  idxB: number
+): string {
+  const fab = buildDefaultFab(state.fab);
+  const a = fab.blueprints[idxA];
+  const b = fab.blueprints[idxB];
+  if (!a || !b) {
+    return `Specify two valid blueprint numbers (#1..#${fab.blueprints.length}).`;
+  }
+  const catA = (a.partCategory ?? 'compute').toUpperCase();
+  const catB = (b.partCategory ?? 'compute').toUpperCase();
+  const revA = a.revisionNumber ?? 1;
+  const revB = b.revisionNumber ?? 1;
+  const mfgA = a.manufacturabilityPct ?? 85;
+  const mfgB = b.manufacturabilityPct ?? 85;
+  return [
+    `  BLUEPRINT COMPARISON: #${idxA + 1} "${a.name}" vs #${idxB + 1} "${b.name}"`,
+    `    Category / Rev : [${catA}] Rev ${revA}             vs  [${catB}] Rev ${revB}`,
+    `    Node / Branch  : ${a.processNode} / ${a.branch ?? 'SILICON'}      vs  ${b.processNode} / ${b.branch ?? 'SILICON'}`,
+    `    Profile / Grade: ${a.designProfile ?? 'BALANCED'} (${a.qualityGrade ?? 'B'})     vs  ${b.designProfile ?? 'BALANCED'} (${b.qualityGrade ?? 'B'})`,
+    `    Manufacturabil.: ${mfgA}%                         vs  ${mfgB}%`,
+    `    Proto Tested   : ${a.prototypeReport ? `${a.prototypeReport.status} (${a.prototypeReport.validatedScore}/100)` : 'UNVALIDATED'}   vs  ${b.prototypeReport ? `${b.prototypeReport.status} (${b.prototypeReport.validatedScore}/100)` : 'UNVALIDATED'}`,
+    `    Watts / Heat   : ${a.watts}W / ${a.heatC}°C              vs  ${b.watts}W / ${b.heatC}°C`,
+    `    Unit / Export  : ${formatUsd(a.unitCostUsd)} / ${formatUsd(a.wholesaleValueUsd)}  vs  ${formatUsd(b.unitCostUsd)} / ${formatUsd(b.wholesaleValueUsd)}`,
+    `    #1 Spec        : ${a.customSpec ? formatCustomComponentSummaryLine(a.customSpec) : a.algo}`,
+    `    #2 Spec        : ${b.customSpec ? formatCustomComponentSummaryLine(b.customSpec) : b.algo}`,
+  ].join('\n');
+}
+
+/** Prototype bench validation & calibration (Section 2 & 3). */
+export function runPrototypeTest(
+  state: GameState,
+  blueprintIdx: number
+): { ok: boolean; nextState: GameState; summary: string } {
+  const fab = buildDefaultFab(state.fab);
+  const bp = fab.blueprints[blueprintIdx];
+  if (!bp) {
+    return { ok: false, nextState: state, summary: `Blueprint #${blueprintIdx + 1} not found.` };
+  }
+
+  const testCost = Math.max(350, Math.round(bp.unitCostUsd * 0.16));
+  if (state.cash < testCost) {
+    return {
+      ok: false,
+      nextState: state,
+      summary: `Prototype bench validation requires ${formatUsd(testCost)}.`,
+    };
+  }
+
+  const prevRuns = bp.prototypeReport?.runsCount ?? 0;
+  const maxResSkill = (state.employees ?? [])
+    .filter((e) => e.role === 'RESEARCHER' || e.role === 'SYS_ENGINEER')
+    .reduce((m, e) => Math.max(m, e.skillLevel ?? 1), 1);
+
+  const mfg = bp.manufacturabilityPct ?? 82;
+  const rng = createSeededRng(`${state.runSeed}|prototest|${bp.id}|${prevRuns}|${state.stepCount}`);
+  const iterationLift = prevRuns * 9;
+  const rawScore =
+    mfg * 0.68 +
+    maxResSkill * 4.5 +
+    iterationLift +
+    ((bp.engineering?.reliability ?? 2) * 3) +
+    (rng() * 14 - 4);
+  const validatedScore = Math.max(25, Math.min(99, Math.round(rawScore)));
+
+  const flaws: string[] = [];
+  const params = bp.componentParams;
+  if ((params?.voltageBiasPct ?? 100) >= 112 && prevRuns === 0) {
+    flaws.push('VRM transient droop above 112% voltage bias');
+  }
+  if (bp.branch === 'QUANTUM' && (params?.cryoTargetMk ?? 20) < 15 && !state.unlockedResearch.includes('res_gen7_dilution_cryo')) {
+    flaws.push('Millikelvin thermal noise without Dilution Cryo R&D');
+  }
+  if (bp.branch === 'PHOTONIC' && (params?.wdmChannels ?? 16) > 24 && prevRuns === 0) {
+    flaws.push('Inter-channel optical crosstalk calibrated in run #' + (prevRuns + 1));
+  }
+  if (validatedScore < 60 && flaws.length === 0) {
+    flaws.push('Mask alignment drift on outer wafer reticle');
+  }
+
+  const status: PrototypeTestReport['status'] =
+    validatedScore >= 76 && flaws.length === 0
+      ? 'PASSED'
+      : validatedScore >= 52
+      ? 'MARGINAL'
+      : 'FAILED_FLAW';
+
+  const yieldBonusPct = Number(
+    (status === 'PASSED' ? 3.5 + prevRuns * 0.8 : status === 'MARGINAL' ? 1.5 : 0).toFixed(1)
+  );
+  const defectReductionPct = status === 'PASSED' ? 75 : status === 'MARGINAL' ? 40 : 10;
+  const reliabilityBonus = Number((status === 'PASSED' ? 0.06 : status === 'MARGINAL' ? 0.03 : 0).toFixed(2));
+
+  const report: PrototypeTestReport = {
+    testedStep: state.stepCount,
+    runsCount: prevRuns + 1,
+    status,
+    validatedScore,
+    thermalMarginC: Math.max(4, Math.round(28 - Math.max(0, bp.heatC) * 0.18 + maxResSkill * 2)),
+    voltageStabilityPct: Math.min(99.9, Number((92 + validatedScore * 0.075).toFixed(1))),
+    branchCalibrationPct:
+      bp.branch === 'QUANTUM' || bp.branch === 'PHOTONIC'
+        ? Math.min(99, Math.round(74 + validatedScore * 0.25))
+        : 100,
+    discoveredFlaws: flaws,
+    yieldBonusPct,
+    defectReductionPct,
+    reliabilityBonus,
+  };
+
+  const tx: TransactionEntry = {
+    id: `tx_fab_proto_${state.stepCount}_${Math.random().toString(36).slice(2, 6)}`,
+    step: state.stepCount,
+    stepLabel: formatStepLabel(state.stepCount),
+    category: 'FAB',
+    amountUsd: -testCost,
+    description: `Prototype test #${report.runsCount} for "${bp.name}"`,
+  };
+
+  const updatedBp: CustomChipBlueprint = {
+    ...bp,
+    prototypeReport: report,
+    customSpec: bp.customSpec
+      ? {
+          ...bp.customSpec,
+          prototypeValidated: status === 'PASSED',
+          wearResistance: Number(
+            Math.min(0.45, (bp.customSpec.wearResistance ?? 0) + (prevRuns === 0 ? reliabilityBonus : 0)).toFixed(2)
+          ),
+        }
+      : bp.customSpec,
+  };
+
+  return {
+    ok: true,
+    nextState: {
+      ...state,
+      cash: state.cash - testCost,
+      fab: {
+        ...fab,
+        blueprints: fab.blueprints.map((b, i) => (i === blueprintIdx ? updatedBp : b)),
+        manufacturingHistory: appendFabHistory(
+          fab.manufacturingHistory,
+          state.stepCount,
+          'PROTOTYPE',
+          `Prototype #${report.runsCount} "${bp.name}": ${status} (Score ${validatedScore}/100, +${yieldBonusPct}% batch yield)`
+        ),
+      },
+      currentCycleStats: {
+        ...state.currentCycleStats,
+        otherSpendUsd: state.currentCycleStats.otherSpendUsd + testCost,
+      },
+      transactions: [tx, ...(state.transactions ?? [])].slice(0, 200),
+    },
+    summary: `Prototype Test #${report.runsCount} for "${bp.name}" [${status} · Score ${validatedScore}/100]: Voltage stab ${report.voltageStabilityPct}%, Thermal margin +${report.thermalMarginC}°C, Batch yield +${yieldBonusPct}%, Defect reduction -${defectReductionPct}%${
+      flaws.length > 0 ? `. Flaws: ${flaws.join('; ')}` : '.'
+    }`,
   };
 }
 
@@ -1651,8 +2437,7 @@ export function designCustomChipBlueprint(
       summary: 'Process node must be 7nm, 5nm, 3nm, 2nm, 1nm, or photonic.',
     };
   }
-  const arch: FabArchitectureId =
-    algo === 'RANDOMX' || algo === 'POST' ? 'ASIC_BLADE' : 'ASIC_BLADE';
+  const arch: FabArchitectureId = 'ASIC_BLADE';
   return designCustomComponentBlueprint(state, {
     name,
     partCategory: 'compute',
@@ -1693,19 +2478,25 @@ export function queueFabProduction(
   }
 
   const batchSteps = bp.waferSteps + Math.max(0, cleanQty - 1);
-  const qualityRoll = Number(
-    (0.95 + createSeededRng(`${state.runSeed}|batch|${bp.id}|${state.stepCount}|${cleanQty}`)() * 0.1).toFixed(
-      3
-    )
-  );
+  const protoBonus = (bp.prototypeReport?.yieldBonusPct ?? 0) / 100;
+  const baseRoll =
+    0.95 + createSeededRng(`${state.runSeed}|batch|${bp.id}|${state.stepCount}|${cleanQty}`)() * 0.1;
+  const qualityRoll = Number(Math.min(1.12, baseRoll + protoBonus).toFixed(3));
+  const batchSeq = fab.nextBatchSeq ?? 1;
+  const batchId = `BATCH-${String(batchSeq).padStart(4, '0')}`;
+
   const order: FabProductionOrder = {
     id: `ord_fab_${state.stepCount}_${Math.random().toString(36).slice(2, 6)}`,
+    batchId,
     blueprintId: bp.id,
     blueprintName: bp.name,
+    revisionNumber: bp.revisionNumber ?? 1,
     qty: cleanQty,
     stepsRemaining: batchSteps,
     totalSteps: batchSteps,
     qualityRoll,
+    prototypeValidated: bp.prototypeReport?.status === 'PASSED',
+    manufacturabilityPct: bp.manufacturabilityPct ?? 85,
   };
 
   const tx: TransactionEntry = {
@@ -1714,7 +2505,7 @@ export function queueFabProduction(
     stepLabel: formatStepLabel(state.stepCount),
     category: 'FAB',
     amountUsd: -totalCost,
-    description: `Queued ${cleanQty}x custom ${bp.partCategory ?? 'compute'} "${bp.name}"`,
+    description: `Queued ${batchId}: ${cleanQty}x custom ${bp.partCategory ?? 'compute'} "${bp.name}"`,
   };
 
   return {
@@ -1722,18 +2513,24 @@ export function queueFabProduction(
     nextState: {
       ...state,
       cash: state.cash - totalCost,
-      fab: { ...fab, productionQueue: [...fab.productionQueue, order] },
+      fab: {
+        ...fab,
+        nextBatchSeq: batchSeq + 1,
+        productionQueue: [...fab.productionQueue, order],
+      },
       currentCycleStats: {
         ...state.currentCycleStats,
         otherSpendUsd: state.currentCycleStats.otherSpendUsd + totalCost,
       },
       transactions: [tx, ...(state.transactions ?? [])].slice(0, 200),
     },
-    summary: `Queued ${cleanQty}x "${bp.name}" for ${formatUsd(totalCost)} (~${Math.ceil(
-      batchSteps / fab.linesCount
-    )} steps at ${fab.linesCount}x line throughput). Projected batch yield: ${(
-      qualityRoll * 100
-    ).toFixed(1)}%.`,
+    summary: `Queued ${batchId} (${cleanQty}x "${bp.name}" rev ${bp.revisionNumber ?? 1}) for ${formatUsd(
+      totalCost
+    )} (~${Math.ceil(batchSteps / fab.linesCount)} steps at ${
+      fab.linesCount
+    }x line throughput). Projected batch yield: ${(qualityRoll * 100).toFixed(1)}%${
+      bp.prototypeReport ? ` (${bp.prototypeReport.status})` : ' (Unvalidated)'
+    }.`,
   };
 }
 
@@ -1787,8 +2584,18 @@ export function stepFabProduction(
 
   let budget = fab.linesCount;
   const remainingQueue: FabProductionOrder[] = [];
-  const nextInventory: CustomAsicInventoryItem[] = fab.inventory.map((i) => ({ ...i }));
+  const nextInventory: CustomAsicInventoryItem[] = fab.inventory.map((i) => ({
+    ...i,
+    serialNumbers: i.serialNumbers ? [...i.serialNumbers] : undefined,
+  }));
+  const nextBatches: FabBatchRecord[] = [...(fab.batchRecords ?? [])];
+  const nextSerials: SerializedComponentRecord[] = [...(fab.serialRegistry ?? [])];
+  let nextHistory = [...(fab.manufacturingHistory ?? [])];
+  let nextSerialSeq = fab.nextSerialSeq ?? 1;
+  let nextBatchSeq = fab.nextBatchSeq ?? 1;
+
   let manufacturedAdd = 0;
+  let scrappedAdd = 0;
   const news: NewsItem[] = [];
 
   for (const ord of fab.productionQueue) {
@@ -1803,10 +2610,86 @@ export function stepFabProduction(
       remainingQueue.push({ ...ord, stepsRemaining: rem });
     } else {
       const bp = fab.blueprints.find((b) => b.id === ord.blueprintId);
-      manufacturedAdd += ord.qty;
+      const roll = ord.qualityRoll ?? 1;
+      const mfgPct = ord.manufacturabilityPct ?? bp?.manufacturabilityPct ?? 85;
+      const defectRelief = bp?.prototypeReport ? bp.prototypeReport.defectReductionPct / 100 : 0;
+
+      // Guarantee full output on small batches / high manufacturability, penalize pushing risky large lots without QC
+      let defectRate = Math.max(0, (74 - mfgPct) / 140) * (1 - defectRelief);
+      if (bp?.prototypeReport?.status === 'FAILED_FLAW') defectRate = Math.max(defectRate, 0.25);
+      const rawScrap = ord.qty >= 3 ? Math.floor(ord.qty * defectRate) : 0;
+      const scrappedQty = Math.min(Math.max(0, ord.qty - 1), rawScrap);
+      const passedQty = Math.max(1, ord.qty - scrappedQty);
+
+      manufacturedAdd += passedQty;
+      scrappedAdd += scrappedQty;
+
+      const batchId = ord.batchId ?? `BATCH-${String(nextBatchSeq++).padStart(4, '0')}`;
+      const cat: PartCategory = bp?.partCategory ?? 'compute';
+      const branch: TechBranch = bp?.branch ?? 'SILICON';
+      const gen = NODE_GENERATION[bp?.processNode ?? '3nm'] ?? 4;
+      const batchSerials: string[] = [];
+
+      for (let u = 0; u < passedQty; u++) {
+        const serialNumber = `HW-G${gen}${branch[0]}-${String(nextSerialSeq++).padStart(4, '0')}`;
+        batchSerials.push(serialNumber);
+        nextSerials.unshift({
+          serialNumber,
+          batchId,
+          blueprintId: ord.blueprintId,
+          revisionNumber: ord.revisionNumber ?? bp?.revisionNumber ?? 1,
+          name: ord.blueprintName,
+          partCategory: cat,
+          processNode: bp?.processNode ?? '3nm',
+          branch,
+          qualityGrade: bp?.qualityGrade ?? 'B',
+          measuredHashMult: roll,
+          measuredWattMult: Number((bp?.prototypeReport?.status === 'PASSED' ? 0.98 : 1.0).toFixed(3)),
+          wearResistance: Number(
+            Math.min(
+              0.45,
+              (bp?.customSpec?.wearResistance ?? 0) + (bp?.prototypeReport?.reliabilityBonus ?? 0)
+            ).toFixed(2)
+          ),
+          manufacturedStep: nextStep,
+          status: 'IN_STOCK',
+          history: [`${stepLabel}: QA passed in ${batchId} (${(roll * 100).toFixed(1)}% yield)`],
+        });
+      }
+
+      const qcScore = Math.max(
+        55,
+        Math.min(
+          100,
+          Math.round(mfgPct * 0.45 + roll * 45 + (ord.prototypeValidated ? 10 : 0) - scrappedQty * 3)
+        )
+      );
+
       if (bp) {
-        const roll = ord.qualityRoll ?? 1;
-        const cat: PartCategory = bp.partCategory ?? 'compute';
+        nextBatches.unshift({
+          batchId,
+          blueprintId: bp.id,
+          blueprintName: bp.name,
+          revisionNumber: ord.revisionNumber ?? bp.revisionNumber ?? 1,
+          partCategory: cat,
+          processNode: bp.processNode,
+          branch,
+          requestedQty: ord.qty,
+          passedQty,
+          scrappedDefectQty: scrappedQty,
+          qcScore,
+          qualityGrade: bp.qualityGrade ?? 'B',
+          qualityRoll: roll,
+          prototypeValidated: Boolean(ord.prototypeValidated),
+          completedStep: nextStep,
+          stepLabel,
+          serialNumbers: batchSerials,
+          notes:
+            scrappedQty > 0
+              ? `${scrappedQty} unit(s) scrapped due to ${mfgPct}% manufacturability limits.`
+              : `100% wafer pass (${qcScore}/100 QC).`,
+        });
+
         const stackHash =
           cat === 'compute' || cat === 'gpu'
             ? bp.algo === 'RANDOMX'
@@ -1818,11 +2701,17 @@ export function stepFabProduction(
             ? Number((1 + (bp.hashRate - 1) * roll).toFixed(3))
             : Math.round(bp.hashRate * roll);
         const scaledSpec = bp.customSpec ? applyYieldToCustomSpec(bp.customSpec, roll) : undefined;
+        if (scaledSpec) {
+          scaledSpec.batchId = batchId;
+          scaledSpec.prototypeValidated = Boolean(ord.prototypeValidated);
+        }
         const existing = nextInventory.find(
           (i) => i.blueprintId === bp.id && Math.abs((i.qualityRoll ?? 1) - roll) < 1e-9
         );
         if (existing) {
-          existing.qty += ord.qty;
+          existing.qty += passedQty;
+          existing.serialNumbers = [...(existing.serialNumbers ?? []), ...batchSerials];
+          existing.batchId = existing.batchId ?? batchId;
         } else {
           nextInventory.push({
             blueprintId: bp.id,
@@ -1830,6 +2719,7 @@ export function stepFabProduction(
             partCategory: cat,
             architecture: bp.architecture,
             subFeature: bp.subFeature,
+            branch,
             customSpec: scaledSpec,
             algo: bp.algo,
             processNode: bp.processNode,
@@ -1837,18 +2727,28 @@ export function stepFabProduction(
             watts: bp.watts,
             heatC: bp.heatC,
             wholesaleValueUsd: Math.round(bp.wholesaleValueUsd * roll),
-            qty: ord.qty,
+            qty: passedQty,
             qualityGrade: bp.qualityGrade,
             qualityRoll: roll,
+            serialNumbers: batchSerials,
+            batchId,
           });
         }
       }
+
+      nextHistory = appendFabHistory(
+        nextHistory,
+        nextStep,
+        'BATCH_DONE',
+        `${batchId}: ${passedQty}/${ord.qty}x "${ord.blueprintName}" passed QA (QC ${qcScore}/100 · Serials ${batchSerials[0]}..${batchSerials[batchSerials.length - 1]})`
+      );
+
       news.push({
         id: `news_fab_done_${ord.id}_${nextStep}`,
         step: nextStep,
         stepLabel,
-        title: `Fab Batch Complete: ${ord.qty}x ${ord.blueprintName}`,
-        detail: 'Finished custom components moved to foundry inventory ("fab" to deploy or export).',
+        title: `Fab Batch Complete: ${passedQty}x ${ord.blueprintName} (${batchId})`,
+        detail: `${passedQty}/${ord.qty} units passed QA (QC ${qcScore}/100). Run "fab batch 1" or "fab" to inspect/deploy.`,
         category: 'MILESTONE',
       });
     }
@@ -1859,7 +2759,13 @@ export function stepFabProduction(
       ...fab,
       productionQueue: remainingQueue,
       inventory: nextInventory,
+      batchRecords: nextBatches.slice(0, 60),
+      serialRegistry: nextSerials.slice(0, 250),
+      manufacturingHistory: nextHistory.slice(0, 120),
+      nextBatchSeq,
+      nextSerialSeq,
       totalUnitsManufactured: fab.totalUnitsManufactured + manufacturedAdd,
+      totalUnitsScrapped: (fab.totalUnitsScrapped ?? 0) + scrappedAdd,
     },
     news,
   };
@@ -1869,6 +2775,7 @@ export function inventoryItemToCustomSpec(item: CustomAsicInventoryItem): Custom
   if (item.customSpec) {
     return {
       ...item.customSpec,
+      branch: item.branch ?? item.customSpec.branch,
       qualityGrade: item.qualityGrade ?? item.customSpec.qualityGrade,
       qualityRoll: item.qualityRoll ?? item.customSpec.qualityRoll,
       wholesaleValueUsd: item.wholesaleValueUsd,
@@ -1880,6 +2787,7 @@ export function inventoryItemToCustomSpec(item: CustomAsicInventoryItem): Custom
     partCategory: cat,
     architecture: item.architecture ?? 'ASIC_BLADE',
     subFeature: item.subFeature ?? 'STD',
+    branch: item.branch ?? 'SILICON',
     name: item.name,
     processNode: item.processNode,
     generation: NODE_GENERATION[item.processNode] ?? 4,
@@ -1916,11 +2824,14 @@ export function deployCustomInventoryToRig(
     return { ok: false, nextState: state, summary: `Rig #${rigIdx + 1} not found.` };
   }
 
-  const spec = inventoryItemToCustomSpec(item);
+  const serialAllocated = item.serialNumbers?.[0];
+  const spec = {
+    ...inventoryItemToCustomSpec(item),
+    ...(serialAllocated ? { serialNumber: serialAllocated } : {}),
+  };
   const cat = spec.partCategory;
   const { chassis } = getEffectivePartBundle(rig);
 
-  // Compatibility checks
   if (cat === 'compute') {
     const isAsic = (spec.computeKind ?? 'ASIC') === 'ASIC';
     if (isAsic && chassis.maxAsics < 1) {
@@ -1975,7 +2886,15 @@ export function deployCustomInventoryToRig(
   }
 
   const nextInventory = fab.inventory
-    .map((entry, i) => (i === invIdx ? { ...entry, qty: entry.qty - 1 } : entry))
+    .map((entry, i) =>
+      i === invIdx
+        ? {
+            ...entry,
+            qty: entry.qty - 1,
+            serialNumbers: (entry.serialNumbers ?? []).slice(1),
+          }
+        : entry
+    )
     .filter((entry) => entry.qty > 0);
 
   let warningNote = '';
@@ -1987,12 +2906,14 @@ export function deployCustomInventoryToRig(
       ...(r.customParts ?? {}),
       gpus: r.customParts?.gpus ? [...r.customParts.gpus] : undefined,
     };
+    const nextSerials = { ...(r.customPartSerials ?? {}) };
     let nextComp = { ...compH };
     let nextGpuIds = [...r.gpuIds];
     let nextCustomAsic = r.customAsicSpec;
 
     if (cat === 'compute') {
       nextParts.compute = spec;
+      if (serialAllocated) nextSerials.compute = serialAllocated;
       nextComp.compute = 100;
       const algo = spec.algo ?? item.algo;
       nextCustomAsic = {
@@ -2003,6 +2924,8 @@ export function deployCustomInventoryToRig(
         hashRate: spec.hashrates?.[algo] ?? item.hashRate,
         watts: spec.watts ?? item.watts,
         heatC: spec.heatC ?? item.heatC,
+        serialNumber: serialAllocated,
+        branch: spec.branch,
       };
     } else if (cat === 'gpu') {
       const targetIdx =
@@ -2012,29 +2935,40 @@ export function deployCustomInventoryToRig(
       const gpusArr: (CustomComponentSpec | null)[] = nextGpuIds.map(
         (_, idx) => nextParts.gpus?.[idx] ?? null
       );
+      const gpuSerialsArr: (string | null)[] = nextGpuIds.map(
+        (_, idx) => nextSerials.gpus?.[idx] ?? null
+      );
       if (targetIdx === nextGpuIds.length) {
         nextGpuIds.push(GPU_PARTS[0].id);
         gpusArr.push(spec);
+        gpuSerialsArr.push(serialAllocated ?? null);
         nextComp.gpus = [...nextComp.gpus, 100];
       } else {
         gpusArr[targetIdx] = spec;
+        gpuSerialsArr[targetIdx] = serialAllocated ?? null;
         nextComp.gpus = nextComp.gpus.map((h, gi) => (gi === targetIdx ? 100 : h));
       }
       nextParts.gpus = gpusArr;
+      nextSerials.gpus = gpuSerialsArr;
     } else if (cat === 'chassis') {
       nextParts.chassis = spec;
+      if (serialAllocated) nextSerials.chassis = serialAllocated;
       nextComp.chassis = 100;
     } else if (cat === 'storage') {
       nextParts.storage = spec;
+      if (serialAllocated) nextSerials.storage = serialAllocated;
       nextComp.storage = 100;
     } else if (cat === 'psu') {
       nextParts.psu = spec;
+      if (serialAllocated) nextSerials.psu = serialAllocated;
       nextComp.psu = 100;
     } else if (cat === 'cooling') {
       nextParts.cooling = spec;
+      if (serialAllocated) nextSerials.cooling = serialAllocated;
       nextComp.cooling = 100;
     } else if (cat === 'os') {
       nextParts.os = spec;
+      if (serialAllocated) nextSerials.os = serialAllocated;
     }
 
     const avgHealth = computeAverageRigHealth(nextComp);
@@ -2058,6 +2992,7 @@ export function deployCustomInventoryToRig(
       gpuIds: nextGpuIds,
       customAsicSpec: nextCustomAsic,
       customParts: nextParts,
+      customPartSerials: nextSerials,
       componentHealth: nextComp,
       healthPct: avgHealth,
       status: recoveredStatus,
@@ -2075,16 +3010,39 @@ export function deployCustomInventoryToRig(
     return updated;
   });
 
+  const nextSerialRegistry = serialAllocated
+    ? (fab.serialRegistry ?? []).map((sr) =>
+        sr.serialNumber === serialAllocated
+          ? {
+              ...sr,
+              status: 'INSTALLED' as const,
+              installedRigId: rig.id,
+              history: [...sr.history, `${formatStepLabel(state.stepCount)}: Installed in ${rig.name}`],
+            }
+          : sr
+      )
+    : fab.serialRegistry;
+
   return {
     ok: true,
     nextState: {
       ...state,
       rigs: nextRigs,
-      fab: { ...fab, inventory: nextInventory },
+      fab: {
+        ...fab,
+        inventory: nextInventory,
+        serialRegistry: nextSerialRegistry,
+        manufacturingHistory: appendFabHistory(
+          fab.manufacturingHistory,
+          state.stepCount,
+          'DEPLOY',
+          `Deployed "${item.name}"${serialAllocated ? ` [${serialAllocated}]` : ''} into ${rig.name}`
+        ),
+      },
     },
-    summary: `Installed custom ${item.processNode} ${cat.toUpperCase()} "${item.name}" (${formatCustomComponentSummaryLine(
-      spec
-    )}) into ${rig.name}.${warningNote}`,
+    summary: `Installed custom ${item.processNode} ${cat.toUpperCase()} "${item.name}"${
+      serialAllocated ? ` [${serialAllocated}]` : ''
+    } (${formatCustomComponentSummaryLine(spec)}) into ${rig.name}.${warningNote}`,
   };
 }
 
@@ -2096,10 +3054,6 @@ export function deployCustomAsicToRig(
   return deployCustomInventoryToRig(state, invIdx, rigIdx);
 }
 
-/**
- * Extract an installed custom component (chassis|compute|gpu|storage|psu|cooling|os)
- * back into foundry inventory so it can be redeployed or exported wholesale.
- */
 export function stripCustomPartFromRig(
   state: GameState,
   rigIdx: number,
@@ -2111,18 +3065,23 @@ export function stripCustomPartFromRig(
 
   let specToStrip: CustomComponentSpec | undefined;
   let resolvedGpuIdx = gpuSlotIdx;
+  let serialToRestore: string | undefined;
 
   if (slot === 'compute') {
     if (rig.customParts?.compute) {
       specToStrip = rig.customParts.compute;
+      serialToRestore = specToStrip.serialNumber ?? rig.customPartSerials?.compute;
     } else if (rig.customAsicSpec) {
       const a = rig.customAsicSpec;
       const bp = state.fab?.blueprints.find((b) => b.id === a.blueprintId);
+      serialToRestore = a.serialNumber ?? rig.customPartSerials?.compute;
       specToStrip = {
         blueprintId: a.blueprintId,
+        serialNumber: serialToRestore,
         partCategory: 'compute',
         architecture: bp?.architecture ?? 'ASIC_BLADE',
         subFeature: bp?.subFeature ?? 'STD',
+        branch: a.branch ?? bp?.branch ?? 'SILICON',
         name: a.name,
         processNode: a.processNode,
         generation: NODE_GENERATION[a.processNode] ?? 4,
@@ -2142,15 +3101,18 @@ export function stripCustomPartFromRig(
     const gpus = rig.customParts?.gpus ?? [];
     if (gpus[gpuSlotIdx]) {
       specToStrip = gpus[gpuSlotIdx] ?? undefined;
+      serialToRestore = specToStrip?.serialNumber ?? rig.customPartSerials?.gpus?.[gpuSlotIdx] ?? undefined;
     } else {
       const firstCustomIdx = gpus.findIndex((g) => Boolean(g));
       if (firstCustomIdx >= 0) {
         resolvedGpuIdx = firstCustomIdx;
         specToStrip = gpus[firstCustomIdx] ?? undefined;
+        serialToRestore = specToStrip?.serialNumber ?? rig.customPartSerials?.gpus?.[firstCustomIdx] ?? undefined;
       }
     }
   } else {
     specToStrip = rig.customParts?.[slot];
+    serialToRestore = specToStrip?.serialNumber ?? rig.customPartSerials?.[slot];
   }
 
   if (!specToStrip) {
@@ -2188,7 +3150,10 @@ export function stripCustomPartFromRig(
       ? specToStrip.hashrateMultiplier ?? 1
       : specToStrip.maxGpus ?? 0;
 
-  const nextInventory = fab.inventory.map((i) => ({ ...i }));
+  const nextInventory = fab.inventory.map((i) => ({
+    ...i,
+    serialNumbers: i.serialNumbers ? [...i.serialNumbers] : undefined,
+  }));
   const existing = nextInventory.find(
     (i) =>
       i.blueprintId === specToStrip!.blueprintId &&
@@ -2197,6 +3162,7 @@ export function stripCustomPartFromRig(
   );
   if (existing) {
     existing.qty += 1;
+    if (serialToRestore) existing.serialNumbers = [...(existing.serialNumbers ?? []), serialToRestore];
   } else {
     nextInventory.push({
       blueprintId: specToStrip.blueprintId,
@@ -2204,6 +3170,7 @@ export function stripCustomPartFromRig(
       partCategory: specToStrip.partCategory,
       architecture: specToStrip.architecture,
       subFeature: specToStrip.subFeature,
+      branch: specToStrip.branch,
       customSpec: specToStrip,
       algo,
       processNode: specToStrip.processNode,
@@ -2214,6 +3181,7 @@ export function stripCustomPartFromRig(
       qty: 1,
       qualityGrade: specToStrip.qualityGrade ?? bp?.qualityGrade,
       qualityRoll: specToStrip.qualityRoll ?? bp?.qualityMult,
+      serialNumbers: serialToRestore ? [serialToRestore] : undefined,
     });
   }
 
@@ -2229,37 +3197,59 @@ export function stripCustomPartFromRig(
   const nextRigs = state.rigs.map((r, i) => {
     if (i !== rigIdx) return r;
     const nextParts: RigCustomPartsMap = { ...(r.customParts ?? {}) };
+    const nextSerials = { ...(r.customPartSerials ?? {}) };
     let nextGpuIds = [...r.gpuIds];
     let nextComp = ensureRigComponentHealth(r);
 
     if (slot === 'compute') {
       delete nextParts.compute;
+      delete nextSerials.compute;
       return {
         ...r,
         customAsicSpec: undefined,
         customParts: nextParts,
+        customPartSerials: nextSerials,
       };
     } else if (slot === 'gpu') {
       nextGpuIds = nextGpuIds.filter((_, gi) => gi !== resolvedGpuIdx);
       const nextGpus = (nextParts.gpus ?? []).filter((_, gi) => gi !== resolvedGpuIdx);
       nextParts.gpus = nextGpus;
+      if (nextSerials.gpus) {
+        nextSerials.gpus = nextSerials.gpus.filter((_, gi) => gi !== resolvedGpuIdx);
+      }
       nextComp = { ...nextComp, gpus: nextComp.gpus.filter((_, gi) => gi !== resolvedGpuIdx) };
       const avgHealth = computeAverageRigHealth(nextComp);
       return {
         ...r,
         gpuIds: nextGpuIds,
         customParts: nextParts,
+        customPartSerials: nextSerials,
         componentHealth: nextComp,
         healthPct: avgHealth,
       };
     } else {
       delete nextParts[slot];
+      delete nextSerials[slot];
       return {
         ...r,
         customParts: nextParts,
+        customPartSerials: nextSerials,
       };
     }
   });
+
+  const nextSerialRegistry = serialToRestore
+    ? (fab.serialRegistry ?? []).map((sr) =>
+        sr.serialNumber === serialToRestore
+          ? {
+              ...sr,
+              status: 'IN_STOCK' as const,
+              installedRigId: undefined,
+              history: [...sr.history, `${formatStepLabel(state.stepCount)}: Stripped from ${rig.name}`],
+            }
+          : sr
+      )
+    : fab.serialRegistry;
 
   return {
     ok: true,
@@ -2267,16 +3257,26 @@ export function stripCustomPartFromRig(
       ...state,
       cash: state.cash - refurbFee,
       rigs: nextRigs,
-      fab: { ...fab, inventory: nextInventory },
+      fab: {
+        ...fab,
+        inventory: nextInventory,
+        serialRegistry: nextSerialRegistry,
+        manufacturingHistory: appendFabHistory(
+          fab.manufacturingHistory,
+          state.stepCount,
+          'STRIP',
+          `Extracted "${specToStrip.name}"${serialToRestore ? ` [${serialToRestore}]` : ''} from ${rig.name}`
+        ),
+      },
       currentCycleStats: {
         ...state.currentCycleStats,
         otherSpendUsd: state.currentCycleStats.otherSpendUsd + refurbFee,
       },
       transactions: [tx, ...(state.transactions ?? [])].slice(0, 200),
     },
-    summary: `Extracted custom ${slot.toUpperCase()} "${specToStrip.name}" from ${rig.name} for ${formatUsd(
-      refurbFee
-    )}. It is back in foundry inventory and can be redeployed or exported.`,
+    summary: `Extracted custom ${slot.toUpperCase()} "${specToStrip.name}"${
+      serialToRestore ? ` [${serialToRestore}]` : ''
+    } from ${rig.name} for ${formatUsd(refurbFee)}. It is back in foundry inventory.`,
   };
 }
 
@@ -2307,9 +3307,31 @@ export function sellCustomAsicsWholesale(
   const marketMult = getGlobalHardwarePriceMult(state);
   const revenue = Math.round(item.wholesaleValueUsd * sellQty * brokerBonus * marketMult);
 
+  const exportedSerials = new Set((item.serialNumbers ?? []).slice(0, sellQty));
   const nextInventory = fab.inventory
-    .map((entry, i) => (i === invIdx ? { ...entry, qty: entry.qty - sellQty } : entry))
+    .map((entry, i) =>
+      i === invIdx
+        ? {
+            ...entry,
+            qty: entry.qty - sellQty,
+            serialNumbers: (entry.serialNumbers ?? []).slice(sellQty),
+          }
+        : entry
+    )
     .filter((entry) => entry.qty > 0);
+
+  const nextSerialRegistry =
+    exportedSerials.size > 0
+      ? (fab.serialRegistry ?? []).map((sr) =>
+          exportedSerials.has(sr.serialNumber)
+            ? {
+                ...sr,
+                status: 'EXPORTED' as const,
+                history: [...sr.history, `${formatStepLabel(state.stepCount)}: Exported wholesale`],
+              }
+            : sr
+        )
+      : fab.serialRegistry;
 
   const tx: TransactionEntry = {
     id: `tx_fab_sell_${state.stepCount}_${Math.random().toString(36).slice(2, 6)}`,
@@ -2328,12 +3350,88 @@ export function sellCustomAsicsWholesale(
       fab: {
         ...fab,
         inventory: nextInventory,
+        serialRegistry: nextSerialRegistry,
         totalExportRevenueUsd: fab.totalExportRevenueUsd + revenue,
+        manufacturingHistory: appendFabHistory(
+          fab.manufacturingHistory,
+          state.stepCount,
+          'EXPORT',
+          `Exported ${sellQty}x "${item.name}" for +${formatUsd(revenue)}`
+        ),
       },
       transactions: [tx, ...(state.transactions ?? [])].slice(0, 200),
     },
     summary: `Exported ${sellQty}x "${item.name}" wholesale for +${formatUsd(revenue)}!`,
   };
+}
+
+export function inspectBatchReport(state: GameState, batchQuery: string): string {
+  const fab = buildDefaultFab(state.fab);
+  const batches = fab.batchRecords ?? [];
+  if (batches.length === 0) return '  No completed production batches recorded yet.';
+  const idx = parseInt(batchQuery, 10);
+  const batch = !isNaN(idx)
+    ? batches[idx - 1]
+    : batches.find((b) => b.batchId.toUpperCase() === batchQuery.trim().toUpperCase());
+  if (!batch) return `  Batch "${batchQuery}" not found.`;
+  return [
+    `  PRODUCTION BATCH SPEC & QA REPORT: ${batch.batchId}`,
+    `    Blueprint     : ${batch.blueprintName} (Rev ${batch.revisionNumber}) · [${batch.partCategory.toUpperCase()} · ${batch.processNode} · ${batch.branch}]`,
+    `    Completed     : ${batch.stepLabel}`,
+    `    Units Passed  : ${batch.passedQty}/${batch.requestedQty} (Scrapped: ${batch.scrappedDefectQty})`,
+    `    QA / Yield    : QC Score ${batch.qcScore}/100 · Grade ${batch.qualityGrade} · Yield ${(batch.qualityRoll * 100).toFixed(1)}% · Proto: ${batch.prototypeValidated ? 'VALIDATED' : 'UNVALIDATED'}`,
+    `    Serials       : ${batch.serialNumbers.join(', ') || 'None'}`,
+    `    Notes         : ${batch.notes}`,
+  ].join('\n');
+}
+
+export function inspectSerialReport(state: GameState, serialQuery: string): string {
+  const fab = buildDefaultFab(state.fab);
+  const needle = serialQuery.trim().toUpperCase();
+  const sr = (fab.serialRegistry ?? []).find((s) => s.serialNumber.toUpperCase() === needle);
+  if (!sr) {
+    return `  Serial "${serialQuery}" not found in registry. Try "fab history" to see recent serials.`;
+  }
+  return [
+    `  SERIALIZED COMPONENT INSPECTION: ${sr.serialNumber}`,
+    `    Model / Batch : ${sr.name} (Rev ${sr.revisionNumber}) · Batch ${sr.batchId}`,
+    `    Spec          : ${sr.partCategory.toUpperCase()} · ${sr.processNode} · Branch ${sr.branch} · Grade ${sr.qualityGrade}`,
+    `    Binned Telemetry: Hash x${sr.measuredHashMult.toFixed(3)} · Watt x${sr.measuredWattMult.toFixed(3)} · Wear Resist +${Math.round(sr.wearResistance * 100)}%`,
+    `    Status        : ${sr.status}${sr.installedRigId ? ` (Rig: ${sr.installedRigId})` : ''}`,
+    `    Audit Trail   :`,
+    ...sr.history.map((h) => `      - ${h}`),
+  ].join('\n');
+}
+
+export function formatManufacturingHistoryReport(state: GameState): string {
+  const fab = buildDefaultFab(state.fab);
+  const batches = (fab.batchRecords ?? []).slice(0, 8);
+  const hist = (fab.manufacturingHistory ?? []).slice(0, 12);
+  const drafts = fab.draftBlueprints ?? [];
+  return [
+    `  FOUNDRY MANUFACTURING RECORDS (Built: ${fab.totalUnitsManufactured} · Scrapped: ${fab.totalUnitsScrapped ?? 0} · Serials Issued: ${(fab.serialRegistry ?? []).length})`,
+    '',
+    `  RECENT BATCHES ("fab batch <#|BATCH-ID>"):`,
+    ...(batches.length === 0
+      ? ['  (No completed batches yet)']
+      : batches.map(
+          (b, i) =>
+            `  #${i + 1} ${b.batchId} · ${b.passedQty}/${b.requestedQty}x ${b.blueprintName} r${b.revisionNumber} [QC ${b.qcScore}/100 · ${(b.qualityRoll * 100).toFixed(1)}%] -> ${b.serialNumbers[0] ?? '-'}`
+        )),
+    '',
+    `  SAVED DRAFTS (${drafts.length}):`,
+    ...(drafts.length === 0
+      ? ['  (None)']
+      : drafts.map(
+          (d, i) =>
+            `  D#${i + 1} ${d.name} [${(d.partCategory ?? 'compute').toUpperCase()} ${d.processNode} · Mfg ${d.manufacturabilityPct ?? 85}%] · "fab draft tapeout ${i + 1}"`
+        )),
+    '',
+    `  ACTIVITY LOG ("fab serial <SERIAL>"):`,
+    ...(hist.length === 0
+      ? ['  (No manufacturing log entries yet)']
+      : hist.map((h) => `  [${h.stepLabel} · ${h.kind}] ${h.summary}`)),
+  ].join('\n');
 }
 
 export function formatFabStatusReport(state: GameState): string {
@@ -2357,10 +3455,11 @@ export function formatFabStatusReport(state: GameState): string {
           const tag = `${DESIGN_PROFILE_SPECS[bp.designProfile ?? 'BALANCED'].label.slice(0, 4)}${
             bp.qualityGrade ? `-${bp.qualityGrade}` : ''
           }`;
+          const protoTag = bp.prototypeReport ? bp.prototypeReport.status : 'UNTESTED';
           const specDesc = bp.customSpec
             ? formatCustomComponentSummaryLine(bp.customSpec)
             : `${bp.algo} ${formatHashrate(bp.hashRate, bp.algo)} · ${bp.watts}W`;
-          return `  #${i + 1} [${cat}] ${bp.name.padEnd(20)} ${bp.processNode.padEnd(8)} ${tag.padEnd(7)} Unit:${formatUsd(
+          return `  #${i + 1} [${cat}] ${bp.name.padEnd(20)} r${bp.revisionNumber ?? 1} ${bp.processNode.padEnd(8)} ${tag.padEnd(7)} Mfg:${bp.manufacturabilityPct ?? 85}% [${protoTag}] Unit:${formatUsd(
             bp.unitCostUsd,
             bp.unitCostUsd >= 10_000
           )} Export:${formatUsd(bp.wholesaleValueUsd, bp.wholesaleValueUsd >= 10_000)}\n     Spec: ${specDesc}`;
@@ -2371,7 +3470,7 @@ export function formatFabStatusReport(state: GameState): string {
       ? ['  (Production queue idle)']
       : fab.productionQueue.map(
           (q, i) =>
-            `  #${i + 1} ${q.qty}x ${q.blueprintName.padEnd(22)} [${q.totalSteps - q.stepsRemaining}/${
+            `  #${i + 1} ${q.batchId ?? ''} ${q.qty}x ${q.blueprintName.padEnd(20)} [${q.totalSteps - q.stepsRemaining}/${
               q.totalSteps
             } fab pts · ~${Math.ceil(q.stepsRemaining / Math.max(1, fab.linesCount))}st left]`
         );
@@ -2385,14 +3484,16 @@ export function formatFabStatusReport(state: GameState): string {
             it.qualityGrade ? ` ${it.qualityGrade}` : ''
           }`;
           const spec = inventoryItemToCustomSpec(it);
+          const serialPreview =
+            it.serialNumbers && it.serialNumbers.length > 0
+              ? ` · S/N: ${it.serialNumbers.slice(0, 2).join(', ')}${it.serialNumbers.length > 2 ? '…' : ''}`
+              : '';
           return `  #${i + 1} ${String(it.qty).padStart(2)}x [${cat}] ${it.name.padEnd(20)} ${it.processNode.padEnd(
             8
           )} ${yieldTag.padEnd(9)} Export:${formatUsd(
             it.wholesaleValueUsd,
             it.wholesaleValueUsd >= 10_000
-          )}/ea\n     Spec: ${formatCustomComponentSummaryLine(
-            spec
-          )}`;
+          )}/ea\n     Spec: ${formatCustomComponentSummaryLine(spec)}${serialPreview}`;
         });
 
   return [
@@ -2401,23 +3502,26 @@ export function formatFabStatusReport(state: GameState): string {
     )}/cycle · Built: ${fab.totalUnitsManufactured} · Exports: ${formatUsd(
       fab.totalExportRevenueUsd
     )})`,
-    `  Next Fab Line Cost: ${nextLineCost} · Engineering Point Budget: ${getFabEngineeringPointBudget(state)} pts`,
+    `  Next Fab Line Cost: ${nextLineCost} · Engineering Budget: ${getFabEngineeringPointBudget(state)} pts · Drafts: ${(fab.draftBlueprints ?? []).length}`,
     ``,
-    `  BLUEPRINTS ("fab design" for interactive wizard across ALL 7 part types!)`,
+    `  BLUEPRINTS ("fab design" wizard | "fab proto <#>" | "fab revise <#>" | "fab compare <a#> <b#>")`,
     ...bpRows,
     ``,
     `  ACTIVE PRODUCTION QUEUE ("fab produce <bp#> <qty>")`,
     ...qRows,
     ``,
-    `  FINISHED INVENTORY ("fab deploy <inv#> <rig#> [gpuSlot]" | "build rig" uses [FAB STOCK] at $0 | "fab sell <inv#> <qty|all>")`,
+    `  FINISHED INVENTORY ("fab deploy <inv#> <rig#> [gpuSlot]" | "fab sell <inv#> <qty|all>")`,
     ...invRows,
     ``,
     `  COMMANDS:`,
     `    fab line build                               Commission cleanroom fab line (1..3)`,
-    `    fab design                                   Open Interactive Component Engineering Wizard (All 7 parts)`,
-    `    fab design <name> <algo> <node> [profile]    Quick 1-line ASIC tape-out shortcut`,
-    `    fab produce <bp#> <qty>                      Manufacture batch (1..20)`,
-    `    fab deploy <inv#> <rig#> [gpuSlot]           Install custom chassis/compute/GPU/storage/PSU/cooling/OS`,
+    `    fab design                                   Interactive Component Engineering Wizard (All 7 parts)`,
+    `    fab proto <bp#>                              Run prototype validation & calibration bench test`,
+    `    fab revise <bp#> <perf|bal|eff|compact>      Create numbered blueprint revision (45% NRE)`,
+    `    fab compare <bpA#> <bpB#>                    Compare specs, manufacturability & yield side-by-side`,
+    `    fab produce <bp#> <qty>                      Manufacture tracked QA batch (1..20) with serials`,
+    `    fab history | fab batch <#> | fab serial <S> Inspect batch QC & unit serial genealogy`,
+    `    fab deploy <inv#> <rig#> [gpuSlot]           Install custom part into a rig`,
     `    fab strip <rig#> [slot] [gpuSlot]            Pull custom part back into inventory (2% refurb)`,
     `    fab sell <inv#> <qty|all>                    Export custom hardware wholesale`,
   ].join('\n');

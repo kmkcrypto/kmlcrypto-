@@ -9,19 +9,23 @@ import {
 } from '../types/game';
 import { formatCoinAmount, formatStepLabel, formatUsd } from '../utils/format';
 
-const ALL_COINS: CoinSymbol[] = ['BTC', 'LTC', 'DOGE', 'XMR', 'ETH', 'XCH'];
+const STARTER_COINS: CoinSymbol[] = ['BTC', 'LTC', 'DOGE', 'RVN', 'XMR', 'ETH', 'ZEC', 'XCH', 'QBC'];
 
 export function buildDefaultWallet(
-  prev?: Partial<Record<CoinSymbol, number>>
+  prev?: Partial<Record<CoinSymbol, number>>,
+  coins?: Record<CoinSymbol, CoinMarketState>
 ): Record<CoinSymbol, number> {
-  return {
-    BTC: typeof prev?.BTC === 'number' && Number.isFinite(prev.BTC) ? Math.max(0, prev.BTC) : 0,
-    LTC: typeof prev?.LTC === 'number' && Number.isFinite(prev.LTC) ? Math.max(0, prev.LTC) : 0,
-    DOGE: typeof prev?.DOGE === 'number' && Number.isFinite(prev.DOGE) ? Math.max(0, prev.DOGE) : 0,
-    XMR: typeof prev?.XMR === 'number' && Number.isFinite(prev.XMR) ? Math.max(0, prev.XMR) : 0,
-    ETH: typeof prev?.ETH === 'number' && Number.isFinite(prev.ETH) ? Math.max(0, prev.ETH) : 0,
-    XCH: typeof prev?.XCH === 'number' && Number.isFinite(prev.XCH) ? Math.max(0, prev.XCH) : 0,
-  };
+  const wallet: Record<CoinSymbol, number> = {};
+  const keys = new Set<string>([
+    ...STARTER_COINS,
+    ...Object.keys(prev ?? {}),
+    ...Object.keys(coins ?? {}),
+  ]);
+  for (const sym of keys) {
+    const val = prev?.[sym];
+    wallet[sym] = typeof val === 'number' && Number.isFinite(val) ? Math.max(0, val) : 0;
+  }
+  return wallet;
 }
 
 export function getSpotExchangeFeePct(
@@ -39,8 +43,8 @@ export function getSpotExchangeFeePct(
 }
 
 export function getWalletMarketValueUsd(state: Pick<GameState, 'wallet' | 'coins'>): number {
-  const wallet = buildDefaultWallet(state.wallet);
-  return ALL_COINS.reduce((sum, sym) => {
+  const wallet = buildDefaultWallet(state.wallet, state.coins);
+  return Object.keys(state.coins).reduce((sum, sym) => {
     const qty = wallet[sym] ?? 0;
     const px = state.coins[sym]?.priceUsd ?? 0;
     return sum + qty * px;
@@ -85,10 +89,10 @@ export function executeSpotBuy(
   const netSpend = usdAmount - feeUsd;
   const coinsBought = netSpend / Math.max(1e-6, targetCoin.priceUsd);
 
-  const wallet = buildDefaultWallet(state.wallet);
-  const costBasis = buildDefaultWallet(state.walletCostBasis);
-  wallet[coin] += coinsBought;
-  costBasis[coin] += usdAmount;
+  const wallet = buildDefaultWallet(state.wallet, state.coins);
+  const costBasis = buildDefaultWallet(state.walletCostBasis, state.coins);
+  wallet[coin] = (wallet[coin] ?? 0) + coinsBought;
+  costBasis[coin] = (costBasis[coin] ?? 0) + usdAmount;
 
   const tx: TransactionEntry = {
     id: `tx_exbuy_${state.stepCount}_${Math.random().toString(36).slice(2, 6)}`,
@@ -122,7 +126,7 @@ export function executeSpotSell(
   const targetCoin = state.coins[coin];
   if (!targetCoin) return { ok: false, nextState: state, summary: `Unknown coin "${coin}".` };
 
-  const wallet = buildDefaultWallet(state.wallet);
+  const wallet = buildDefaultWallet(state.wallet, state.coins);
   const held = wallet[coin] ?? 0;
   if (held <= 1e-8) {
     return { ok: false, nextState: state, summary: `Your wallet holds 0 ${coin}.` };
@@ -138,12 +142,12 @@ export function executeSpotSell(
   const feeUsd = grossUsd * feePct;
   const netUsd = grossUsd - feeUsd;
 
-  const costBasis = buildDefaultWallet(state.walletCostBasis);
+  const costBasis = buildDefaultWallet(state.walletCostBasis, state.coins);
   const fracSold = Math.min(1, sellQty / Math.max(1e-8, held));
-  const basisUsed = costBasis[coin] * fracSold;
+  const basisUsed = (costBasis[coin] ?? 0) * fracSold;
   const realizedPnl = netUsd - basisUsed;
   wallet[coin] = Math.max(0, held - sellQty);
-  costBasis[coin] = Math.max(0, costBasis[coin] - basisUsed);
+  costBasis[coin] = Math.max(0, (costBasis[coin] ?? 0) - basisUsed);
 
   const tx: TransactionEntry = {
     id: `tx_exsell_${state.stepCount}_${Math.random().toString(36).slice(2, 6)}`,
@@ -185,7 +189,7 @@ export function placeLimitOrder(
     return { ok: false, nextState: state, summary: 'Order amount must be > 0.' };
   }
 
-  const wallet = buildDefaultWallet(state.wallet);
+  const wallet = buildDefaultWallet(state.wallet, state.coins);
   let nextCash = state.cash;
 
   if (side === 'BUY') {
@@ -206,7 +210,7 @@ export function placeLimitOrder(
         summary: `Insufficient ${coin} in wallet (have ${formatCoinAmount(wallet[coin] ?? 0)}).`,
       };
     }
-    wallet[coin] -= amount;
+    wallet[coin] = (wallet[coin] ?? 0) - amount;
   }
 
   const order: LimitOrder = {
@@ -243,11 +247,11 @@ export function cancelLimitOrder(
   if (!ord) return { ok: false, nextState: state, summary: `Limit order #${orderIdx + 1} not found.` };
 
   let nextCash = state.cash;
-  const wallet = buildDefaultWallet(state.wallet);
+  const wallet = buildDefaultWallet(state.wallet, state.coins);
   if (ord.side === 'BUY') {
     nextCash += ord.reservedUsd ?? ord.amount;
   } else {
-    wallet[ord.coin] += ord.amount;
+    wallet[ord.coin] = (wallet[ord.coin] ?? 0) + ord.amount;
   }
 
   return {
@@ -396,8 +400,8 @@ export function stepExchangeOrdersAndShorts(
       const spend = ord.reservedUsd ?? ord.amount;
       const net = spend * (1 - feePct);
       const bought = net / px;
-      wallet[ord.coin] += bought;
-      costBasis[ord.coin] += spend;
+      wallet[ord.coin] = (wallet[ord.coin] ?? 0) + bought;
+      costBasis[ord.coin] = (costBasis[ord.coin] ?? 0) + spend;
       news.push({
         id: `news_lim_buy_${ord.id}_${nextStep}`,
         step: nextStep,
@@ -484,26 +488,29 @@ export function stepExchangeOrdersAndShorts(
 }
 
 export function formatWalletAndExchangeReport(state: GameState): string {
-  const wallet = buildDefaultWallet(state.wallet);
-  const basis = buildDefaultWallet(state.walletCostBasis);
+  const wallet = buildDefaultWallet(state.wallet, state.coins);
+  const basis = buildDefaultWallet(state.walletCostBasis, state.coins);
   const feePct = getSpotExchangeFeePct(state);
   const holdRigs = state.rigs.filter((r) => r.payoutMode === 'HOLD').length;
 
   let totalValueUsd = 0;
-  const holdingRows = ALL_COINS.map((sym) => {
-    const qty = wallet[sym];
-    const px = state.coins[sym].priceUsd;
+  const coinSymbols = Object.keys(state.coins);
+  const holdingRows = coinSymbols.map((sym) => {
+    const qty = wallet[sym] ?? 0;
+    const c = state.coins[sym];
+    const px = c?.priceUsd ?? 0;
     const val = qty * px;
     totalValueUsd += val;
-    const cb = basis[sym];
+    const cb = basis[sym] ?? 0;
     const pnl = val - cb;
     const pnlStr =
       qty <= 1e-8
         ? '$0'
         : `${pnl >= 0 ? '+' : '-'}${formatUsd(Math.abs(pnl))}`;
-    return `  ${sym.padEnd(5)} ${formatCoinAmount(qty).padStart(12)}  Spot:${formatUsd(px).padStart(
+    const tag = c?.isPlayerCreated ? ' [CUSTOM]' : '';
+    return `  ${sym.padEnd(6)} ${formatCoinAmount(qty).padStart(12)}  Spot:${formatUsd(px).padStart(
       10
-    )}  Value:${formatUsd(val).padStart(11)}  UnrealP&L:${pnlStr.padStart(10)}`;
+    )}  Value:${formatUsd(val).padStart(11)}  UnrealP&L:${pnlStr.padStart(10)}${tag}`;
   });
 
   const orders = state.limitOrders ?? [];

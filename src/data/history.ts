@@ -1,5 +1,17 @@
-import { CoinMarketState, CoinSymbol } from '../types/game';
+import { CoinMarketState, CoinSymbol, CoreCoinSymbol } from '../types/game';
 import { createSeededRng } from '../utils/rng';
+
+export const CORE_COIN_SYMBOLS: CoreCoinSymbol[] = [
+  'BTC',
+  'LTC',
+  'DOGE',
+  'XMR',
+  'ETH',
+  'XCH',
+  'RVN',
+  'ZEC',
+  'QBC',
+];
 
 export function createInitialCoins(runSeed = 'DEFAULT'): Record<CoinSymbol, CoinMarketState> {
   const rng = createSeededRng(`${runSeed}-coins`);
@@ -12,6 +24,9 @@ export function createInitialCoins(runSeed = 'DEFAULT'): Record<CoinSymbol, Coin
   const xmrBase = Number((165.0 * jitter(0.12)).toFixed(2));
   const ethBase = Number((2400 * jitter(0.12)).toFixed(2));
   const xchBase = Number((400 * jitter(0.15)).toFixed(2));
+  const rvnBase = Number((0.085 * jitter(0.16)).toFixed(4));
+  const zecBase = Number((92.0 * jitter(0.15)).toFixed(2));
+  const qbcBase = Number((4800 * jitter(0.14)).toFixed(2));
 
   // Halvings are a mid/late-game pressure valve, not an early-game wall: at
   // 90-120 steps a run hit ten halvings (x1/1024 emission) before step 1,000.
@@ -21,6 +36,9 @@ export function createInitialCoins(runSeed = 'DEFAULT'): Record<CoinSymbol, Coin
   const xmrHalve = halvingOffset(520);
   const ethHalve = halvingOffset(440);
   const xchHalve = halvingOffset(540);
+  const rvnHalve = halvingOffset(400);
+  const zecHalve = halvingOffset(460);
+  const qbcHalve = halvingOffset(580);
 
   return {
     BTC: {
@@ -47,6 +65,7 @@ export function createInitialCoins(runSeed = 'DEFAULT'): Record<CoinSymbol, Coin
       totalEarnedUsd: 0,
       payoutNote: 'Tier 1 SHA-256 · Starter ~$18/step · ASIC ~$6.5k/step',
       color: '#4ADE80',
+      volatilityMult: 1.0,
     },
     LTC: {
       symbol: 'LTC',
@@ -72,6 +91,7 @@ export function createInitialCoins(runSeed = 'DEFAULT'): Record<CoinSymbol, Coin
       totalEarnedUsd: 0,
       payoutNote: 'Tier 2 Scrypt · ~2.7x CPU & GPU upgrade',
       color: '#38BDF8',
+      volatilityMult: 1.05,
     },
     DOGE: {
       symbol: 'DOGE',
@@ -97,12 +117,40 @@ export function createInitialCoins(runSeed = 'DEFAULT'): Record<CoinSymbol, Coin
       totalEarnedUsd: 0,
       payoutNote: 'Tier 3 Scrypt · High volatility & ~1.8x over LTC',
       color: '#FACC15',
+      volatilityMult: 1.35,
+    },
+    RVN: {
+      symbol: 'RVN',
+      name: 'Ravencoin',
+      algorithm: 'KAWPOW',
+      tier: 4,
+      unlockCostUsd: 8_500,
+      unlocked: false,
+      basePriceUsd: rvnBase,
+      priceUsd: rvnBase,
+      prevPriceUsd: rvnBase,
+      priceHistory: [{ step: 0, stepLabel: 'Step 0', price: rvnBase }],
+      baselineHash: 18,
+      baseStepCoins: 1950,
+      hashExponent: 0.58,
+      sentiment: Math.round((rng() - 0.22) * 20),
+      networkDifficulty: 1.0,
+      halvingEverySteps: rvnHalve,
+      stepsUntilHalving: rvnHalve,
+      halvingCount: 0,
+      blockRewardScale: 1.0,
+      totalMined: 0,
+      totalEarnedUsd: 0,
+      payoutNote: 'Tier 4 KawPoW · ASIC-resistant GPU ALU workload (>=4GB VRAM)',
+      color: '#F43F5E',
+      minVramGb: 4,
+      volatilityMult: 1.25,
     },
     XMR: {
       symbol: 'XMR',
       name: 'Monero',
       algorithm: 'RANDOMX',
-      tier: 4,
+      tier: 5,
       unlockCostUsd: 14_000,
       unlocked: false,
       basePriceUsd: xmrBase,
@@ -120,14 +168,16 @@ export function createInitialCoins(runSeed = 'DEFAULT'): Record<CoinSymbol, Coin
       blockRewardScale: 1.0,
       totalMined: 0,
       totalEarnedUsd: 0,
-      payoutNote: 'Tier 4 RandomX · High-margin server CPU & photonic QPU demand',
+      payoutNote: 'Tier 5 RandomX · High-margin server CPU & photonic QPU demand',
       color: '#FB923C',
+      minRamGb: 8,
+      volatilityMult: 0.95,
     },
     ETH: {
       symbol: 'ETH',
       name: 'Ethereum',
       algorithm: 'ETHASH',
-      tier: 5,
+      tier: 6,
       unlockCostUsd: 45_000,
       unlocked: false,
       basePriceUsd: ethBase,
@@ -145,14 +195,43 @@ export function createInitialCoins(runSeed = 'DEFAULT'): Record<CoinSymbol, Coin
       blockRewardScale: 1.0,
       totalMined: 0,
       totalEarnedUsd: 0,
-      payoutNote: 'Tier 5 Ethash · Requires GPU · Multi-card & QGPU yields',
+      payoutNote: 'Tier 6 Ethash · Requires GPU (>=4GB DAG) · Multi-card & QGPU yields',
       color: '#818CF8',
+      minVramGb: 4,
+      volatilityMult: 1.1,
+    },
+    ZEC: {
+      symbol: 'ZEC',
+      name: 'Zcash',
+      algorithm: 'EQUIHASH',
+      tier: 7,
+      unlockCostUsd: 78_000,
+      unlocked: false,
+      basePriceUsd: zecBase,
+      priceUsd: zecBase,
+      prevPriceUsd: zecBase,
+      priceHistory: [{ step: 0, stepLabel: 'Step 0', price: zecBase }],
+      baselineHash: 140,
+      baseStepCoins: 9.5,
+      hashExponent: 0.6,
+      sentiment: Math.round((rng() - 0.24) * 18),
+      networkDifficulty: 1.0,
+      halvingEverySteps: zecHalve,
+      stepsUntilHalving: zecHalve,
+      halvingCount: 0,
+      blockRewardScale: 1.0,
+      totalMined: 0,
+      totalEarnedUsd: 0,
+      payoutNote: 'Tier 7 Equihash · Heavy solver memory (>=8GB VRAM/RAM or Equihash ASIC)',
+      color: '#EAB308',
+      minVramGb: 8,
+      volatilityMult: 1.18,
     },
     XCH: {
       symbol: 'XCH',
       name: 'Chia',
       algorithm: 'POST',
-      tier: 6,
+      tier: 8,
       unlockCostUsd: 150_000,
       unlocked: false,
       basePriceUsd: xchBase,
@@ -170,8 +249,36 @@ export function createInitialCoins(runSeed = 'DEFAULT'): Record<CoinSymbol, Coin
       blockRewardScale: 1.0,
       totalMined: 0,
       totalEarnedUsd: 0,
-      payoutNote: 'Tier 6 PoST · Enterprise storage arrays & holographic vaults',
+      payoutNote: 'Tier 8 PoST · Enterprise storage arrays & holographic vaults',
       color: '#10B981',
+      volatilityMult: 1.08,
+    },
+    QBC: {
+      symbol: 'QBC',
+      name: 'QubitCoin',
+      algorithm: 'QHASH',
+      tier: 9,
+      unlockCostUsd: 450_000,
+      unlocked: false,
+      basePriceUsd: qbcBase,
+      priceUsd: qbcBase,
+      prevPriceUsd: qbcBase,
+      priceHistory: [{ step: 0, stepLabel: 'Step 0', price: qbcBase }],
+      baselineHash: 500,
+      baseStepCoins: 18.0,
+      hashExponent: 0.65,
+      sentiment: Math.round((rng() - 0.2) * 16),
+      networkDifficulty: 1.0,
+      halvingEverySteps: qbcHalve,
+      stepsUntilHalving: qbcHalve,
+      halvingCount: 0,
+      blockRewardScale: 1.0,
+      totalMined: 0,
+      totalEarnedUsd: 0,
+      payoutNote: 'Tier 9 QHash · Post-quantum lattice PoW for Gen-7 Quantum & Photonic cores',
+      color: '#22D3EE',
+      preferredBranch: 'QUANTUM',
+      volatilityMult: 1.3,
     },
   };
 }
