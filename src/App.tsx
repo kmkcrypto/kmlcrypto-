@@ -44,6 +44,7 @@ import {
   designCustomChipBlueprint,
   ensureRigComponentHealth,
   executeSpotBuy,
+  estimateFleetHashIndex,
   executeSpotSell,
   findOpenGridSlot,
   findOpenRoomId,
@@ -70,6 +71,12 @@ import {
 } from './engine/simulation';
 import { getUnlockedSystems } from './data/onboarding';
 import { getGlobalHardwarePriceMult } from './engine/usedMarket';
+import {
+  launchShellCoin,
+  resolveRaid,
+  rugShellCoin,
+  shillShellCoin,
+} from './engine/underground';
 import {
   CAREER_STORAGE_KEY,
   clearSavedState,
@@ -2988,6 +2995,54 @@ export default function App() {
     return { ok: true, cost };
   };
 
+  const handleLaunchShellCoin = (
+    ticker: string,
+    name: string
+  ): { ok: boolean; reason?: string; cost?: number; summary?: string } => {
+    if (!state) return { ok: false, reason: 'No game active.' };
+    const res = launchShellCoin(state, ticker, name);
+    if (!res.ok) return res;
+    soundFx.playAlert();
+    setState(res.nextState);
+    showBanner(res.summary);
+    return { ok: true, cost: res.cost, summary: res.summary };
+  };
+
+  const handleShillShellCoin = (
+    ticker: string
+  ): { ok: boolean; reason?: string; cost?: number; summary?: string } => {
+    if (!state) return { ok: false, reason: 'No game active.' };
+    const res = shillShellCoin(state, ticker);
+    if (!res.ok) return res;
+    soundFx.playClick();
+    setState(res.nextState);
+    return { ok: true, cost: res.cost, summary: res.summary };
+  };
+
+  const handleRugShellCoin = (
+    ticker: string
+  ): { ok: boolean; reason?: string; cost?: number; summary?: string } => {
+    if (!state) return { ok: false, reason: 'No game active.' };
+    const res = rugShellCoin(state, ticker);
+    if (!res.ok) return res;
+    soundFx.playMilestone();
+    setState(res.nextState);
+    showBanner(res.summary);
+    return { ok: true, summary: res.summary };
+  };
+
+  const handleRaidRival = (
+    rivalId: string
+  ): { ok: boolean; reason?: string; cost?: number; summary?: string } => {
+    if (!state) return { ok: false, reason: 'No game active.' };
+    const res = resolveRaid(state, rivalId, estimateFleetHashIndex(state));
+    if (!res.ok) return res;
+    soundFx.playAlert();
+    setState(res.nextState);
+    showBanner(res.summary);
+    return { ok: true, summary: res.summary };
+  };
+
   const handleLaunderHeat = (): { ok: boolean; reason?: string; cost?: number } => {
     if (!state) return { ok: false, reason: 'No game active.' };
     if (state.stepCount < state.underground.launderCooldownStep) {
@@ -3797,6 +3852,10 @@ export default function App() {
                 onPumpDump={handlePumpDump}
                 onExtortRival={handleExtortRival}
                 onSabotageRival={handleSabotageRival}
+                onLaunchShellCoin={handleLaunchShellCoin}
+                onShillShellCoin={handleShillShellCoin}
+                onRugShellCoin={handleRugShellCoin}
+                onRaidRival={handleRaidRival}
                 onInvestigateRival={(rivalIdx) => {
                   if (!state) return { ok: false, summary: 'No active game.' };
                   const res = investigateRivalSyndicate(state, rivalIdx);

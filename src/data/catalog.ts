@@ -2680,6 +2680,12 @@ export const ACHIEVEMENTS: AchievementSpec[] = [
     description: 'Unlock 12 or more technologies across the research tree.',
     category: 'RESEARCH',
   },
+  {
+    id: 'ach_season_champion',
+    title: 'Season Champion',
+    description: 'Finish a season ranked #1 against every rival syndicate.',
+    category: 'EMPIRE',
+  },
 ];
 
 export const CHALLENGES: ChallengeSpec[] = [

@@ -205,7 +205,7 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
         ? candidate.availableContracts
         : [],
       activeContract: candidate.activeContract ?? null,
-      underground: candidate.underground ?? {
+      underground: {
         powerSiphonActive: false,
         botnetCoin: null,
         botnetBonusHash: 0,
@@ -215,6 +215,9 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
         bribeProtectionSteps: 0,
         blackMarketListings: [],
         blackMarketRefreshStep: stepCount + 15,
+        shellCoins: [],
+        raidCooldownStep: 0,
+        ...(candidate.underground ?? {}),
       },
       pendingEvent: candidate.pendingEvent ?? null,
       ledger: Array.isArray(candidate.ledger)
@@ -278,6 +281,7 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
         ...buildDefaultWorld(candidate.runSeed),
         ...(candidate.world && typeof candidate.world === 'object' ? candidate.world : {}),
       },
+      seasonHistory: Array.isArray(candidate.seasonHistory) ? candidate.seasonHistory : [],
     };
 
     if (hydrated.usedMarketListings.length === 0) {

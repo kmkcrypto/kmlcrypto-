@@ -529,7 +529,21 @@ export const CODEX_ENTRIES: CodexEntry[] = [
       '  - PR Campaigns ("pr") legally shift coin prices/sentiment; Covert Ops ("ops") and',
       '    Black Market ("blackmarket") trade big shortcuts for Regulatory Scrutiny ("Heat").',
       '  - Underground actions: "ops siphon", "ops botnet", "ops wash", "ops pump", "ops extort",',
-      '    "ops sabotage", "ops launder", "ops bribe". Bigger schemes raise more Heat and can be traced.',
+      '    "ops sabotage", "ops raid", "ops launder", "ops bribe". Bigger schemes raise more Heat and',
+      '    can be traced. Vault raids ("ops raid <#>") steal cash and hijack rival hashrate for 8 steps.',
+      '  - Shell coins ("ops coin <TICKER> <Name>", "ops shill", "ops rug") are manufactured tokens:',
+      '    hype decays every step, the liquidity pool is what a rug can take, and a traced rug draws a fine.',
+    ],
+  },
+  {
+    key: 'seasons',
+    title: 'SEASONS, LEADERBOARDS & HALL OF FAME',
+    keywords: ['season', 'leaderboard', 'rank', 'score', 'hall', 'fame', 'champion'],
+    body: [
+      '  - A season lasts 60 steps. Run "leaderboard" (or "season") for live standings vs. every rival.',
+      '  - Season score = company valuation + hash index x600 + reputation x450 + 5 per unspent RP.',
+      '  - When a season closes its standings are archived in the Hall of Fame and a champion is crowned.',
+      '  - Finish a season at #1 to unlock the "Season Champion" achievement.',
     ],
   },
   {

@@ -25,6 +25,12 @@ import {
   STORAGE_PARTS,
 } from '../data/catalog';
 import { getRivalStrategyLabel } from '../engine/rivals';
+import {
+  buildSeasonStandings,
+  getSeasonStatus,
+  SEASON_LENGTH_STEPS,
+} from '../engine/leaderboard';
+import { getShellCoins } from '../engine/underground';
 import { formatWorldReport } from '../engine/world';
 import {
   BILLING_CYCLE_STEPS,
@@ -230,6 +236,19 @@ interface TextGameTerminalProps {
     rivalId: string
   ) => { ok: boolean; reason?: string; cost?: number; summary?: string };
   onSabotageRival: (rivalId: string) => { ok: boolean; reason?: string; cost?: number };
+  onLaunchShellCoin: (
+    ticker: string,
+    name: string
+  ) => { ok: boolean; reason?: string; cost?: number; summary?: string };
+  onShillShellCoin: (
+    ticker: string
+  ) => { ok: boolean; reason?: string; cost?: number; summary?: string };
+  onRugShellCoin: (
+    ticker: string
+  ) => { ok: boolean; reason?: string; cost?: number; summary?: string };
+  onRaidRival: (
+    rivalId: string
+  ) => { ok: boolean; reason?: string; cost?: number; summary?: string };
   onInvestigateRival: (rivalIdx: number) => { ok: boolean; summary: string };
   onCloneRig: (rigIdx: number, qty: number) => { ok: boolean; summary: string };
   onLaunderHeat: () => { ok: boolean; reason?: string; cost?: number };
@@ -302,6 +321,8 @@ const TOP_COMMANDS = [
   'resume',
   'auto',
   'speed',
+  'leaderboard',
+  'season',
   'event',
   'decide',
   'build rig',
@@ -426,6 +447,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onPumpDump,
   onExtortRival,
   onSabotageRival,
+  onLaunchShellCoin,
+  onShillShellCoin,
+  onRugShellCoin,
+  onRaidRival,
   onInvestigateRival,
   onCloneRig,
   onLaunderHeat,
@@ -2086,6 +2111,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             `    speed [<5..300>|2x|clock <1..24>]   Real seconds per step & in-game hours per step`,
             `    event | decide <1|2|3>            View active event or lock in choice`,
             `    stats | valuation | history | milestones | achievements | challenges | save`,
+            `    leaderboard | season              Seasonal standings vs rivals & hall of fame`,
             `  HARDWARE, USED MARKET & MAINTENANCE`,
             `    build rig | presets | build preset <#>    Assemble custom rig (unlocked parts only)`,
             `    usedmarket | used [buy <#>|refresh]       Browse/buy factory, refurb, used & damaged rigs`,
@@ -2120,7 +2146,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
               : []),
             ...(unlockedSys.ops
               ? [
-                  `    ops | blackmarket                         Underground ops (siphon/botnet/wash/pump/extort/sabotage)`,
+                  `    ops | blackmarket                         Underground ops (siphon/botnet/wash/pump/coin/raid/extort)`,
                 ]
               : []),
             ...(lockedUpcoming.length > 0
@@ -4350,6 +4376,51 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       return;
     }
 
+    if (cmd === 'leaderboard' || cmd === 'season' || cmd === 'seasons') {
+      const hashIndex = estimateFleetHashIndex(state);
+      const standings = buildSeasonStandings(state, hashIndex);
+      const season = getSeasonStatus(state.stepCount);
+      const playerRank = standings.findIndex((s) => s.isPlayer) + 1;
+      const header = `  #  ${padRight('OPERATOR', 24)} ${padLeft('SEASON SCORE', 13)} ${padLeft(
+        'HASH IDX',
+        9
+      )} ${padLeft('VALUATION', 11)}`;
+      const rows = standings.map(
+        (s, i) =>
+          `  ${padRight(`${i + 1}.`, 3)} ${padRight(s.isPlayer ? `${s.name} (you)` : s.name, 24)} ${padLeft(
+            formatUsd(s.score),
+            13
+          )} ${padLeft(String(Math.round(s.hashIndex)), 9)} ${padLeft(formatUsd(s.valuationUsd, true), 11)}`
+      );
+      const history = state.seasonHistory ?? [];
+      const historyLines =
+        history.length === 0
+          ? ['  No completed seasons yet — the current one closes at step ' + season.endsAtStep + '.']
+          : history
+              .slice(0, 4)
+              .map(
+                (h) =>
+                  `  S${h.seasonId} ${padRight(h.label, 18)} champion: ${padRight(
+                    h.standings[0]?.name ?? '—',
+                    22
+                  )} you finished #${h.playerRank}`
+              );
+      append([
+        {
+          kind: 'HEAD',
+          text: `SEASON ${season.seasonId} · ${season.label.toUpperCase()} — step ${state.stepCount}/${season.endsAtStep} (${season.stepsRemaining} left)`,
+        },
+        { kind: 'PRE', text: [header, '-'.repeat(header.length + 12), ...rows].join('\n') },
+        { kind: 'HEAD', text: 'HALL OF FAME' },
+        { kind: 'PRE', text: historyLines.join('\n') },
+        {
+          kind: 'TEXT',
+          text: `You are #${playerRank} of ${standings.length} this season. Seasons close every ${SEASON_LENGTH_STEPS} steps; standings are archived automatically.`,
+        },
+      ]);
+      return;
+    }
+
     if (cmd === 'ops') {
       if (!checkSystemUnlocked('ops', 'Covert Operations')) return;
       maybeShowContextualGuide('ctx_ops');
@@ -4430,6 +4501,102 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         ]);
         return;
       }
+      if (arg1 === 'coin') {
+        const ticker = (parts[2] ?? '').toUpperCase();
+        if (!ticker) {
+          append([
+            {
+              kind: 'ERR',
+              text: 'Usage: ops coin <TICKER> <Name...>   Launch a shell coin ($2,500, +18 Heat).',
+            },
+          ]);
+          return;
+        }
+        const res = onLaunchShellCoin(ticker, parts.slice(3).join(' '));
+        append([
+          {
+            kind: res.ok ? 'WARN' : 'ERR',
+            text: res.ok ? res.summary ?? `Launched $${ticker}.` : res.reason ?? 'Shell coin launch failed.',
+          },
+        ]);
+        return;
+      }
+      if (arg1 === 'shill') {
+        const ticker = (parts[2] ?? '').toUpperCase();
+        if (!ticker) {
+          append([{ kind: 'ERR', text: 'Usage: ops shill <TICKER>   Buy hype for a shell coin ($750, +6 Heat).' }]);
+          return;
+        }
+        const res = onShillShellCoin(ticker);
+        append([
+          {
+            kind: res.ok ? 'WARN' : 'ERR',
+            text: res.ok ? res.summary ?? `Shilled $${ticker}.` : res.reason ?? 'Shill campaign failed.',
+          },
+        ]);
+        return;
+      }
+      if (arg1 === 'rug') {
+        const ticker = (parts[2] ?? '').toUpperCase();
+        if (!ticker) {
+          append([{ kind: 'ERR', text: 'Usage: ops rug <TICKER>   Pull liquidity and exit the token.' }]);
+          return;
+        }
+        const res = onRugShellCoin(ticker);
+        append([
+          {
+            kind: res.ok ? 'WARN' : 'ERR',
+            text: res.ok ? res.summary ?? `Rugged $${ticker}.` : res.reason ?? 'Rug pull failed.',
+          },
+        ]);
+        return;
+      }
+      if (arg1 === 'raid') {
+        const idx = parseInt(arg2, 10) - 1;
+        const rival = state.rivals[idx];
+        if (!rival) {
+          append([{ kind: 'ERR', text: `Usage: ops raid <1..${state.rivals.length}>` }]);
+          return;
+        }
+        const res = onRaidRival(rival.id);
+        append([
+          {
+            kind: res.ok ? 'WARN' : 'ERR',
+            text: res.ok ? res.summary ?? `Raided ${rival.name}.` : res.reason ?? 'Raid failed.',
+          },
+        ]);
+        return;
+      }
+      if (arg1 === 'coins' || arg1 === 'shell') {
+        const shellCoins = getShellCoins(state);
+        if (shellCoins.length === 0) {
+          append([
+            { kind: 'TEXT', text: 'No shell coins running. Launch one with "ops coin <TICKER> <Name...>".' },
+          ]);
+          return;
+        }
+        const rows = shellCoins.map(
+          (c) =>
+            `  $${padRight(c.ticker, 5)} ${padRight(c.name.slice(0, 14), 15)} ${padLeft(
+              formatUsd(c.priceUsd),
+              8
+            )}  hype ${padLeft(`${Math.round(c.hype)}`, 3)}  pool ${padLeft(
+              formatUsd(c.liquidityUsd, true),
+              6
+            )}${c.extractedUsd > 0 ? `  took ${formatUsd(c.extractedUsd, true)}` : ''}  ${
+              c.rugged ? 'RUGGED' : 'ACTIVE'
+            }`
+        );
+        append([
+          { kind: 'HEAD', text: `SHELL COINS · ${shellCoins.filter((c) => !c.rugged).length}/3 active` },
+          { kind: 'PRE', text: rows.join('\n') },
+          {
+            kind: 'TEXT',
+            text: 'Shill the hype ("ops shill <TICKER>"), then pull the pool ("ops rug <TICKER>"). Hype decays every step.',
+          },
+        ]);
+        return;
+      }
       if (arg1 === 'sabotage') {
         const idx = parseInt(arg2, 10) - 1;
         const rival = state.rivals[idx];
@@ -4494,6 +4661,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             `  Audit Shield:    ${state.underground.bribeProtectionSteps > 0 ? `${state.underground.bribeProtectionSteps} steps remaining` : 'None'}`,
             `  Power Siphon:    ${state.underground.powerSiphonActive ? 'ON (-65% electricity, +25% breaker, +1.7 Heat/st)' : 'OFF'}`,
             `  Shadow Botnet:   ${botnetLine}`,
+            `  Hijacked Hash:   ${
+              (state.underground.raidStepsRemaining ?? 0) > 0
+                ? `${state.underground.raidSourceName ?? 'Rival'} · ${state.underground.raidStepsRemaining} steps left`
+                : 'None'
+            }`,
+            `  Shell Coins:     ${getShellCoins(state).filter((c) => !c.rugged).length}/3 active`,
             `  Raids Survived:  ${state.stats.raidsSurvived}   Covert Ops Run: ${state.stats.covertOpsCount}`,
             ``,
             `  ACTIONS:`,
@@ -4503,6 +4676,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             `    ops pump <COIN>       Pump & dump: +42% spike, traceable (+26 Heat, -8 Rep, fine risk)`,
             `    ops extort <1..4>     Protection racket on a rival (cash, +20 Heat, may refuse)`,
             `    ops sabotage <1..4>   DDoS & disrupt a rival syndicate for 10 steps (+18 Heat)`,
+            `    ops coin <TICKER> <Name>  Launch a shell coin ($2,500, +18 Heat)`,
+            `    ops shill <TICKER>    Manufacture hype for a shell coin ($750, +6 Heat)`,
+            `    ops rug <TICKER>      Pull the pool & exit (heat spike, trace risk)`,
+            `    ops coins             List your shell coins, hype & extracted cash`,
+            `    ops raid <1..4>       Raid a rival vault & hijack their hash for 8 steps`,
             `    ops launder           Route funds through mixers (-24 Heat)`,
             `    ops bribe             Pay utility inspectors (-16 Heat + 12-step raid shield)`,
             `    blackmarket           Browse smuggled rigs (~22% lemon risk) & illicit ROM mods`,

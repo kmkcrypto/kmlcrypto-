@@ -564,6 +564,34 @@ export interface UndergroundState {
   bribeProtectionSteps: number;
   blackMarketListings: BlackMarketListing[];
   blackMarketRefreshStep: number;
+  /** Player-issued scam tokens ("ops coin"). Purely local, not part of the real market. */
+  shellCoins?: ShellCoinState[];
+  /** Step when the next vault raid becomes available. */
+  raidCooldownStep?: number;
+  /** Hijacked rival hashrate credited each step after a successful raid. */
+  raidBonusHash?: number;
+  raidStepsRemaining?: number;
+  raidCoin?: CoinSymbol;
+  raidSourceName?: string;
+}
+
+/**
+ * A shell coin the player launched to pump and dump. It lives outside the
+ * regular coin market: price and liquidity are driven by manufactured hype.
+ */
+export interface ShellCoinState {
+  ticker: string;
+  name: string;
+  launchedStep: number;
+  priceUsd: number;
+  /** Manufactured interest (0-100). Decays every step unless re-shilled. */
+  hype: number;
+  /** Cash sitting in the token's thin liquidity pool — what a rug pull can take. */
+  liquidityUsd: number;
+  supply: number;
+  extractedUsd: number;
+  rugged: boolean;
+  ruggedStep?: number;
 }
 
 export type PendingEventCategory =
@@ -712,6 +740,24 @@ export interface SandboxConfig {
   operatingCostMult: number;
 }
 
+/** One competitor's line on the seasonal leaderboard. */
+export interface SeasonStanding {
+  name: string;
+  isPlayer: boolean;
+  score: number;
+  hashIndex: number;
+  valuationUsd: number;
+}
+
+/** Archived standings for a completed season. */
+export interface SeasonRecord {
+  seasonId: number;
+  label: string;
+  endedStep: number;
+  playerRank: number;
+  standings: SeasonStanding[];
+}
+
 export interface PerformanceSnapshot {
   step: number;
   stepLabel: string;
@@ -797,6 +843,8 @@ export interface GameState {
   fab?: FabState;
   scenarioId?: DevScenarioId;
   world?: SharedWorldState;
+  /** Completed seasons, newest first. Drives the "leaderboard" hall of fame. */
+  seasonHistory?: SeasonRecord[];
 }
 
 /**
