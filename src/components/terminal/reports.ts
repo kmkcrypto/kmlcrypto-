@@ -41,10 +41,10 @@ export function formatValuationReport(state: GameState): string {
   const rigRows = state.rigs.slice(0, 10).map((r, i) => {
     const cost = Math.max(1, r.purchasePriceUsd ?? 355);
     const roiPct = Math.round(((r.totalEarnedUsd - cost) / cost) * 100);
-    return `    #${i + 1} ${padR(r.name, 22)} Cost:${padL(formatUsd(cost), 9)} Earned:${padL(
-      formatUsd(r.totalEarnedUsd),
+    return `    #${i + 1} ${padR(r.name, 22)} Cost:${padL(formatUsd(cost, cost >= 10_000), 9)} Earned:${padL(
+      formatUsd(r.totalEarnedUsd, r.totalEarnedUsd >= 10_000),
       9
-    )} Last:${padL(formatUsd(r.lastStepUsd), 8)}/st  ROI:${padL(`${roiPct >= 0 ? '+' : ''}${roiPct}%`, 6)}`;
+    )} Last:${padL(formatUsd(r.lastStepUsd, r.lastStepUsd >= 10_000), 8)}/st  ROI:${padL(`${roiPct >= 0 ? '+' : ''}${roiPct}%`, 6)}`;
   });
 
   return [

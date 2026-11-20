@@ -2,9 +2,9 @@ export type GameModeState = 'TITLE_MENU' | 'PLAYING';
 
 export type DifficultyLevel = 'BOOTSTRAP' | 'STANDARD' | 'TYCOON_SANDBOX' | 'SANDBOX';
 
-export type TechEra = 'CPU' | 'GPU' | 'FPGA' | 'ASIC' | 'AI';
+export type TechEra = 'CPU' | 'GPU' | 'FPGA' | 'ASIC' | 'AI' | 'QUANTUM';
 
-export type HardwareGen = 1 | 2 | 3 | 4 | 5 | 6;
+export type HardwareGen = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 /** Developer testing scenarios: each launches an isolated sandbox save at a known progression stage. */
 export type DevScenarioId =
@@ -12,6 +12,7 @@ export type DevScenarioId =
   | 'INDUSTRIAL'
   | 'GEN5'
   | 'GEN6'
+  | 'GEN7'
   | 'MANUFACTURING'
   | 'MULTIPLAYER'
   | 'CUSTOM';
@@ -168,6 +169,7 @@ export interface RigBuildConfig {
   firmwareProfile?: FirmwareProfile;
   payoutMode?: 'AUTOSELL' | 'HOLD';
   roomId?: string;
+  customParts?: RigCustomPartsMap;
 }
 
 export type RepairComponentSlot =
@@ -218,6 +220,7 @@ export interface MiningRig extends RigBuildConfig {
   illicitMod: IllicitModId | null;
   payoutMode?: 'AUTOSELL' | 'HOLD';
   customAsicSpec?: CustomAsicSpec;
+  customParts?: RigCustomPartsMap;
   lastStepCoins: number;
   lastStepUsd: number;
   totalMinedCoins: number;
@@ -898,7 +901,99 @@ export interface WorldPlayerSnapshot {
   blocksWon: number;
 }
 
-export type ChipProcessNode = '7nm' | '5nm' | '3nm' | '2nm';
+export type ChipProcessNode = '7nm' | '5nm' | '3nm' | '2nm' | '1nm' | 'photonic';
+
+export type FabArchitectureId =
+  | 'ASIC_BLADE'
+  | 'CHIPLET_CPU'
+  | 'HYBRID_FPGA'
+  | 'HASH_CORE'
+  | 'HBM_MONSTER'
+  | 'LOW_VOLT_CARD'
+  | 'OPEN_GPU_FRAME'
+  | 'ASIC_BLADE_SHELF'
+  | 'SEALED_BAFFLE'
+  | 'CONVERGED_SUPER'
+  | 'NVME_ARRAY'
+  | 'HIGH_BW_DDR'
+  | 'HYBRID_CACHE'
+  | 'GAN_HIGH_EFF'
+  | 'INDUSTRIAL_RAIL'
+  | 'SILENT_PASSIVE'
+  | 'VAPOR_AIR'
+  | 'DIRECT_LIQUID'
+  | 'CRYO_IMMERSION'
+  | 'BARE_METAL_ASM'
+  | 'UNDERCLOCK_SCHED'
+  | 'SELF_HEAL_RT';
+
+export type FabSubFeatureId =
+  | 'STD'
+  | 'COPPER_BUS'
+  | 'GRAPHENE_TIM'
+  | 'REDUNDANT_VRM'
+  | 'ECC_SHIELD';
+
+export interface FabEngineeringAllocation {
+  density: number;
+  efficiency: number;
+  thermals: number;
+  reliability: number;
+}
+
+export interface CustomComponentSpec {
+  blueprintId: string;
+  partCategory: PartCategory;
+  architecture: FabArchitectureId;
+  subFeature?: FabSubFeatureId;
+  name: string;
+  processNode: ChipProcessNode;
+  generation: HardwareGen;
+  unitCostUsd: number;
+  wholesaleValueUsd: number;
+  qualityGrade?: ChipQualityGrade;
+  qualityRoll?: number;
+  wearResistance?: number;
+  // Compute & GPU fields
+  algo?: MiningAlgorithm;
+  hashrates?: Partial<Record<MiningAlgorithm, number>>;
+  watts?: number;
+  heatC?: number;
+  noiseDba?: number;
+  computeKind?: 'CPU' | 'FPGA' | 'ASIC';
+  // Chassis fields
+  maxGpus?: number;
+  maxStorage?: number;
+  isAsicRack?: boolean;
+  maxAsics?: number;
+  baseWatts?: number;
+  coolingBonus?: number;
+  noiseModifier?: number;
+  // Storage fields
+  ramGb?: number;
+  storageTb?: number;
+  efficiencyBonus?: number;
+  // PSU fields
+  maxWatts?: number;
+  efficiency?: number;
+  // Cooling fields
+  coolingPowerC?: number;
+  isImmersion?: boolean;
+  // OS fields
+  hashrateMultiplier?: number;
+  powerMultiplier?: number;
+  stabilityBonus?: number;
+}
+
+export interface RigCustomPartsMap {
+  chassis?: CustomComponentSpec;
+  compute?: CustomComponentSpec;
+  gpus?: (CustomComponentSpec | null)[];
+  storage?: CustomComponentSpec;
+  psu?: CustomComponentSpec;
+  cooling?: CustomComponentSpec;
+  os?: CustomComponentSpec;
+}
 
 export interface CustomAsicSpec {
   blueprintId: string;
@@ -917,6 +1012,12 @@ export type ChipQualityGrade = 'A' | 'B' | 'C';
 export interface CustomChipBlueprint {
   id: string;
   name: string;
+  partCategory?: PartCategory;
+  architecture?: FabArchitectureId;
+  subFeature?: FabSubFeatureId;
+  engineering?: FabEngineeringAllocation;
+  customSpec?: CustomComponentSpec;
+  nreCostUsd?: number;
   algo: MiningAlgorithm;
   processNode: ChipProcessNode;
   unitCostUsd: number;
@@ -945,6 +1046,10 @@ export interface FabProductionOrder {
 export interface CustomAsicInventoryItem {
   blueprintId: string;
   name: string;
+  partCategory?: PartCategory;
+  architecture?: FabArchitectureId;
+  subFeature?: FabSubFeatureId;
+  customSpec?: CustomComponentSpec;
   algo: MiningAlgorithm;
   processNode: ChipProcessNode;
   hashRate: number;

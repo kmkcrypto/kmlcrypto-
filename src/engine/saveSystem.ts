@@ -68,6 +68,7 @@ function migrateRig(r: MiningRig, idx: number): MiningRig {
     illicitMod: r.illicitMod ?? null,
     payoutMode: r.payoutMode === 'HOLD' ? 'HOLD' : 'AUTOSELL',
     customAsicSpec: r.customAsicSpec,
+    customParts: r.customParts,
     lastStepCoins: typeof r.lastStepCoins === 'number' ? r.lastStepCoins : 0,
     lastStepUsd: typeof r.lastStepUsd === 'number' ? r.lastStepUsd : 0,
     totalEarnedUsd: typeof r.totalEarnedUsd === 'number' ? r.totalEarnedUsd : 0,

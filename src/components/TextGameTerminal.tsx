@@ -41,8 +41,10 @@ import {
   computeRigTelemetry,
   computeStepCoinOutput,
   computeWorkloadSummary,
+  CustomBlueprintDesignInput,
   ensureRigComponentHealth,
   formatAsciiFloorPlan,
+  formatCustomComponentSummaryLine,
   formatFabStatusReport,
   formatMarketForecastReport,
   formatSingleRoomView,
@@ -52,20 +54,36 @@ import {
   getComponentRepairCost,
   getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
+  getEffectivePartBundle,
   getEmployeeEfficiencyMult,
   getEmpireAlignment,
+  getFabEngineeringPointBudget,
   getFacility,
   getFacilityRooms,
   getFacilityTotals,
   getFacilityUpgradeCost,
+  getFocusOptionsForDesign,
   getPowerContract,
   getRigRepasteCost,
   getRigRepairCost,
   getRivalInvestigateCost,
   getSysEngineerBonus,
+  getUnlockedFabArchitectures,
+  getUnlockedFabCategories,
+  getUnlockedFabNodes,
+  getUnlockedFabSubFeatures,
+  inventoryItemToCustomSpec,
+  isFabUnlocked,
+  previewCustomComponentDesign,
   resolveCoolerRoomId,
 } from '../engine/simulation';
-import { parseDesignProfile } from '../engine/fab';
+import {
+  DESIGN_PROFILE_SPECS,
+  FAB_SUBFEATURES,
+  getPresetEngineeringForProfile,
+  NODE_SPECS,
+  parseDesignProfile,
+} from '../engine/fab';
 import { getGlobalHardwarePriceMult, getRigGeneration } from '../engine/usedMarket';
 import {
   previewCoolingUnit,
@@ -85,19 +103,26 @@ import {
   ChallengeId,
   ChipProcessNode,
   CoinSymbol,
+  CustomAsicInventoryItem,
+  CustomComponentSpec,
   DesignProfile,
   EmployeeRole,
+  FabArchitectureId,
+  FabEngineeringAllocation,
+  FabSubFeatureId,
   FacilityUpgradeId,
   FirmwareProfile,
   GameState,
   MarketRegime,
   MiningAlgorithm,
   OnboardingMode,
+  PartCategory,
   PendingEvent,
   PoolMode,
   PowerContractId,
   RepairComponentSlot,
   RigBuildConfig,
+  RigCustomPartsMap,
   RoomCoolingType,
   ShiftType,
   TaskPriority,
@@ -153,6 +178,27 @@ type TinkerSlot = 'MENU' | 'chassis' | 'compute' | 'gpu' | 'storage' | 'psu' | '
 interface TinkerState {
   rigIndex: number;
   slot: TinkerSlot;
+}
+
+type FabDesignStep =
+  | 'CATEGORY'
+  | 'ARCHITECTURE'
+  | 'NODE'
+  | 'FOCUS'
+  | 'ENGINEERING'
+  | 'SUBFEATURE'
+  | 'REVIEW';
+
+interface FabDesignWizardState {
+  step: FabDesignStep;
+  name: string;
+  partCategory: PartCategory;
+  architecture: FabArchitectureId;
+  processNode: ChipProcessNode;
+  focus: string;
+  engineering: FabEngineeringAllocation;
+  subFeature: FabSubFeatureId;
+  profile: DesignProfile;
 }
 
 export interface TerminalCommandTrigger {
@@ -273,10 +319,19 @@ interface TextGameTerminalProps {
     node: ChipProcessNode,
     profile?: DesignProfile
   ) => { ok: boolean; summary: string };
+  onDesignCustomComponent: (input: CustomBlueprintDesignInput) => { ok: boolean; summary: string };
   onQueueFabProduction: (bpIdx: number, qty: number) => { ok: boolean; summary: string };
-  onDeployCustomAsic: (invIdx: number, rigIdx: number) => { ok: boolean; summary: string };
+  onDeployCustomAsic: (
+    invIdx: number,
+    rigIdx: number,
+    gpuSlotIdx?: number
+  ) => { ok: boolean; summary: string };
   onSellCustomAsic: (invIdx: number, qtyOrAll: number | 'ALL') => { ok: boolean; summary: string };
-  onStripCustomAsic: (rigIdx: number) => { ok: boolean; summary: string };
+  onStripCustomAsic: (
+    rigIdx: number,
+    slot?: PartCategory,
+    gpuSlotIdx?: number
+  ) => { ok: boolean; summary: string };
   onBackupSave: () => boolean;
   onRestoreBackup: () => boolean;
   onExportSave: () => string | null;
@@ -465,6 +520,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   onCloseShort,
   onBuildFabLine,
   onDesignCustomChip,
+  onDesignCustomComponent,
   onQueueFabProduction,
   onDeployCustomAsic,
   onSellCustomAsic,
@@ -503,6 +559,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   const [history, setHistory] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [wizard, setWizard] = useState<BuildWizardState | null>(null);
+  const [fabWizard, setFabWizard] = useState<FabDesignWizardState | null>(null);
   const [tinker, setTinker] = useState<TinkerState | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -1012,9 +1069,56 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
   };
 
+  interface MatchingFabStockEntry {
+    invIdx: number;
+    item: CustomAsicInventoryItem;
+    spec: CustomComponentSpec;
+    availQty: number;
+  }
+
+  const getMatchingFabStock = (
+    category: PartCategory,
+    config: RigBuildConfig
+  ): MatchingFabStockEntry[] => {
+    const inv = state.fab?.inventory ?? [];
+    const bundle = getEffectivePartBundle(config);
+    const out: MatchingFabStockEntry[] = [];
+    inv.forEach((item, invIdx) => {
+      if (item.qty <= 0) return;
+      const spec = inventoryItemToCustomSpec(item);
+      if (spec.partCategory !== category) return;
+      if (category === 'compute') {
+        const isAsic = (spec.computeKind ?? 'ASIC') === 'ASIC';
+        if (isAsic && bundle.chassis.maxAsics < 1) return;
+        if (!isAsic && bundle.chassis.isAsicRack && bundle.chassis.maxGpus === 0) return;
+      }
+      let usedQty = 0;
+      if (category === 'gpu') {
+        usedQty = (config.customParts?.gpus ?? []).filter(
+          (g) =>
+            g &&
+            g.blueprintId === spec.blueprintId &&
+            Math.abs((g.qualityRoll ?? 1) - (spec.qualityRoll ?? 1)) < 1e-6
+        ).length;
+      } else if (
+        config.customParts?.[category] &&
+        config.customParts[category]?.blueprintId === spec.blueprintId &&
+        Math.abs((config.customParts[category]?.qualityRoll ?? 1) - (spec.qualityRoll ?? 1)) < 1e-6
+      ) {
+        usedQty = 1;
+      }
+      const availQty = item.qty - usedQty;
+      if (availQty > 0) {
+        out.push({ invIdx, item, spec, availQty });
+      }
+    });
+    return out;
+  };
+
   const printWizardPrompt = (wiz: BuildWizardState) => {
     const { config, step } = wiz;
-    const chassis = CHASSIS_PARTS.find((c) => c.id === config.chassisId) ?? CHASSIS_PARTS[0];
+    const bundle = getEffectivePartBundle(config);
+    const chassis = bundle.chassis;
     const facility = getFacility(state.facilityId);
     const maxRigs = getEffectiveFacilityMaxRigs(state);
     const sysBonus = getSysEngineerBonus(state);
@@ -1024,46 +1128,66 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (step === 'CHASSIS') {
       const options = getUnlockedChassis();
+      const fabStock = getMatchingFabStock('chassis', config);
       const presetCount = getUnlockedPresets().length;
       const rows = options.map((c, idx) => {
         const cap = c.isAsicRack ? 'ASIC Rack' : `${c.maxGpus} GPU slots`;
-        return `  ${idx + 1}. ${padRight(c.name, 30)} ${padLeft(formatUsd(priceOf(c.cost)), 8)}  ${padRight(
+        const p = priceOf(c.cost);
+        return `  ${idx + 1}. ${padRight(c.name, 30)} ${padLeft(formatUsd(p, p >= 10_000), 8)}  ${padRight(
           cap,
           12
         )}  -${c.coolingBonus}°C  G${c.generation ?? 1}`;
       });
+      const fabRows = fabStock.map((f, idx) => {
+        const n = options.length + idx + 1;
+        return `  ${n}. [FAB x${f.availQty}] ${padRight(f.spec.name, 22)} ${padLeft('$0', 8)}  ${formatCustomComponentSummaryLine(f.spec)}`;
+      });
       append([
         { kind: 'HEAD', text: 'RIG BUILDER STEP 1/8 — SELECT CHASSIS' },
-        { kind: 'PRE', text: rows.join('\n') },
+        { kind: 'PRE', text: [...rows, ...fabRows].join('\n') },
         ...(guideTip ? [{ kind: 'OK' as const, text: guideTip }] : []),
         {
           kind: 'TEXT',
           text:
             presetCount > 0
-              ? `Enter chassis number (1..${options.length}), "preset 1..${presetCount}", or "cancel".`
-              : `Enter chassis number (1..${options.length}) or "cancel".`,
+              ? `Enter chassis number (1..${options.length + fabStock.length}), "preset 1..${presetCount}", or "cancel".`
+              : `Enter chassis number (1..${options.length + fabStock.length}) or "cancel".`,
         },
       ]);
       return;
     }
 
     if (step === 'COMPUTE') {
-      const options = getUnlockedComputeFor(chassis.isAsicRack);
-      const rows = options.map((c, idx) => {
+      const options = getUnlockedComputeFor(chassis.isAsicRack && chassis.maxGpus === 0);
+      const filteredCatalog = chassis.maxAsics >= 1 && chassis.maxGpus > 0
+        ? [
+            ...COMPUTE_PARTS.filter((c) => isPartUnlocked(c.researchRequired).ok),
+          ]
+        : options;
+      const fabStock = getMatchingFabStock('compute', config);
+      const rows = filteredCatalog.map((c, idx) => {
         const topAlgo = Object.entries(c.hashrates)[0];
         const hashLabel = topAlgo
           ? `${topAlgo[0]} ${formatHashrate(topAlgo[1] ?? 0, topAlgo[0] as never)}`
           : '—';
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 34)} ${padLeft(formatUsd(priceOf(c.cost)), 8)}  ${padLeft(
+        const p = priceOf(c.cost);
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 34)} ${padLeft(formatUsd(p, p >= 10_000), 8)}  ${padLeft(
           `${c.watts}W`,
           6
         )}  ${padRight(hashLabel, 18)} G${c.generation ?? 1}`;
+      });
+      const fabRows = fabStock.map((f, idx) => {
+        const n = filteredCatalog.length + idx + 1;
+        return `  ${padLeft(String(n), 2)}. [FAB x${f.availQty}] ${padRight(f.spec.name, 25)} ${padLeft('$0', 8)}  ${formatCustomComponentSummaryLine(f.spec)}`;
       });
       append([
         { kind: 'HEAD', text: `RIG BUILDER STEP 2/8 — SELECT COMPUTE (${chassis.name})` },
         {
           kind: 'PRE',
-          text: rows.length > 0 ? rows.join('\n') : '  (No unlocked compute modules fit this chassis yet.)',
+          text:
+            rows.length + fabRows.length > 0
+              ? [...rows, ...fabRows].join('\n')
+              : '  (No unlocked compute modules fit this chassis yet.)',
         },
         ...(guideTip ? [{ kind: 'OK' as const, text: guideTip }] : []),
         { kind: 'TEXT', text: 'Enter compatible compute number, "back", or "cancel".' },
@@ -1073,21 +1197,27 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (step === 'GPU') {
       const options = getUnlockedGpus();
+      const fabStock = getMatchingFabStock('gpu', config);
       const rows = options.map((g, idx) => {
         const eth = g.hashrates.ETHASH
           ? `ETH ${g.hashrates.ETHASH}MH`
           : `SCR ${g.hashrates.SCRYPT ?? 0}MH`;
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(g.name, 30)} ${padLeft(formatUsd(priceOf(g.cost)), 8)}  ${padLeft(
+        const p = priceOf(g.cost);
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(g.name, 30)} ${padLeft(formatUsd(p, p >= 10_000), 8)}  ${padLeft(
           `${g.watts}W`,
           5
         )}  ${padRight(eth, 13)} G${g.generation ?? 1}`;
+      });
+      const fabRows = fabStock.map((f, idx) => {
+        const n = options.length + idx + 1;
+        return `  ${padLeft(String(n), 2)}. [FAB x${f.availQty}] ${padRight(f.spec.name, 21)} ${padLeft('$0', 8)}  ${formatCustomComponentSummaryLine(f.spec)}`;
       });
       append([
         {
           kind: 'HEAD',
           text: `RIG BUILDER STEP 3/8 — ADD GPUs (${config.gpuIds.length}/${chassis.maxGpus} installed)`,
         },
-        { kind: 'PRE', text: rows.join('\n') },
+        { kind: 'PRE', text: [...rows, ...fabRows].join('\n') },
         ...(guideTip ? [{ kind: 'OK' as const, text: guideTip }] : []),
         {
           kind: 'TEXT',
@@ -1099,14 +1229,20 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (step === 'STORAGE') {
       const options = getUnlockedStorage();
+      const fabStock = getMatchingFabStock('storage', config);
       const rows = options.map((s, idx) => {
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(s.name, 33)} ${padLeft(formatUsd(priceOf(s.cost)), 8)}  +${Math.round(
+        const p = priceOf(s.cost);
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(s.name, 33)} ${padLeft(formatUsd(p, p >= 10_000), 8)}  +${Math.round(
           s.efficiencyBonus * 100
         )}% eff  ${padRight(s.storageTb >= 1 ? `${s.storageTb}TB` : `${s.ramGb}GB RAM`, 8)}`;
       });
+      const fabRows = fabStock.map((f, idx) => {
+        const n = options.length + idx + 1;
+        return `  ${padLeft(String(n), 2)}. [FAB x${f.availQty}] ${padRight(f.spec.name, 24)} ${padLeft('$0', 8)}  ${formatCustomComponentSummaryLine(f.spec)}`;
+      });
       append([
         { kind: 'HEAD', text: 'RIG BUILDER STEP 4/8 — SELECT RAM & STORAGE' },
-        { kind: 'PRE', text: rows.join('\n') },
+        { kind: 'PRE', text: [...rows, ...fabRows].join('\n') },
         ...(guideTip ? [{ kind: 'OK' as const, text: guideTip }] : []),
         { kind: 'TEXT', text: 'Enter storage number, "back", or "cancel".' },
       ]);
@@ -1116,19 +1252,27 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     if (step === 'PSU') {
       const t = computeRigTelemetry(config, facility, state.unlockedResearch, sysBonus);
       const options = getUnlockedPsus();
+      const fabStock = getMatchingFabStock('psu', config);
       const rows = options.map((p, idx) => {
         const fit = t.rawWatts <= p.maxWatts ? 'FITS' : 'UNDERPOWERED';
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(p.name, 31)} ${padLeft(formatUsd(priceOf(p.cost)), 8)}  ${padLeft(
+        const costUsd = priceOf(p.cost);
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(p.name, 31)} ${padLeft(formatUsd(costUsd, costUsd >= 10_000), 8)}  ${padLeft(
           `${p.maxWatts}W`,
           6
         )}  ${Math.round(p.efficiency * 100)}% eff  [${padRight(fit, 12)}]`;
+      });
+      const fabRows = fabStock.map((f, idx) => {
+        const n = options.length + idx + 1;
+        const maxW = f.spec.maxWatts ?? 1200;
+        const fit = t.rawWatts <= maxW ? 'FITS' : 'UNDERPOWERED';
+        return `  ${padLeft(String(n), 2)}. [FAB x${f.availQty}] ${padRight(f.spec.name, 22)} ${padLeft('$0', 8)}  ${padLeft(`${maxW}W`, 6)}  [${padRight(fit, 12)}]`;
       });
       append([
         {
           kind: 'HEAD',
           text: `RIG BUILDER STEP 5/8 — SELECT PSU (Current component load: ${t.rawWatts}W)`,
         },
-        { kind: 'PRE', text: rows.join('\n') },
+        { kind: 'PRE', text: [...rows, ...fabRows].join('\n') },
         ...(guideTip ? [{ kind: 'OK' as const, text: guideTip }] : []),
         { kind: 'TEXT', text: 'Enter PSU number, "back", or "cancel".' },
       ]);
@@ -1137,15 +1281,21 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (step === 'COOLING') {
       const options = getUnlockedCooling();
+      const fabStock = getMatchingFabStock('cooling', config);
       const rows = options.map((c, idx) => {
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 32)} ${padLeft(formatUsd(priceOf(c.cost)), 8)}  -${padLeft(
+        const p = priceOf(c.cost);
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 32)} ${padLeft(formatUsd(p, p >= 10_000), 8)}  -${padLeft(
           String(c.coolingPowerC),
           3
         )}°C  ${padLeft(`${c.noiseDba}dBA`, 5)}`;
       });
+      const fabRows = fabStock.map((f, idx) => {
+        const n = options.length + idx + 1;
+        return `  ${padLeft(String(n), 2)}. [FAB x${f.availQty}] ${padRight(f.spec.name, 23)} ${padLeft('$0', 8)}  ${formatCustomComponentSummaryLine(f.spec)}`;
+      });
       append([
         { kind: 'HEAD', text: 'RIG BUILDER STEP 6/8 — SELECT COOLING SYSTEM' },
-        { kind: 'PRE', text: rows.join('\n') },
+        { kind: 'PRE', text: [...rows, ...fabRows].join('\n') },
         ...(guideTip ? [{ kind: 'OK' as const, text: guideTip }] : []),
         { kind: 'TEXT', text: 'Enter cooling number, "back", or "cancel".' },
       ]);
@@ -1154,14 +1304,20 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (step === 'OS') {
       const options = getUnlockedOs();
+      const fabStock = getMatchingFabStock('os', config);
       const rows = options.map((o, idx) => {
-        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(o.name, 30)} ${padLeft(formatUsd(priceOf(o.cost)), 8)}  x${o.hashrateMultiplier.toFixed(
+        const p = priceOf(o.cost);
+        return `  ${padLeft(String(idx + 1), 2)}. ${padRight(o.name, 30)} ${padLeft(formatUsd(p, p >= 10_000), 8)}  x${o.hashrateMultiplier.toFixed(
           2
         )} hash  x${o.powerMultiplier.toFixed(2)} pwr`;
       });
+      const fabRows = fabStock.map((f, idx) => {
+        const n = options.length + idx + 1;
+        return `  ${padLeft(String(n), 2)}. [FAB x${f.availQty}] ${padRight(f.spec.name, 21)} ${padLeft('$0', 8)}  ${formatCustomComponentSummaryLine(f.spec)}`;
+      });
       append([
         { kind: 'HEAD', text: 'RIG BUILDER STEP 7/8 — SELECT OS KERNEL' },
-        { kind: 'PRE', text: rows.join('\n') },
+        { kind: 'PRE', text: [...rows, ...fabRows].join('\n') },
         ...(guideTip ? [{ kind: 'OK' as const, text: guideTip }] : []),
         { kind: 'TEXT', text: 'Enter OS number, "back", or "cancel".' },
       ]);
@@ -1215,11 +1371,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       activeCount,
       state.facilityUpgrades
     );
-    const compute = COMPUTE_PARTS.find((c) => c.id === config.computeId)!;
-    const storage = STORAGE_PARTS.find((s) => s.id === config.storageId)!;
-    const psu = PSU_PARTS.find((p) => p.id === config.psuId)!;
-    const cooling = COOLING_PARTS.find((c) => c.id === config.coolingId)!;
-    const os = OS_PARTS.find((o) => o.id === config.osId)!;
+    const { compute, storage, psu, cooling, os } = bundle;
     const coin = state.coins[config.targetCoin];
     const autoSellMult = getAutoSellMultiplier(state);
     const est = computeStepCoinOutput(
@@ -1242,6 +1394,16 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       if (!warnings.includes(ew)) warnings.push(ew);
     }
 
+    const customGpuCount = (config.customParts?.gpus ?? []).filter(Boolean).length;
+    const customStockCount =
+      (config.customParts?.chassis ? 1 : 0) +
+      (config.customParts?.compute ? 1 : 0) +
+      customGpuCount +
+      (config.customParts?.storage ? 1 : 0) +
+      (config.customParts?.psu ? 1 : 0) +
+      (config.customParts?.cooling ? 1 : 0) +
+      (config.customParts?.os ? 1 : 0);
+
     const paybackLabel =
       econ.paybackSteps !== null ? `~${econ.paybackSteps} steps` : 'No payback (net <= 0)';
     const netLabel = `${econ.netPerStepUsd >= 0 ? '+' : '-'}${formatUsd(
@@ -1253,14 +1415,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       `| Name:    ${padRight(config.name, 42)} |`,
       `| Chassis: ${padRight(chassis.name, 42)} |`,
       `| Compute: ${padRight(compute.name, 42)} |`,
-      `| GPUs:    ${padRight(`${config.gpuIds.length}x installed`, 42)} |`,
+      `| GPUs:    ${padRight(`${config.gpuIds.length}x installed${customGpuCount > 0 ? ` (${customGpuCount} [FAB])` : ''}`, 42)} |`,
       `| Storage: ${padRight(storage.name, 42)} |`,
       `| PSU:     ${padRight(`${psu.name} (${t.wallWatts}W wall / ${psu.maxWatts}W cap)`, 42)} |`,
       `| Cooling: ${padRight(`${cooling.name} (Est ${t.equilibriumTempC}°C / ${t.noiseDba}dBA)`, 42)} |`,
       `| Tune:    ${padRight(`${config.poolMode ?? 'PPS'} · ${config.firmwareProfile ?? 'BALANCED'} · OC ${config.overclockPct}%`, 42)} |`,
       `| OS/Coin: ${padRight(`${os.name} -> ${config.targetCoin} (${formatHashrate(t.effectiveHashrate, t.targetAlgo)})`, 42)} |`,
       `+------------------ PURCHASE PREVIEW -----------------+`,
-      `| Build Cost: ${padRight(formatUsd(totalCost), 39)} |`,
+      `| Build Cost: ${padRight(`${formatUsd(totalCost)}${customStockCount > 0 ? ` (+${customStockCount} fab stock)` : ''}`, 39)} |`,
       `| Gross Rev:  ${padRight(`${formatUsd(est.autoSoldUsd)}/step`, 39)} |`,
       `| Power Draw: ${padRight(`${econ.powerKw.toFixed(2)} kW (-${formatUsd(econ.powerCostPerStepUsd)}/step)`, 39)} |`,
       `| Net Profit: ${padRight(`${netLabel} · Grid ${econ.projectedTotalKw.toFixed(2)}/${econ.facilityCapKw} kW`, 39)} |`,
@@ -1375,8 +1537,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
   }, [lines]);
 
   useEffect(() => {
-    onActiveModalChange(wizard ? 'BUILDER' : tinker ? 'TINKER' : null);
-  }, [wizard, tinker, onActiveModalChange]);
+    onActiveModalChange(wizard || fabWizard ? 'BUILDER' : tinker ? 'TINKER' : null);
+  }, [wizard, fabWizard, tinker, onActiveModalChange]);
 
   useEffect(() => {
     if (!commandTrigger) return;
@@ -1420,7 +1582,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       return;
     }
 
-    const chassis = CHASSIS_PARTS.find((c) => c.id === wiz.config.chassisId) ?? CHASSIS_PARTS[0];
+    const bundle = getEffectivePartBundle(wiz.config);
+    const chassis = bundle.chassis;
 
     if (low === 'back') {
       const order: BuildStep[] = ['CHASSIS', 'COMPUTE', 'GPU', 'STORAGE', 'PSU', 'COOLING', 'OS', 'COIN', 'CONFIRM'];
@@ -1434,20 +1597,40 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (wiz.step === 'CHASSIS') {
       const options = getUnlockedChassis();
+      const fabStock = getMatchingFabStock('chassis', wiz.config);
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = options[idx];
-      if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
+      const pickedCatalog = idx >= 0 && idx < options.length ? options[idx] : undefined;
+      const pickedFab = idx >= options.length ? fabStock[idx - options.length] : undefined;
+      if (!pickedCatalog && !pickedFab) {
+        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length + fabStock.length}.` }]);
         return;
       }
-      const firstCompute = getUnlockedComputeFor(picked.isAsicRack)[0];
+      const nextCustomParts: RigCustomPartsMap = { ...(wiz.config.customParts ?? {}), gpus: [] };
+      let isAsicOnly = false;
+      if (pickedFab) {
+        nextCustomParts.chassis = pickedFab.spec;
+        isAsicOnly = Boolean(pickedFab.spec.isAsicRack && (pickedFab.spec.maxGpus ?? 0) === 0);
+      } else {
+        delete nextCustomParts.chassis;
+        isAsicOnly = Boolean(pickedCatalog?.isAsicRack);
+      }
+      // Clear incompatible custom compute if switching chassis compatibility
+      if (nextCustomParts.compute) {
+        const compIsAsic = (nextCustomParts.compute.computeKind ?? 'ASIC') === 'ASIC';
+        const nextMaxAsics = pickedFab ? pickedFab.spec.maxAsics ?? 0 : pickedCatalog?.maxAsics ?? 0;
+        if ((compIsAsic && nextMaxAsics < 1) || (!compIsAsic && isAsicOnly)) {
+          delete nextCustomParts.compute;
+        }
+      }
+      const firstCompute = getUnlockedComputeFor(isAsicOnly)[0];
       const nextWiz: BuildWizardState = {
         step: 'COMPUTE',
         config: {
           ...wiz.config,
-          chassisId: picked.id,
+          chassisId: pickedCatalog ? pickedCatalog.id : CHASSIS_PARTS[0].id,
           gpuIds: [],
           computeId: firstCompute?.id ?? wiz.config.computeId,
+          customParts: nextCustomParts,
         },
       };
       setWizard(nextWiz);
@@ -1456,16 +1639,32 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (wiz.step === 'COMPUTE') {
-      const options = getUnlockedComputeFor(chassis.isAsicRack);
+      const isAsicOnly = Boolean(chassis.isAsicRack && chassis.maxGpus === 0);
+      const options =
+        chassis.maxAsics >= 1 && chassis.maxGpus > 0
+          ? COMPUTE_PARTS.filter((c) => isPartUnlocked(c.researchRequired).ok)
+          : getUnlockedComputeFor(isAsicOnly);
+      const fabStock = getMatchingFabStock('compute', wiz.config);
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = options[idx];
-      if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
+      const pickedCatalog = idx >= 0 && idx < options.length ? options[idx] : undefined;
+      const pickedFab = idx >= options.length ? fabStock[idx - options.length] : undefined;
+      if (!pickedCatalog && !pickedFab) {
+        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length + fabStock.length}.` }]);
         return;
+      }
+      const nextCustomParts: RigCustomPartsMap = { ...(wiz.config.customParts ?? {}) };
+      if (pickedFab) {
+        nextCustomParts.compute = pickedFab.spec;
+      } else {
+        delete nextCustomParts.compute;
       }
       const nextWiz: BuildWizardState = {
         step: chassis.maxGpus > 0 ? 'GPU' : 'STORAGE',
-        config: { ...wiz.config, computeId: picked.id },
+        config: {
+          ...wiz.config,
+          computeId: pickedCatalog ? pickedCatalog.id : COMPUTE_PARTS[0].id,
+          customParts: nextCustomParts,
+        },
       };
       setWizard(nextWiz);
       printWizardPrompt(nextWiz);
@@ -1474,7 +1673,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (wiz.step === 'GPU') {
       if (low === 'clear') {
-        const nextWiz: BuildWizardState = { ...wiz, config: { ...wiz.config, gpuIds: [] } };
+        const nextCustomParts: RigCustomPartsMap = { ...(wiz.config.customParts ?? {}), gpus: [] };
+        const nextWiz: BuildWizardState = {
+          ...wiz,
+          config: { ...wiz.config, gpuIds: [], customParts: nextCustomParts },
+        };
         setWizard(nextWiz);
         printWizardPrompt(nextWiz);
         return;
@@ -1486,10 +1689,17 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         return;
       }
       const options = getUnlockedGpus();
+      const fabStock = getMatchingFabStock('gpu', wiz.config);
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = options[idx];
-      if (!picked) {
-        append([{ kind: 'ERR', text: `Enter GPU number (1..${options.length}), "clear", or "done".` }]);
+      const pickedCatalog = idx >= 0 && idx < options.length ? options[idx] : undefined;
+      const pickedFab = idx >= options.length ? fabStock[idx - options.length] : undefined;
+      if (!pickedCatalog && !pickedFab) {
+        append([
+          {
+            kind: 'ERR',
+            text: `Enter GPU number (1..${options.length + fabStock.length}), "clear", or "done".`,
+          },
+        ]);
         return;
       }
       const qtyMatch = parts[1]?.match(/^x?(\d+)$/);
@@ -1499,29 +1709,63 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         append([{ kind: 'WARN', text: 'Chassis GPU slots are full. Type "done" to continue.' }]);
         return;
       }
+      const existingCustomGpus: (CustomComponentSpec | null)[] = wiz.config.gpuIds.map(
+        (_, i) => wiz.config.customParts?.gpus?.[i] ?? null
+      );
+      if (pickedFab) {
+        const toAdd = Math.min(slotsLeft, qty, pickedFab.availQty);
+        const nextGpus = [...wiz.config.gpuIds, ...Array(toAdd).fill(GPU_PARTS[0].id)];
+        const nextCustomGpus = [...existingCustomGpus, ...Array(toAdd).fill(pickedFab.spec)];
+        const nextWiz: BuildWizardState = {
+          step: nextGpus.length >= chassis.maxGpus ? 'STORAGE' : 'GPU',
+          config: {
+            ...wiz.config,
+            gpuIds: nextGpus,
+            customParts: { ...(wiz.config.customParts ?? {}), gpus: nextCustomGpus },
+          },
+        };
+        setWizard(nextWiz);
+        append([{ kind: 'OK', text: `Added ${toAdd}x [FAB] ${pickedFab.spec.name}.` }]);
+        printWizardPrompt(nextWiz);
+        return;
+      }
       const toAdd = Math.min(slotsLeft, qty);
-      const nextGpus = [...wiz.config.gpuIds, ...Array(toAdd).fill(picked.id)];
+      const nextGpus = [...wiz.config.gpuIds, ...Array(toAdd).fill(pickedCatalog!.id)];
+      const nextCustomGpus = [...existingCustomGpus, ...Array(toAdd).fill(null)];
       const nextWiz: BuildWizardState = {
         step: nextGpus.length >= chassis.maxGpus ? 'STORAGE' : 'GPU',
-        config: { ...wiz.config, gpuIds: nextGpus },
+        config: {
+          ...wiz.config,
+          gpuIds: nextGpus,
+          customParts: { ...(wiz.config.customParts ?? {}), gpus: nextCustomGpus },
+        },
       };
       setWizard(nextWiz);
-      append([{ kind: 'OK', text: `Added ${toAdd}x ${picked.name}.` }]);
+      append([{ kind: 'OK', text: `Added ${toAdd}x ${pickedCatalog!.name}.` }]);
       printWizardPrompt(nextWiz);
       return;
     }
 
     if (wiz.step === 'STORAGE') {
       const options = getUnlockedStorage();
+      const fabStock = getMatchingFabStock('storage', wiz.config);
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = options[idx];
-      if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
+      const pickedCatalog = idx >= 0 && idx < options.length ? options[idx] : undefined;
+      const pickedFab = idx >= options.length ? fabStock[idx - options.length] : undefined;
+      if (!pickedCatalog && !pickedFab) {
+        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length + fabStock.length}.` }]);
         return;
       }
+      const nextCustomParts: RigCustomPartsMap = { ...(wiz.config.customParts ?? {}) };
+      if (pickedFab) nextCustomParts.storage = pickedFab.spec;
+      else delete nextCustomParts.storage;
       const nextWiz: BuildWizardState = {
         step: 'PSU',
-        config: { ...wiz.config, storageId: picked.id },
+        config: {
+          ...wiz.config,
+          storageId: pickedCatalog ? pickedCatalog.id : STORAGE_PARTS[0].id,
+          customParts: nextCustomParts,
+        },
       };
       setWizard(nextWiz);
       printWizardPrompt(nextWiz);
@@ -1530,15 +1774,24 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (wiz.step === 'PSU') {
       const options = getUnlockedPsus();
+      const fabStock = getMatchingFabStock('psu', wiz.config);
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = options[idx];
-      if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
+      const pickedCatalog = idx >= 0 && idx < options.length ? options[idx] : undefined;
+      const pickedFab = idx >= options.length ? fabStock[idx - options.length] : undefined;
+      if (!pickedCatalog && !pickedFab) {
+        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length + fabStock.length}.` }]);
         return;
       }
+      const nextCustomParts: RigCustomPartsMap = { ...(wiz.config.customParts ?? {}) };
+      if (pickedFab) nextCustomParts.psu = pickedFab.spec;
+      else delete nextCustomParts.psu;
       const nextWiz: BuildWizardState = {
         step: 'COOLING',
-        config: { ...wiz.config, psuId: picked.id },
+        config: {
+          ...wiz.config,
+          psuId: pickedCatalog ? pickedCatalog.id : PSU_PARTS[0].id,
+          customParts: nextCustomParts,
+        },
       };
       setWizard(nextWiz);
       printWizardPrompt(nextWiz);
@@ -1547,15 +1800,24 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (wiz.step === 'COOLING') {
       const options = getUnlockedCooling();
+      const fabStock = getMatchingFabStock('cooling', wiz.config);
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = options[idx];
-      if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
+      const pickedCatalog = idx >= 0 && idx < options.length ? options[idx] : undefined;
+      const pickedFab = idx >= options.length ? fabStock[idx - options.length] : undefined;
+      if (!pickedCatalog && !pickedFab) {
+        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length + fabStock.length}.` }]);
         return;
       }
+      const nextCustomParts: RigCustomPartsMap = { ...(wiz.config.customParts ?? {}) };
+      if (pickedFab) nextCustomParts.cooling = pickedFab.spec;
+      else delete nextCustomParts.cooling;
       const nextWiz: BuildWizardState = {
         step: 'OS',
-        config: { ...wiz.config, coolingId: picked.id },
+        config: {
+          ...wiz.config,
+          coolingId: pickedCatalog ? pickedCatalog.id : COOLING_PARTS[0].id,
+          customParts: nextCustomParts,
+        },
       };
       setWizard(nextWiz);
       printWizardPrompt(nextWiz);
@@ -1564,15 +1826,24 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (wiz.step === 'OS') {
       const options = getUnlockedOs();
+      const fabStock = getMatchingFabStock('os', wiz.config);
       const idx = parseInt(parts[0], 10) - 1;
-      const picked = options[idx];
-      if (!picked) {
-        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length}.` }]);
+      const pickedCatalog = idx >= 0 && idx < options.length ? options[idx] : undefined;
+      const pickedFab = idx >= options.length ? fabStock[idx - options.length] : undefined;
+      if (!pickedCatalog && !pickedFab) {
+        append([{ kind: 'ERR', text: `Enter a number from 1 to ${options.length + fabStock.length}.` }]);
         return;
       }
+      const nextCustomParts: RigCustomPartsMap = { ...(wiz.config.customParts ?? {}) };
+      if (pickedFab) nextCustomParts.os = pickedFab.spec;
+      else delete nextCustomParts.os;
       const nextWiz: BuildWizardState = {
         step: 'COIN',
-        config: { ...wiz.config, osId: picked.id },
+        config: {
+          ...wiz.config,
+          osId: pickedCatalog ? pickedCatalog.id : OS_PARTS[0].id,
+          customParts: nextCustomParts,
+        },
       };
       setWizard(nextWiz);
       printWizardPrompt(nextWiz);
@@ -1657,6 +1928,509 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
   };
 
+  const getDefaultFabBlueprintName = (category: PartCategory): string => {
+    const num = (state.fab?.blueprints.length ?? 0) + 1;
+    const prefixMap: Record<PartCategory, string> = {
+      compute: 'ApexSilicon',
+      gpu: 'HeliosGPU',
+      chassis: 'TitanFrame',
+      storage: 'PetavaultNVMe',
+      psu: 'VoltGaN',
+      cooling: 'CryoLoop',
+      os: 'BareHashOS',
+    };
+    return `${prefixMap[category]}-${num}`;
+  };
+
+  const printFabWizardPrompt = (wiz: FabDesignWizardState) => {
+    const budget = getFabEngineeringPointBudget(state);
+
+    if (wiz.step === 'CATEGORY') {
+      const cats = getUnlockedFabCategories(state);
+      const rows = cats.map(
+        (c, idx) =>
+          `  ${idx + 1}. [${padRight(c.shortLabel, 7)}] ${padRight(c.label, 38)} ${c.summary}`
+      );
+      append([
+        { kind: 'HEAD', text: 'FOUNDRY DESIGN WIZARD STEP 1/7 — SELECT COMPONENT SUBSYSTEM' },
+        { kind: 'PRE', text: rows.join('\n') },
+        {
+          kind: 'TEXT',
+          text: `Enter subsystem number (1..${cats.length}) or "cancel". (R&D unlocks additional categories like GPUs.)`,
+        },
+      ]);
+      return;
+    }
+
+    if (wiz.step === 'ARCHITECTURE') {
+      const archs = getUnlockedFabArchitectures(state, wiz.partCategory);
+      const rows = archs.map(
+        (a, idx) => `  ${idx + 1}. ${padRight(a.label, 34)} ${a.blurb}`
+      );
+      append([
+        {
+          kind: 'HEAD',
+          text: `FOUNDRY DESIGN STEP 2/7 — SELECT ARCHITECTURE (${wiz.partCategory.toUpperCase()})`,
+        },
+        { kind: 'PRE', text: rows.length > 0 ? rows.join('\n') : '  (No unlocked architectures for this subsystem yet.)' },
+        { kind: 'TEXT', text: `Enter architecture number (1..${archs.length}), "back", or "cancel".` },
+      ]);
+      return;
+    }
+
+    if (wiz.step === 'NODE') {
+      const nodes = getUnlockedFabNodes(state, wiz.partCategory);
+      const rows = nodes.map((n, idx) => {
+        const s = NODE_SPECS[n];
+        const preview = previewCustomComponentDesign(state, {
+          name: wiz.name,
+          partCategory: wiz.partCategory,
+          architecture: wiz.architecture,
+          processNode: n,
+          focus: wiz.focus,
+          engineering: wiz.engineering,
+          subFeature: wiz.subFeature,
+          profile: wiz.profile,
+        });
+        return `  ${idx + 1}. ${padRight(n, 8)} ${padRight(s.gradeLabel, 24)} NRE:${padLeft(
+          formatUsd(preview.nreCostUsd, preview.nreCostUsd >= 10_000),
+          8
+        )}  Unit:${padLeft(formatUsd(preview.spec.unitCostUsd, preview.spec.unitCostUsd >= 10_000), 8)}  ${preview.waferSteps} fab pts`;
+      });
+      append([
+        {
+          kind: 'HEAD',
+          text: `FOUNDRY DESIGN STEP 3/7 — PROCESS NODE / PRECISION GRADE (${wiz.partCategory.toUpperCase()})`,
+        },
+        { kind: 'PRE', text: rows.join('\n') },
+        {
+          kind: 'TEXT',
+          text: `Enter node number (1..${nodes.length}) or node name ("7nm".."photonic"), "back", or "cancel".`,
+        },
+      ]);
+      return;
+    }
+
+    if (wiz.step === 'FOCUS') {
+      const focuses = getFocusOptionsForDesign(wiz.partCategory, wiz.architecture);
+      const rows = focuses.map(
+        (f, idx) => `  ${idx + 1}. ${padRight(f.label, 42)} ${f.blurb}`
+      );
+      append([
+        {
+          kind: 'HEAD',
+          text: `FOUNDRY DESIGN STEP 4/7 — SPECIALIZATION FOCUS (${wiz.processNode})`,
+        },
+        { kind: 'PRE', text: rows.join('\n') },
+        { kind: 'TEXT', text: `Enter specialization number (1..${focuses.length}), "back", or "cancel".` },
+      ]);
+      return;
+    }
+
+    if (wiz.step === 'ENGINEERING') {
+      const e = wiz.engineering;
+      const used = e.density + e.efficiency + e.thermals + e.reliability;
+      const rem = Math.max(0, budget - used);
+      const bar5 = (v: number) => `${'#'.repeat(v)}${'.'.repeat(5 - v)}`;
+      const preview = previewCustomComponentDesign(state, {
+        name: wiz.name,
+        partCategory: wiz.partCategory,
+        architecture: wiz.architecture,
+        processNode: wiz.processNode,
+        focus: wiz.focus,
+        engineering: wiz.engineering,
+        subFeature: wiz.subFeature,
+        profile: wiz.profile,
+      });
+      const matrix = [
+        `  Points Used: ${used}/${budget} (${rem} remaining to allocate, max 5 per axis)`,
+        ``,
+        `  1. density     [${bar5(e.density)}] ${e.density}/5   Die / Slot / Output Density (+hash/TB/watts cap)`,
+        `  2. efficiency  [${bar5(e.efficiency)}] ${e.efficiency}/5   Perf-per-Watt / Conversion Loss Reduction`,
+        `  3. thermals    [${bar5(e.thermals)}] ${e.thermals}/5   Heat Dissipation (-°C) & Acoustic Dampening (-dBA)`,
+        `  4. reliability [${bar5(e.reliability)}] ${e.reliability}/5   Wear Resistance (+durability) & Silicon Grade Floor`,
+        ``,
+        `  LIVE PROJECTED SPEC: ${formatCustomComponentSummaryLine(preview.spec)}`,
+        `  Est Unit Cost: ${formatUsd(preview.spec.unitCostUsd)} · Est Export: ${formatUsd(
+          preview.spec.wholesaleValueUsd
+        )} · Wear Res: +${Math.round((preview.spec.wearResistance ?? 0) * 100)}%`,
+      ].join('\n');
+      append([
+        { kind: 'HEAD', text: 'FOUNDRY DESIGN STEP 5/7 — ENGINEERING POINT ALLOCATION MATRIX' },
+        { kind: 'PRE', text: matrix },
+        {
+          kind: 'TEXT',
+          text: 'Commands: "alloc <d> <e> <t> <r>", "<density|eff|therm|qa> <+1|-1|0..5>", "preset <perf|balanced|eff|compact>", "done", "back".',
+        },
+      ]);
+      return;
+    }
+
+    if (wiz.step === 'SUBFEATURE') {
+      const features = getUnlockedFabSubFeatures(state);
+      const rows = features.map((f, idx) => {
+        const fee = f.nreAddUsd > 0 ? `+${formatUsd(f.nreAddUsd)} NRE` : 'Included';
+        return `  ${idx + 1}. ${padRight(f.label, 35)} ${padLeft(fee, 11)}  ${f.blurb}`;
+      });
+      append([
+        { kind: 'HEAD', text: 'FOUNDRY DESIGN STEP 6/7 — TOPOLOGY & MATERIAL ENHANCEMENT' },
+        { kind: 'PRE', text: rows.join('\n') },
+        { kind: 'TEXT', text: `Enter enhancement number (1..${features.length}), "back", or "cancel".` },
+      ]);
+      return;
+    }
+
+    // REVIEW
+    const preview = previewCustomComponentDesign(state, {
+      name: wiz.name,
+      partCategory: wiz.partCategory,
+      architecture: wiz.architecture,
+      processNode: wiz.processNode,
+      focus: wiz.focus,
+      engineering: wiz.engineering,
+      subFeature: wiz.subFeature,
+      profile: wiz.profile,
+    });
+    const archLabel =
+      getUnlockedFabArchitectures(state, wiz.partCategory).find((a) => a.id === wiz.architecture)
+        ?.label ?? wiz.architecture;
+    const focusLabel =
+      getFocusOptionsForDesign(wiz.partCategory, wiz.architecture).find((f) => f.id === wiz.focus)
+        ?.label ?? wiz.focus;
+    const subLabel = FAB_SUBFEATURES.find((f) => f.id === wiz.subFeature)?.label ?? wiz.subFeature;
+    const e = wiz.engineering;
+    const usedPts = e.density + e.efficiency + e.thermals + e.reliability;
+
+    const dossier = [
+      `+------------------ ENGINEERING TAPE-OUT DOSSIER ------------------+`,
+      `| Blueprint Name: ${padRight(wiz.name, 48)} |`,
+      `| Subsystem:      ${padRight(`${wiz.partCategory.toUpperCase()} · ${archLabel}`, 48)} |`,
+      `| Process/Grade:  ${padRight(NODE_SPECS[wiz.processNode].gradeLabel, 48)} |`,
+      `| Focus:          ${padRight(focusLabel, 48)} |`,
+      `| Eng Allocation: ${padRight(`D:${e.density} E:${e.efficiency} T:${e.thermals} R:${e.reliability} (${usedPts}/${budget} pts)`, 48)} |`,
+      `| Enhancement:    ${padRight(subLabel, 48)} |`,
+      `| Macro Profile:  ${padRight(`${DESIGN_PROFILE_SPECS[wiz.profile].label} (${DESIGN_PROFILE_SPECS[wiz.profile].blurb})`, 48)} |`,
+      `+----------------------- TELEMETRY & ECONOMICS --------------------+`,
+      `| Output Spec:    ${padRight(formatCustomComponentSummaryLine(preview.spec), 48)} |`,
+      `| First Silicon:  ${padRight(`Grade ${preview.qualityGrade} (x${preview.qualityMult.toFixed(2)}) · +${Math.round((preview.spec.wearResistance ?? 0) * 100)}% wear resist`, 48)} |`,
+      `| Tape-Out NRE:   ${padRight(`${formatUsd(preview.nreCostUsd)} (Cash: ${formatUsd(state.cash)})`, 48)} |`,
+      `| Unit Fab Cost:  ${padRight(`${formatUsd(preview.spec.unitCostUsd)}/ea · ${preview.waferSteps} wafer pts`, 48)} |`,
+      `| Export Value:   ${padRight(`${formatUsd(preview.spec.wholesaleValueUsd)}/ea wholesale`, 48)} |`,
+      `+------------------------------------------------------------------+`,
+    ].join('\n');
+
+    append([
+      { kind: 'PRE', text: dossier },
+      ...(preview.ok && state.cash >= preview.nreCostUsd
+        ? [{ kind: 'OK' as const, text: 'Design validated. Ready for cleanroom mask tape-out!' }]
+        : [
+            {
+              kind: 'WARN' as const,
+              text: !preview.ok
+                ? `[!] ${preview.reason ?? 'Invalid design configuration.'}`
+                : `[!] Insufficient cash for NRE tape-out (need ${formatUsd(preview.nreCostUsd)}).`,
+            },
+          ]),
+      {
+        kind: 'TEXT',
+        text: 'Type "tapeout" (or "confirm") to pay NRE & save blueprint, "name <NewName>", "profile <perf|balanced|eff|compact>", "back", or "cancel".',
+      },
+    ]);
+  };
+
+  const handleFabWizardInput = (raw: string, wiz: FabDesignWizardState) => {
+    const trimmed = raw.trim();
+    const low = trimmed.toLowerCase();
+    const parts = low.split(/\s+/);
+    const budget = getFabEngineeringPointBudget(state);
+
+    if (low === 'cancel' || low === 'exit' || low === 'quit') {
+      setFabWizard(null);
+      append([{ kind: 'WARN', text: 'Foundry engineering wizard cancelled.' }]);
+      return;
+    }
+
+    if (low === 'back') {
+      const order: FabDesignStep[] = [
+        'CATEGORY',
+        'ARCHITECTURE',
+        'NODE',
+        'FOCUS',
+        'ENGINEERING',
+        'SUBFEATURE',
+        'REVIEW',
+      ];
+      const prevIdx = Math.max(0, order.indexOf(wiz.step) - 1);
+      const nextWiz: FabDesignWizardState = { ...wiz, step: order[prevIdx] };
+      setFabWizard(nextWiz);
+      printFabWizardPrompt(nextWiz);
+      return;
+    }
+
+    if (wiz.step === 'CATEGORY') {
+      const cats = getUnlockedFabCategories(state);
+      const idx = parseInt(parts[0], 10) - 1;
+      const picked =
+        cats[idx] ??
+        cats.find((c) => c.id === low || c.shortLabel.toLowerCase() === low);
+      if (!picked) {
+        append([{ kind: 'ERR', text: `Enter subsystem number (1..${cats.length}) or name.` }]);
+        return;
+      }
+      const archs = getUnlockedFabArchitectures(state, picked.id);
+      const nextArch = archs[0]?.id ?? 'ASIC_BLADE';
+      const nodes = getUnlockedFabNodes(state, picked.id);
+      const nextNode = nodes[0] ?? '7nm';
+      const focuses = getFocusOptionsForDesign(picked.id, nextArch);
+      const nextWiz: FabDesignWizardState = {
+        ...wiz,
+        step: 'ARCHITECTURE',
+        partCategory: picked.id,
+        architecture: nextArch,
+        processNode: nextNode,
+        focus: focuses[0]?.id ?? 'SHA256',
+        name: getDefaultFabBlueprintName(picked.id),
+      };
+      setFabWizard(nextWiz);
+      printFabWizardPrompt(nextWiz);
+      return;
+    }
+
+    if (wiz.step === 'ARCHITECTURE') {
+      const archs = getUnlockedFabArchitectures(state, wiz.partCategory);
+      const idx = parseInt(parts[0], 10) - 1;
+      const picked = archs[idx];
+      if (!picked) {
+        append([{ kind: 'ERR', text: `Enter architecture number (1..${archs.length}), "back", or "cancel".` }]);
+        return;
+      }
+      const focuses = getFocusOptionsForDesign(wiz.partCategory, picked.id);
+      const nextWiz: FabDesignWizardState = {
+        ...wiz,
+        step: 'NODE',
+        architecture: picked.id,
+        focus: focuses[0]?.id ?? wiz.focus,
+      };
+      setFabWizard(nextWiz);
+      printFabWizardPrompt(nextWiz);
+      return;
+    }
+
+    if (wiz.step === 'NODE') {
+      const nodes = getUnlockedFabNodes(state, wiz.partCategory);
+      const idx = parseInt(parts[0], 10) - 1;
+      const picked =
+        nodes[idx] ?? nodes.find((n) => n === parts[0]);
+      if (!picked) {
+        append([{ kind: 'ERR', text: `Enter node number (1..${nodes.length}) or unlocked node name.` }]);
+        return;
+      }
+      const nextWiz: FabDesignWizardState = {
+        ...wiz,
+        step: 'FOCUS',
+        processNode: picked,
+      };
+      setFabWizard(nextWiz);
+      printFabWizardPrompt(nextWiz);
+      return;
+    }
+
+    if (wiz.step === 'FOCUS') {
+      const focuses = getFocusOptionsForDesign(wiz.partCategory, wiz.architecture);
+      const idx = parseInt(parts[0], 10) - 1;
+      const picked =
+        focuses[idx] ?? focuses.find((f) => f.id.toLowerCase() === parts[0]);
+      if (!picked) {
+        append([{ kind: 'ERR', text: `Enter specialization number (1..${focuses.length}), "back", or "cancel".` }]);
+        return;
+      }
+      const nextWiz: FabDesignWizardState = {
+        ...wiz,
+        step: 'ENGINEERING',
+        focus: picked.id,
+      };
+      setFabWizard(nextWiz);
+      printFabWizardPrompt(nextWiz);
+      return;
+    }
+
+    if (wiz.step === 'ENGINEERING') {
+      if (low === 'done' || low === 'next' || low === '0') {
+        const nextWiz: FabDesignWizardState = { ...wiz, step: 'SUBFEATURE' };
+        setFabWizard(nextWiz);
+        printFabWizardPrompt(nextWiz);
+        return;
+      }
+      if (parts[0] === 'preset') {
+        const prof = parseDesignProfile(parts[1]);
+        if (!prof) {
+          append([{ kind: 'ERR', text: 'Usage: preset <perf|balanced|eff|compact>' }]);
+          return;
+        }
+        const nextWiz: FabDesignWizardState = {
+          ...wiz,
+          profile: prof,
+          engineering: getPresetEngineeringForProfile(prof, budget),
+        };
+        setFabWizard(nextWiz);
+        printFabWizardPrompt(nextWiz);
+        return;
+      }
+      if (parts[0] === 'alloc') {
+        const d = parseInt(parts[1] ?? '', 10);
+        const e = parseInt(parts[2] ?? '', 10);
+        const t = parseInt(parts[3] ?? '', 10);
+        const r = parseInt(parts[4] ?? '', 10);
+        if ([d, e, t, r].some((v) => isNaN(v) || v < 0 || v > 5)) {
+          append([{ kind: 'ERR', text: 'Usage: alloc <0..5> <0..5> <0..5> <0..5>' }]);
+          return;
+        }
+        if (d + e + t + r > budget) {
+          append([{ kind: 'ERR', text: `Total exceeds engineering budget (${d + e + t + r}/${budget} pts).` }]);
+          return;
+        }
+        const nextWiz: FabDesignWizardState = {
+          ...wiz,
+          engineering: { density: d, efficiency: e, thermals: t, reliability: r },
+        };
+        setFabWizard(nextWiz);
+        printFabWizardPrompt(nextWiz);
+        return;
+      }
+
+      const axisMap: Record<string, keyof FabEngineeringAllocation> = {
+        '1': 'density',
+        d: 'density',
+        dens: 'density',
+        density: 'density',
+        '2': 'efficiency',
+        e: 'efficiency',
+        eff: 'efficiency',
+        efficiency: 'efficiency',
+        '3': 'thermals',
+        t: 'thermals',
+        therm: 'thermals',
+        thermal: 'thermals',
+        thermals: 'thermals',
+        '4': 'reliability',
+        r: 'reliability',
+        rel: 'reliability',
+        qa: 'reliability',
+        reliability: 'reliability',
+      };
+      const axis = axisMap[parts[0]];
+      if (axis) {
+        const modToken = parts[1] || '+1';
+        let nextVal = wiz.engineering[axis];
+        if (modToken === '+1' || modToken === '+') nextVal += 1;
+        else if (modToken === '-1' || modToken === '-') nextVal -= 1;
+        else {
+          const parsed = parseInt(modToken, 10);
+          if (isNaN(parsed)) {
+            append([{ kind: 'ERR', text: `Usage: ${parts[0]} <+1|-1|0..5>` }]);
+            return;
+          }
+          nextVal = parsed;
+        }
+        nextVal = Math.max(0, Math.min(5, nextVal));
+        const nextEng: FabEngineeringAllocation = { ...wiz.engineering, [axis]: nextVal };
+        const sum = nextEng.density + nextEng.efficiency + nextEng.thermals + nextEng.reliability;
+        if (sum > budget) {
+          append([
+            {
+              kind: 'ERR',
+              text: `Insufficient engineering points (${sum}/${budget}). Lower another axis first.`,
+            },
+          ]);
+          return;
+        }
+        const nextWiz: FabDesignWizardState = { ...wiz, engineering: nextEng };
+        setFabWizard(nextWiz);
+        printFabWizardPrompt(nextWiz);
+        return;
+      }
+
+      append([
+        {
+          kind: 'ERR',
+          text: 'Use "alloc <d> <e> <t> <r>", "<density|eff|therm|qa> <+1|-1|N>", "preset <perf|balanced|eff|compact>", or "done".',
+        },
+      ]);
+      return;
+    }
+
+    if (wiz.step === 'SUBFEATURE') {
+      const features = getUnlockedFabSubFeatures(state);
+      const idx = parseInt(parts[0], 10) - 1;
+      const picked = features[idx] ?? features.find((f) => f.id.toLowerCase() === parts[0]);
+      if (!picked) {
+        append([{ kind: 'ERR', text: `Enter enhancement number (1..${features.length}), "back", or "cancel".` }]);
+        return;
+      }
+      const nextWiz: FabDesignWizardState = {
+        ...wiz,
+        step: 'REVIEW',
+        subFeature: picked.id,
+      };
+      setFabWizard(nextWiz);
+      printFabWizardPrompt(nextWiz);
+      return;
+    }
+
+    // REVIEW
+    if (parts[0] === 'name') {
+      const nextName = trimmed.slice(4).trim().slice(0, 28);
+      if (!nextName) {
+        append([{ kind: 'ERR', text: 'Usage: name <BlueprintName>' }]);
+        return;
+      }
+      const nextWiz: FabDesignWizardState = { ...wiz, name: nextName };
+      setFabWizard(nextWiz);
+      printFabWizardPrompt(nextWiz);
+      return;
+    }
+    if (parts[0] === 'profile') {
+      const prof = parseDesignProfile(parts[1]);
+      if (!prof) {
+        append([{ kind: 'ERR', text: 'Usage: profile <perf|balanced|eff|compact>' }]);
+        return;
+      }
+      const nextWiz: FabDesignWizardState = { ...wiz, profile: prof };
+      setFabWizard(nextWiz);
+      printFabWizardPrompt(nextWiz);
+      return;
+    }
+    if (low === 'tapeout' || low === 'confirm' || low === 'deploy' || low === 'yes' || low === 'y') {
+      const res = onDesignCustomComponent({
+        name: wiz.name,
+        partCategory: wiz.partCategory,
+        architecture: wiz.architecture,
+        processNode: wiz.processNode,
+        focus: wiz.focus,
+        engineering: wiz.engineering,
+        subFeature: wiz.subFeature,
+        profile: wiz.profile,
+      });
+      append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+      if (res.ok) {
+        setFabWizard(null);
+        append([
+          {
+            kind: 'TEXT',
+            text: `Blueprint saved (#${(state.fab?.blueprints.length ?? 0) + 1}). Run "fab produce ${(state.fab?.blueprints.length ?? 0) + 1} 1" to manufacture!`,
+          },
+        ]);
+      }
+      return;
+    }
+    append([
+      {
+        kind: 'ERR',
+        text: 'Type "tapeout" (or "confirm"), "name <NewName>", "profile <perf|balanced|eff|compact>", "back", or "cancel".',
+      },
+    ]);
+  };
+
   const printTinkerPrompt = (tk: TinkerState) => {
     const rig = state.rigs[tk.rigIndex];
     if (!rig) {
@@ -1674,12 +2448,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       state.coolingUnits ?? [],
       enabledCount
     );
-    const ch = CHASSIS_PARTS.find((c) => c.id === rig.chassisId) ?? CHASSIS_PARTS[0];
-    const comp = COMPUTE_PARTS.find((c) => c.id === rig.computeId) ?? COMPUTE_PARTS[0];
-    const stor = STORAGE_PARTS.find((s) => s.id === rig.storageId) ?? STORAGE_PARTS[0];
-    const psu = PSU_PARTS.find((p) => p.id === rig.psuId) ?? PSU_PARTS[0];
-    const cool = COOLING_PARTS.find((c) => c.id === rig.coolingId) ?? COOLING_PARTS[0];
-    const os = OS_PARTS.find((o) => o.id === rig.osId) ?? OS_PARTS[0];
+    const { chassis: ch, compute: comp, storage: stor, psu, cooling: cool, os } =
+      getEffectivePartBundle(rig);
 
     if (tk.slot === 'MENU') {
       const compHealth = ensureRigComponentHealth(rig);
@@ -1717,9 +2487,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     const hwMult = getGlobalHardwarePriceMult(state);
+    const fmtCost = (val: number) => formatUsd(val, val >= 10_000);
     const fmtNet = (oldCost: number, newCost: number) => {
       const net = calculatePartTradeInCost(oldCost, Math.round(newCost * hwMult));
-      return net >= 0 ? `Net +${formatUsd(net)}` : `Refund ${formatUsd(Math.abs(net))}`;
+      return net >= 0
+        ? `Net +${formatUsd(net, net >= 10_000)}`
+        : `Refund ${formatUsd(Math.abs(net), Math.abs(net) >= 10_000)}`;
     };
 
     if (tk.slot === 'chassis') {
@@ -1727,10 +2500,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const rows = options.map((c, idx) => {
         const cur = c.id === rig.chassisId ? ' *INSTALLED*' : fmtNet(ch.cost, c.cost);
         const cap = c.isAsicRack ? 'ASIC Rack' : `${c.maxGpus} GPUs`;
-        return `  ${idx + 1}. ${padRight(c.name, 30)} ${padLeft(formatUsd(c.cost), 7)}  ${padRight(
+        return `  ${idx + 1}. ${padRight(c.name, 30)} ${padLeft(fmtCost(c.cost), 8)}  ${padRight(
           cap,
           9
-        )}  -${c.coolingBonus}°C  ${padRight(cur, 13)}`;
+        )}  -${c.coolingBonus}°C  ${padRight(cur, 15)}`;
       });
       append([
         { kind: 'HEAD', text: `TINKER R${tk.rigIndex + 1} · SWAP CHASSIS (60% trade-in)` },
@@ -1741,7 +2514,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     }
 
     if (tk.slot === 'compute') {
-      const compatible = getUnlockedComputeFor(ch.isAsicRack);
+      const compatible =
+        ch.maxAsics >= 1 && ch.maxGpus > 0
+          ? COMPUTE_PARTS.filter((c) => isPartUnlocked(c.researchRequired).ok)
+          : getUnlockedComputeFor(Boolean(ch.isAsicRack && ch.maxGpus === 0));
       const rows = compatible.map((c, idx) => {
         const topAlgo = Object.entries(c.hashrates)[0];
         const hashLabel = topAlgo
@@ -1749,9 +2525,9 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           : '—';
         const cur = c.id === rig.computeId ? ' *INSTALLED*' : fmtNet(comp.cost, c.cost);
         return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 33)} ${padLeft(
-          formatUsd(c.cost),
-          7
-        )}  ${padLeft(`${c.watts}W`, 5)}  ${padRight(hashLabel, 17)}  ${padRight(cur, 13)}`;
+          fmtCost(c.cost),
+          8
+        )}  ${padLeft(`${c.watts}W`, 5)}  ${padRight(hashLabel, 17)}  ${padRight(cur, 15)}`;
       });
       append([
         { kind: 'HEAD', text: `TINKER R${tk.rigIndex + 1} · SWAP COMPUTE (${ch.name})` },
@@ -1773,7 +2549,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
                 return `  [Slot ${sIdx + 1}] ${padRight(g?.name ?? gid, 26)} ${padLeft(
                   `${gHealth}% hlth`,
                   9
-                )}  (Trade-in: ${formatUsd(Math.round((g?.cost ?? 0) * 0.6))})`;
+                )}  (Trade-in: ${fmtCost(Math.round((g?.cost ?? 0) * 0.6))})`;
               })
               .join('\n');
       const unlockedGpus = getUnlockedGpus();
@@ -1783,8 +2559,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
             ? `ETH ${g.hashrates.ETHASH}MH`
             : `SCR ${g.hashrates.SCRYPT ?? 0}MH`;
           return `  ${padLeft(String(idx + 1), 2)}. ${padRight(g.name, 30)} ${padLeft(
-            formatUsd(g.cost),
-            7
+            fmtCost(g.cost),
+            8
           )}  ${padLeft(`${g.watts}W`, 5)}  ${padRight(eth, 12)}`;
         })
         .join('\n');
@@ -1807,9 +2583,9 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const rows = options.map((s, idx) => {
         const cur = s.id === rig.storageId ? ' *INSTALLED*' : fmtNet(stor.cost, s.cost);
         return `  ${padLeft(String(idx + 1), 2)}. ${padRight(s.name, 33)} ${padLeft(
-          formatUsd(s.cost),
-          7
-        )}  +${Math.round(s.efficiencyBonus * 100)}% eff  ${padRight(cur, 13)}`;
+          fmtCost(s.cost),
+          8
+        )}  +${Math.round(s.efficiencyBonus * 100)}% eff  ${padRight(cur, 15)}`;
       });
       append([
         { kind: 'HEAD', text: `TINKER R${tk.rigIndex + 1} · SWAP STORAGE / RAM` },
@@ -1825,9 +2601,9 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         const cur = p.id === rig.psuId ? ' *INSTALLED*' : fmtNet(psu.cost, p.cost);
         const fit = t.rawWatts <= p.maxWatts ? 'FITS' : 'OVERLOAD';
         return `  ${padLeft(String(idx + 1), 2)}. ${padRight(p.name, 31)} ${padLeft(
-          formatUsd(p.cost),
-          7
-        )}  ${padLeft(`${p.maxWatts}W`, 6)}  [${padRight(fit, 8)}]  ${padRight(cur, 13)}`;
+          fmtCost(p.cost),
+          8
+        )}  ${padLeft(`${p.maxWatts}W`, 6)}  [${padRight(fit, 8)}]  ${padRight(cur, 15)}`;
       });
       append([
         { kind: 'HEAD', text: `TINKER R${tk.rigIndex + 1} · SWAP PSU (Load: ${t.rawWatts}W)` },
@@ -1842,12 +2618,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const rows = options.map((c, idx) => {
         const cur = c.id === rig.coolingId ? ' *INSTALLED*' : fmtNet(cool.cost, c.cost);
         return `  ${padLeft(String(idx + 1), 2)}. ${padRight(c.name, 32)} ${padLeft(
-          formatUsd(c.cost),
-          7
+          fmtCost(c.cost),
+          8
         )}  -${padLeft(String(c.coolingPowerC), 3)}°C  ${padLeft(
           `${c.noiseDba}dBA`,
           5
-        )}  ${padRight(cur, 13)}`;
+        )}  ${padRight(cur, 15)}`;
       });
       append([
         { kind: 'HEAD', text: `TINKER R${tk.rigIndex + 1} · SWAP COOLING` },
@@ -1862,11 +2638,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     const rows = osOptions.map((o, idx) => {
       const cur = o.id === rig.osId ? ' *INSTALLED*' : fmtNet(os.cost, o.cost);
       return `  ${padLeft(String(idx + 1), 2)}. ${padRight(o.name, 30)} ${padLeft(
-        formatUsd(o.cost),
-        7
+        fmtCost(o.cost),
+        8
       )}  x${o.hashrateMultiplier.toFixed(2)}h  x${o.powerMultiplier.toFixed(2)}p  ${padRight(
         cur,
-        13
+        15
       )}`;
     });
     append([
@@ -1985,8 +2761,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     let pickedPartId: string | null = null;
     if (tk.slot === 'chassis') pickedPartId = getUnlockedChassis()[idx]?.id ?? null;
     else if (tk.slot === 'compute') {
-      const ch = CHASSIS_PARTS.find((c) => c.id === rig.chassisId) ?? CHASSIS_PARTS[0];
-      pickedPartId = getUnlockedComputeFor(ch.isAsicRack)[idx]?.id ?? null;
+      const ch = getEffectivePartBundle(rig).chassis;
+      const compatible =
+        ch.maxAsics >= 1 && ch.maxGpus > 0
+          ? COMPUTE_PARTS.filter((c) => isPartUnlocked(c.researchRequired).ok)
+          : getUnlockedComputeFor(Boolean(ch.isAsicRack && ch.maxGpus === 0));
+      pickedPartId = compatible[idx]?.id ?? null;
     } else if (tk.slot === 'storage') pickedPartId = getUnlockedStorage()[idx]?.id ?? null;
     else if (tk.slot === 'psu') pickedPartId = getUnlockedPsus()[idx]?.id ?? null;
     else if (tk.slot === 'cooling') pickedPartId = getUnlockedCooling()[idx]?.id ?? null;
@@ -2014,6 +2794,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       ? 'event(decision)>'
       : wizard
       ? `build(${wizard.step.toLowerCase()})>`
+      : fabWizard
+      ? `fab(${fabWizard.step.toLowerCase()})>`
       : tinker
       ? `tinker(R${tinker.rigIndex + 1}${tinker.slot === 'MENU' ? '' : `:${tinker.slot}`})>`
       : 'miner@hashrate:~$';
@@ -2021,6 +2803,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
 
     if (wizard) {
       handleWizardInput(trimmed, wizard);
+      return;
+    }
+
+    if (fabWizard) {
+      handleFabWizardInput(trimmed, fabWizard);
       return;
     }
 
@@ -2572,10 +3359,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         const cost = calculateRigBuildCost(cfg, state);
         const econ = previewRigEconomics(cfg, cost, state);
         const payback = econ.paybackSteps !== null ? `${econ.paybackSteps}st` : 'Never';
-        return `  ${i + 1}. ${padRight(p.label, 24)} ${padLeft(formatUsd(cost), 8)}  ${padRight(
+        return `  ${i + 1}. ${padRight(p.label, 24)} ${padLeft(formatUsd(cost, cost >= 10_000), 8)}  ${padRight(
           cfg.targetCoin,
           4
-        )}  Net:${padLeft(`${econ.netPerStepUsd >= 0 ? '+' : ''}${formatUsd(econ.netPerStepUsd)}/st`, 10)}  ROI:${payback}`;
+        )}  Net:${padLeft(`${econ.netPerStepUsd >= 0 ? '+' : ''}${formatUsd(econ.netPerStepUsd, Math.abs(econ.netPerStepUsd) >= 10_000)}/st`, 11)}  ROI:${payback}`;
       });
       append([
         { kind: 'HEAD', text: 'READY-TO-DEPLOY RIG PRESETS (WITH PURCHASE PREVIEW)' },
@@ -2664,9 +3451,9 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
                 const savePct = Math.max(0, Math.round((1 - l.listPriceUsd / Math.max(1, l.retailPriceUsd)) * 100));
                 const econ = previewRigEconomics({ ...l.config, name: l.title }, l.listPriceUsd, state);
                 const roi = econ.paybackSteps !== null ? `${econ.paybackSteps}st` : '--';
-                return `  ${i + 1}. ${padRight(l.title, 32)} ${padLeft(formatUsd(l.listPriceUsd), 7)} (-${savePct}%) ${l.conditionPct}% ${l.config.targetCoin}  Net:${padLeft(
-                  `${econ.netPerStepUsd >= 0 ? '+' : ''}${formatUsd(econ.netPerStepUsd)}`,
-                  8
+                return `  ${i + 1}. ${padRight(l.title, 32)} ${padLeft(formatUsd(l.listPriceUsd, l.listPriceUsd >= 10_000), 8)} (-${savePct}%) ${l.conditionPct}% ${l.config.targetCoin}  Net:${padLeft(
+                  `${econ.netPerStepUsd >= 0 ? '+' : ''}${formatUsd(econ.netPerStepUsd, Math.abs(econ.netPerStepUsd) >= 10_000)}`,
+                  9
                 )} ROI:${roi}`;
               })
               .join('\n');
@@ -2772,7 +3559,18 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         11
       )}`;
       const rows = state.rigs.map((rig, i) => {
-        const modMark = (rig.illicitMod ? '*' : '') + (rig.customAsicSpec ? '[F]' : '');
+        const hasFab = Boolean(
+          rig.customAsicSpec ||
+            (rig.customParts &&
+              (rig.customParts.chassis ||
+                rig.customParts.compute ||
+                rig.customParts.storage ||
+                rig.customParts.psu ||
+                rig.customParts.cooling ||
+                rig.customParts.os ||
+                (rig.customParts.gpus ?? []).some(Boolean)))
+        );
+        const modMark = (rig.illicitMod ? '*' : '') + (hasFab ? '[F]' : '');
         const gen = getRigGeneration(rig);
         const condShort = (rig.conditionTier ?? 'NEW').slice(0, 4);
         const coinLabel = rig.payoutMode === 'HOLD' ? `${rig.targetCoin}/HLD` : `${rig.targetCoin}/${rig.poolMode}`;
@@ -2785,7 +3583,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         )} ${padLeft(`${Math.round(rig.healthPct)}%`, 5)} ${padLeft(
           `${rig.temperatureC}C`,
           5
-        )} ${padLeft(rig.payoutMode === 'HOLD' ? 'VAULTED' : formatUsd(rig.lastStepUsd), 11)}`;
+        )} ${padLeft(rig.payoutMode === 'HOLD' ? 'VAULTED' : formatUsd(rig.lastStepUsd, rig.lastStepUsd >= 10_000), 11)}`;
       });
       const avgHealth =
         state.rigs.reduce((s, r) => s + r.healthPct, 0) / Math.max(1, state.rigs.length);
@@ -2799,7 +3597,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         { kind: 'PRE', text: [header, '-'.repeat(header.length), ...rows].join('\n') },
         {
           kind: 'TEXT',
-          text: 'Commands: "inspect <#>", "repair all", "retire <#>", "backup", "sell <#>", "tinker <#>", "overclock". (* = illicit mod)',
+          text: 'Commands: "inspect <#>", "repair all", "retire <#>", "backup", "sell <#>", "tinker <#>", "overclock". (* = illicit mod, [F] = custom fab part)',
         },
       ]);
       if (state.tutorialStep === 1) {
@@ -2827,12 +3625,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         enabledCount,
         state.facilityUpgrades
       );
-      const ch = CHASSIS_PARTS.find((c) => c.id === rig.chassisId);
-      const comp = COMPUTE_PARTS.find((c) => c.id === rig.computeId);
-      const stor = STORAGE_PARTS.find((s) => s.id === rig.storageId);
-      const psu = PSU_PARTS.find((p) => p.id === rig.psuId);
-      const cool = COOLING_PARTS.find((c) => c.id === rig.coolingId);
-      const os = OS_PARTS.find((o) => o.id === rig.osId);
+      const { chassis: ch, compute: comp, gpus: gpuBundle, storage: stor, psu, cooling: cool, os } =
+        getEffectivePartBundle(rig);
       const compHealth = ensureRigComponentHealth(rig);
       const repairCost = getRigRepairCost(rig, state);
       const repasteCost = getRigRepasteCost(rig);
@@ -2859,13 +3653,13 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const componentLines: string[] = [
         formatCompRow(
           'chassis',
-          ch?.name ?? 'Chassis',
+          ch.name,
           compHealth.chassis,
           getComponentRepairCost(rig, 'chassis', undefined, state)
         ) + (compHealth.chassis < 65 ? '  (Rattle +dBA)' : ''),
         formatCompRow(
           'compute',
-          comp?.name ?? 'Compute',
+          comp.name,
           compHealth.compute,
           getComponentRepairCost(rig, 'compute', undefined, state)
         ),
@@ -2874,7 +3668,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         componentLines.push(`    ${padRight('gpu', 9)} (No discrete GPUs installed)`);
       } else {
         rig.gpuIds.forEach((gid, gIdx) => {
-          const gpuPart = GPU_PARTS.find((g) => g.id === gid);
+          const gpuPart = gpuBundle[gIdx] ?? GPU_PARTS.find((g) => g.id === gid);
           const tag = rig.gpuIds.length === 1 ? 'gpu' : `gpu ${gIdx + 1}`;
           componentLines.push(
             formatCompRow(
@@ -2889,19 +3683,19 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       componentLines.push(
         formatCompRow(
           'storage',
-          stor?.name ?? 'Storage',
+          stor.name,
           compHealth.storage,
           getComponentRepairCost(rig, 'storage', undefined, state)
         ) + (compHealth.storage < 65 ? '  (-Storage Eff)' : ''),
         formatCompRow(
           'psu',
-          psu?.name ?? 'PSU',
+          psu.name,
           compHealth.psu,
           getComponentRepairCost(rig, 'psu', undefined, state)
         ) + (compHealth.psu < 65 ? '  (+Watts Ripple)' : ''),
         formatCompRow(
           'cooling',
-          cool?.name ?? 'Cooling',
+          cool.name,
           compHealth.cooling,
           getComponentRepairCost(rig, 'cooling', undefined, state)
         ) + (compHealth.cooling < 75 ? '  (-Cooling Power)' : '')
@@ -2926,12 +3720,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
               t.effectiveHashrate,
               t.targetAlgo
             )}   Wall: ${t.wallWatts}W   Noise: ${t.noiseDba}dBA`,
-            `  Compute:  ${rig.customAsicSpec ? `Custom Fab ${rig.customAsicSpec.processNode} "${rig.customAsicSpec.name}" (${rig.customAsicSpec.algo})` : comp?.name ?? rig.computeId}`,
+            `  Compute:  ${rig.customAsicSpec ? `Custom Fab ${rig.customAsicSpec.processNode} "${rig.customAsicSpec.name}" (${rig.customAsicSpec.algo})` : comp.name}`,
             `  Payout:   ${formatCoinAmount(rig.lastStepCoins)} ${rig.targetCoin}/st -> ${
               rig.payoutMode === 'HOLD' ? 'Vaulted to Wallet' : `${formatUsd(rig.lastStepUsd)}/st`
             }   Solo Wins: ${rig.soloBlocksWon}   Lifetime: ${formatUsd(rig.totalEarnedUsd)}`,
             `  Illicit:  ${modSpec ? `${modSpec.name} (${modSpec.summary})` : 'None (Stock legal ROM)'}`,
-            `  OS Kernel: ${os?.name ?? rig.osId}`,
+            `  OS Kernel: ${os.name}`,
             ``,
             `  COMPONENT HEALTH (Rig health = average of installed components):`,
             ...componentLines,
@@ -4165,7 +4959,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     if (cmd === 'fab' || cmd === 'foundry') {
       if (!arg1 || arg1 === 'status' || arg1 === 'list') {
         append([
-          { kind: 'HEAD', text: 'SEMICONDUCTOR & PROPRIETARY ASIC FOUNDRY' },
+          { kind: 'HEAD', text: 'SEMICONDUCTOR & HARDWARE MANUFACTURING FOUNDRY' },
           { kind: 'PRE', text: formatFabStatusReport(state) },
         ]);
         return;
@@ -4176,18 +4970,51 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         return;
       }
       if (arg1 === 'design') {
+        if (!arg2 || arg2 === 'wizard' || arg2 === 'new') {
+          const gate = isFabUnlocked(state);
+          if (!gate.ok) {
+            append([{ kind: 'ERR', text: gate.reason ?? 'Foundry locked.' }]);
+            return;
+          }
+          if ((state.fab?.linesCount ?? 0) < 1) {
+            append([{ kind: 'ERR', text: 'Commission Fab Line #1 first ("fab line build").' }]);
+            return;
+          }
+          const cats = getUnlockedFabCategories(state);
+          const defaultCat = cats[0]?.id ?? 'compute';
+          const archs = getUnlockedFabArchitectures(state, defaultCat);
+          const defaultArch = archs[0]?.id ?? 'CHIPLET_CPU';
+          const nodes = getUnlockedFabNodes(state, defaultCat);
+          const defaultNode = nodes[0] ?? '7nm';
+          const focuses = getFocusOptionsForDesign(defaultCat, defaultArch);
+          const budget = getFabEngineeringPointBudget(state);
+          const initialFabWiz: FabDesignWizardState = {
+            step: 'CATEGORY',
+            name: getDefaultFabBlueprintName(defaultCat),
+            partCategory: defaultCat,
+            architecture: defaultArch,
+            processNode: defaultNode,
+            focus: focuses[0]?.id ?? 'SHA256',
+            engineering: getPresetEngineeringForProfile('BALANCED', budget),
+            subFeature: 'STD',
+            profile: 'BALANCED',
+          };
+          setFabWizard(initialFabWiz);
+          printFabWizardPrompt(initialFabWiz);
+          return;
+        }
         const rawTokens = trimmed.split(/\s+/).slice(2);
         const bpName = rawTokens[0];
         const algoRaw = (rawTokens[1] || '').toUpperCase() as MiningAlgorithm;
         const nodeRaw = (rawTokens[2] || '').toLowerCase() as ChipProcessNode;
         const profile = parseDesignProfile(rawTokens[3]);
         const validAlgos: MiningAlgorithm[] = ['SHA256', 'SCRYPT', 'RANDOMX', 'ETHASH', 'POST'];
-        const validNodes: ChipProcessNode[] = ['7nm', '5nm', '3nm', '2nm'];
+        const validNodes: ChipProcessNode[] = ['7nm', '5nm', '3nm', '2nm', '1nm', 'photonic'];
         if (!bpName || !validAlgos.includes(algoRaw) || !validNodes.includes(nodeRaw) || !profile) {
           append([
             {
               kind: 'ERR',
-              text: 'Usage: fab design <SingleWordName> <sha256|scrypt|randomx|ethash|post> <7nm|5nm|3nm|2nm> [perf|balanced|eff|compact]',
+              text: 'Usage: "fab design" (interactive wizard for all 7 part types) OR "fab design <SingleWordName> <sha256|scrypt|randomx|ethash|post> <7nm|5nm|3nm|2nm|1nm|photonic> [perf|balanced|eff|compact]".',
             },
           ]);
           return;
@@ -4199,10 +5026,13 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       if (arg1 === 'strip') {
         const rigIdx = parseInt(arg2, 10) - 1;
         if (isNaN(rigIdx)) {
-          append([{ kind: 'ERR', text: 'Usage: fab strip <rig#>' }]);
+          append([{ kind: 'ERR', text: 'Usage: fab strip <rig#> [chassis|compute|gpu|storage|psu|cooling|os] [gpuSlot#]' }]);
           return;
         }
-        const res = onStripCustomAsic(rigIdx);
+        const validSlots: PartCategory[] = ['chassis', 'compute', 'gpu', 'storage', 'psu', 'cooling', 'os'];
+        const slot = validSlots.includes(arg3 as PartCategory) ? (arg3 as PartCategory) : 'compute';
+        const gpuSlotRaw = parts[4] ? parseInt(parts[4], 10) - 1 : 0;
+        const res = onStripCustomAsic(rigIdx, slot, isNaN(gpuSlotRaw) ? 0 : Math.max(0, gpuSlotRaw));
         append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
         return;
       }
@@ -4220,11 +5050,16 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       if (arg1 === 'deploy') {
         const invIdx = parseInt(arg2, 10) - 1;
         const rigIdx = parseInt(arg3, 10) - 1;
+        const gpuSlotRaw = parts[4] ? parseInt(parts[4], 10) - 1 : undefined;
         if (isNaN(invIdx) || isNaN(rigIdx)) {
-          append([{ kind: 'ERR', text: 'Usage: fab deploy <inventory#> <rig#>' }]);
+          append([{ kind: 'ERR', text: 'Usage: fab deploy <inventory#> <rig#> [gpuSlot#]' }]);
           return;
         }
-        const res = onDeployCustomAsic(invIdx, rigIdx);
+        const res = onDeployCustomAsic(
+          invIdx,
+          rigIdx,
+          typeof gpuSlotRaw === 'number' && !isNaN(gpuSlotRaw) ? Math.max(0, gpuSlotRaw) : undefined
+        );
         append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
         return;
       }
@@ -4243,7 +5078,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       append([
         {
           kind: 'ERR',
-          text: 'Usage: fab [line build | design <name> <algo> <node> [perf|balanced|eff|compact] | produce <bp#> <qty> | deploy <inv#> <rig#> | strip <rig#> | sell <inv#> <qty|all>]',
+          text: 'Usage: fab [line build | design | produce <bp#> <qty> | deploy <inv#> <rig#> [gpuSlot] | strip <rig#> [slot] [gpuSlot] | sell <inv#> <qty|all>]',
         },
       ]);
       return;
@@ -5356,9 +6191,15 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
     : wizard
     ? wizard.step === 'GPU'
       ? [
-          ...getUnlockedGpus()
-            .slice(0, 3)
-            .map((_, idx) => ({ label: String(idx + 1), cmd: String(idx + 1) })),
+          ...Array.from(
+            {
+              length: Math.min(
+                4,
+                getUnlockedGpus().length + getMatchingFabStock('gpu', wizard.config).length
+              ),
+            },
+            (_, idx) => ({ label: String(idx + 1), cmd: String(idx + 1) })
+          ),
           { label: 'done', cmd: 'done' },
           { label: 'clear', cmd: 'clear' },
           { label: 'back', cmd: 'back' },
@@ -5374,23 +6215,27 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           { label: 'cancel', cmd: 'cancel' },
         ]
       : (() => {
-          const ch = CHASSIS_PARTS.find((c) => c.id === wizard.config.chassisId) ?? CHASSIS_PARTS[0];
+          const ch = getEffectivePartBundle(wizard.config).chassis;
+          const isAsicOnly = Boolean(ch.isAsicRack && ch.maxGpus === 0);
           const count =
             wizard.step === 'CHASSIS'
-              ? getUnlockedChassis().length
+              ? getUnlockedChassis().length + getMatchingFabStock('chassis', wizard.config).length
               : wizard.step === 'COMPUTE'
-              ? getUnlockedComputeFor(ch.isAsicRack).length
+              ? (ch.maxAsics >= 1 && ch.maxGpus > 0
+                  ? COMPUTE_PARTS.filter((c) => isPartUnlocked(c.researchRequired).ok).length
+                  : getUnlockedComputeFor(isAsicOnly).length) +
+                getMatchingFabStock('compute', wizard.config).length
               : wizard.step === 'STORAGE'
-              ? getUnlockedStorage().length
+              ? getUnlockedStorage().length + getMatchingFabStock('storage', wizard.config).length
               : wizard.step === 'PSU'
-              ? getUnlockedPsus().length
+              ? getUnlockedPsus().length + getMatchingFabStock('psu', wizard.config).length
               : wizard.step === 'COOLING'
-              ? getUnlockedCooling().length
+              ? getUnlockedCooling().length + getMatchingFabStock('cooling', wizard.config).length
               : wizard.step === 'OS'
-              ? getUnlockedOs().length
+              ? getUnlockedOs().length + getMatchingFabStock('os', wizard.config).length
               : getUnlockedCoins().length;
           return [
-            ...Array.from({ length: Math.min(3, count) }, (_, i) => ({
+            ...Array.from({ length: Math.min(4, count) }, (_, i) => ({
               label: String(i + 1),
               cmd: String(i + 1),
             })),
@@ -5398,6 +6243,48 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
               ? [{ label: 'preset 1', cmd: 'preset 1' }]
               : []),
             { label: 'back', cmd: 'back' },
+            { label: 'cancel', cmd: 'cancel' },
+          ];
+        })()
+    : fabWizard
+    ? fabWizard.step === 'ENGINEERING'
+      ? [
+          { label: 'density +1', cmd: 'density +1' },
+          { label: 'eff +1', cmd: 'eff +1' },
+          { label: 'therm +1', cmd: 'therm +1' },
+          { label: 'qa +1', cmd: 'qa +1' },
+          { label: 'preset perf', cmd: 'preset perf' },
+          { label: 'preset eff', cmd: 'preset eff' },
+          { label: 'done', cmd: 'done' },
+          { label: 'back', cmd: 'back' },
+          { label: 'cancel', cmd: 'cancel' },
+        ]
+      : fabWizard.step === 'REVIEW'
+      ? [
+          { label: 'tapeout', cmd: 'tapeout' },
+          { label: 'profile perf', cmd: 'profile perf' },
+          { label: 'profile eff', cmd: 'profile eff' },
+          { label: 'profile compact', cmd: 'profile compact' },
+          { label: 'back', cmd: 'back' },
+          { label: 'cancel', cmd: 'cancel' },
+        ]
+      : (() => {
+          const count =
+            fabWizard.step === 'CATEGORY'
+              ? getUnlockedFabCategories(state).length
+              : fabWizard.step === 'ARCHITECTURE'
+              ? getUnlockedFabArchitectures(state, fabWizard.partCategory).length
+              : fabWizard.step === 'NODE'
+              ? getUnlockedFabNodes(state, fabWizard.partCategory).length
+              : fabWizard.step === 'FOCUS'
+              ? getFocusOptionsForDesign(fabWizard.partCategory, fabWizard.architecture).length
+              : getUnlockedFabSubFeatures(state).length;
+          return [
+            ...Array.from({ length: Math.min(4, count) }, (_, i) => ({
+              label: String(i + 1),
+              cmd: String(i + 1),
+            })),
+            ...(fabWizard.step !== 'CATEGORY' ? [{ label: 'back', cmd: 'back' }] : []),
             { label: 'cancel', cmd: 'cancel' },
           ];
         })()
@@ -5424,12 +6311,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         ]
       : (() => {
           const rig = state.rigs[tinker.rigIndex];
-          const ch = CHASSIS_PARTS.find((c) => c.id === rig?.chassisId) ?? CHASSIS_PARTS[0];
+          const ch = rig ? getEffectivePartBundle(rig).chassis : CHASSIS_PARTS[0];
           const count =
             tinker.slot === 'chassis'
               ? getUnlockedChassis().length
               : tinker.slot === 'compute'
-              ? getUnlockedComputeFor(ch.isAsicRack).length
+              ? ch.maxAsics >= 1 && ch.maxGpus > 0
+                ? COMPUTE_PARTS.filter((c) => isPartUnlocked(c.researchRequired).ok).length
+                : getUnlockedComputeFor(Boolean(ch.isAsicRack && ch.maxGpus === 0)).length
               : tinker.slot === 'storage'
               ? getUnlockedStorage().length
               : tinker.slot === 'psu'
@@ -5564,6 +6453,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           <span className="text-amber-300 font-semibold">
             Rig Builder ({wizard.step}) · Auto-Paused
           </span>
+        ) : fabWizard ? (
+          <span className="text-amber-300 font-semibold">
+            Fab Designer ({fabWizard.step}) · Auto-Paused
+          </span>
         ) : tinker ? (
           <span className="text-amber-300 font-semibold">
             Tinker Workbench · Auto-Paused
@@ -5659,6 +6552,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
               ? 'event(decision)>'
               : wizard
               ? `build(${wizard.step.toLowerCase()})>`
+              : fabWizard
+              ? `fab(${fabWizard.step.toLowerCase()})>`
               : tinker
               ? `tinker(R${tinker.rigIndex + 1}${tinker.slot === 'MENU' ? '' : `:${tinker.slot}`})>`
               : 'miner@hashrate:~$'}
@@ -5698,6 +6593,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
                 ? 'Type 1, 2, or 3 to resolve active event...'
                 : wizard
                 ? 'Type option number, "back", or "cancel"...'
+                : fabWizard
+                ? 'Type option #, engineering cmd, "back", or "cancel"...'
                 : tinker
                 ? 'Pick slot or part #, "back", or "done"...'
                 : 'Type a command ("step 5", "overclock 125", "tinker 1", "build rig", "help")...'

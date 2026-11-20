@@ -30,6 +30,7 @@ import {
 import {
   advanceOneStep,
   BILLING_CYCLE_STEPS,
+  buildDefaultFab,
   buildFabLine,
   calculatePartTradeInCost,
   calculateRigBuildCost,
@@ -40,8 +41,10 @@ import {
   computeAverageRigHealth,
   createInitialComponentHealth,
   createNewGameState,
-  deployCustomAsicToRig,
+  CustomBlueprintDesignInput,
+  deployCustomInventoryToRig,
   designCustomChipBlueprint,
+  designCustomComponentBlueprint,
   ensureRigComponentHealth,
   executeSpotBuy,
   estimateFleetHashIndex,
@@ -54,6 +57,7 @@ import {
   getComponentRepairCost,
   getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
+  getEffectivePartBundle,
   getFacility,
   getFacilityRoomExpansionCost,
   getFacilityRooms,
@@ -67,10 +71,10 @@ import {
   queueFabProduction,
   resolvePendingEvent,
   sellCustomAsicsWholesale,
-  stripCustomAsicFromRig,
+  stripCustomPartFromRig,
 } from './engine/simulation';
 import { getUnlockedSystems } from './data/onboarding';
-import { getGlobalHardwarePriceMult } from './engine/usedMarket';
+import { calculateBaseRigPartsCost, getGlobalHardwarePriceMult } from './engine/usedMarket';
 import {
   launchShellCoin,
   resolveRaid,
@@ -103,6 +107,7 @@ import {
   MiningAlgorithm,
   MiningRig,
   OnboardingMode,
+  PartCategory,
   PlacedCoolingUnit,
   PoolMode,
   PowerContractId,
@@ -883,10 +888,23 @@ export default function App() {
                     ? 'MINING'
                     : 'PAUSED'
                   : r.status;
+              const nextCustomParts = r.customParts ? { ...r.customParts } : undefined;
+              if (nextCustomParts) {
+                if (slot === 'chassis') delete nextCustomParts.chassis;
+                if (computeSwapped) delete nextCustomParts.compute;
+                if (slot === 'storage') delete nextCustomParts.storage;
+                if (slot === 'psu') delete nextCustomParts.psu;
+                if (slot === 'cooling') delete nextCustomParts.cooling;
+                if (slot === 'os') delete nextCustomParts.os;
+                if (nextCustomParts.gpus) {
+                  nextCustomParts.gpus = nextCustomParts.gpus.slice(0, nextGpuLen);
+                }
+              }
               return {
                 ...r,
                 ...nextRigPatch,
                 customAsicSpec: computeSwapped ? undefined : r.customAsicSpec,
+                customParts: nextCustomParts,
                 componentHealth: nextComp,
                 healthPct: nextAvg,
                 status: nextStatus,
@@ -912,17 +930,15 @@ export default function App() {
     if (!state) return { ok: false, summary: 'No active game.' };
     const rig = state.rigs[rigIndex];
     if (!rig) return { ok: false, summary: `Rig #${rigIndex + 1} not found.` };
-    const chassis = CHASSIS_PARTS.find((c) => c.id === rig.chassisId) ?? CHASSIS_PARTS[0];
+    const chassis = getEffectivePartBundle(rig).chassis;
     const hwMult = getGlobalHardwarePriceMult(state);
 
     if (action === 'CLEAR') {
       if (rig.gpuIds.length === 0) {
         return { ok: false, summary: `${rig.name} has no GPUs to remove.` };
       }
-      const refund = rig.gpuIds.reduce((s, gid) => {
-        const g = GPU_PARTS.find((x) => x.id === gid);
-        return s + Math.round((g?.cost ?? 0) * 0.6);
-      }, 0);
+      const { gpus: bundleGpus } = getEffectivePartBundle(rig);
+      const refund = bundleGpus.reduce((s, g) => s + Math.round((g?.cost ?? 0) * 0.6), 0);
       soundFx.playCash();
       setState((prev) =>
         prev
@@ -944,6 +960,7 @@ export default function App() {
                 return {
                   ...r,
                   gpuIds: [],
+                  customParts: r.customParts ? { ...r.customParts, gpus: [] } : undefined,
                   componentHealth: nextComp,
                   healthPct: computeAverageRigHealth(nextComp),
                 };
@@ -961,7 +978,7 @@ export default function App() {
       const slotIdx = typeof gpuIdOrSlotIdx === 'number' ? gpuIdOrSlotIdx : 0;
       const gid = rig.gpuIds[slotIdx];
       if (!gid) return { ok: false, summary: `GPU slot #${slotIdx + 1} is empty.` };
-      const spec = GPU_PARTS.find((g) => g.id === gid);
+      const spec = getEffectivePartBundle(rig).gpus[slotIdx] ?? GPU_PARTS.find((g) => g.id === gid);
       const refund = Math.round((spec?.cost ?? 0) * 0.6);
       soundFx.playCash();
       setState((prev) =>
@@ -992,6 +1009,12 @@ export default function App() {
                 return {
                   ...r,
                   gpuIds: r.gpuIds.filter((_id, gIdx) => gIdx !== slotIdx),
+                  customParts: r.customParts
+                    ? {
+                        ...r.customParts,
+                        gpus: (r.customParts.gpus ?? []).filter((_cg, gIdx) => gIdx !== slotIdx),
+                      }
+                    : undefined,
                   componentHealth: nextComp,
                   healthPct: computeAverageRigHealth(nextComp),
                 };
@@ -1224,6 +1247,17 @@ export default function App() {
     return { ok: true, summary: check.summary };
   };
 
+  const handleDesignCustomComponent = (
+    input: CustomBlueprintDesignInput
+  ): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const check = designCustomComponentBlueprint(state, input);
+    if (!check.ok) return { ok: false, summary: check.summary };
+    soundFx.playCash();
+    setState((prev) => (prev ? designCustomComponentBlueprint(prev, input).nextState : prev));
+    return { ok: true, summary: check.summary };
+  };
+
   const handleDesignCustomChip = (
     name: string,
     algo: MiningAlgorithm,
@@ -1240,12 +1274,16 @@ export default function App() {
     return { ok: true, summary: check.summary };
   };
 
-  const handleStripCustomAsic = (rigIdx: number): { ok: boolean; summary: string } => {
+  const handleStripCustomAsic = (
+    rigIdx: number,
+    slot: PartCategory = 'compute',
+    gpuSlotIdx = 0
+  ): { ok: boolean; summary: string } => {
     if (!state) return { ok: false, summary: 'No active game.' };
-    const res = stripCustomAsicFromRig(state, rigIdx);
+    const res = stripCustomPartFromRig(state, rigIdx, slot, gpuSlotIdx);
     if (!res.ok) return { ok: false, summary: res.summary };
     soundFx.playClick();
-    setState((prev) => (prev ? stripCustomAsicFromRig(prev, rigIdx).nextState : prev));
+    setState((prev) => (prev ? stripCustomPartFromRig(prev, rigIdx, slot, gpuSlotIdx).nextState : prev));
     return { ok: true, summary: res.summary };
   };
 
@@ -1263,13 +1301,16 @@ export default function App() {
 
   const handleDeployCustomAsic = (
     invIdx: number,
-    rigIdx: number
+    rigIdx: number,
+    gpuSlotIdx?: number
   ): { ok: boolean; summary: string } => {
     if (!state) return { ok: false, summary: 'No active game.' };
-    const check = deployCustomAsicToRig(state, invIdx, rigIdx);
+    const check = deployCustomInventoryToRig(state, invIdx, rigIdx, gpuSlotIdx);
     if (!check.ok) return { ok: false, summary: check.summary };
     soundFx.playMilestone();
-    setState((prev) => (prev ? deployCustomAsicToRig(prev, invIdx, rigIdx).nextState : prev));
+    setState((prev) =>
+      prev ? deployCustomInventoryToRig(prev, invIdx, rigIdx, gpuSlotIdx).nextState : prev
+    );
     return { ok: true, summary: check.summary };
   };
 
@@ -1647,17 +1688,72 @@ export default function App() {
       return false;
     }
 
+    // Consume any custom-manufactured components selected from Foundry inventory
+    const usedCustomList = [
+      config.customParts?.chassis,
+      config.customParts?.compute,
+      ...(config.customParts?.gpus ?? []).filter(Boolean),
+      config.customParts?.storage,
+      config.customParts?.psu,
+      config.customParts?.cooling,
+      config.customParts?.os,
+    ].filter((s): s is NonNullable<typeof s> => Boolean(s));
+
+    if (usedCustomList.length > 0) {
+      const fabInv = buildDefaultFab(state.fab).inventory.map((i) => ({ ...i }));
+      for (const spec of usedCustomList) {
+        const match = fabInv.find(
+          (item) =>
+            item.blueprintId === spec.blueprintId &&
+            (item.partCategory ?? 'compute') === spec.partCategory &&
+            item.qty > 0
+        );
+        if (!match) return false;
+        match.qty -= 1;
+      }
+    }
+
     setState((prev) => {
       if (!prev) return prev;
       const cost = calculateRigBuildCost(config, prev);
       const fac = getFacility(prev.facilityId);
       if (prev.cash < cost || prev.rigs.length >= getEffectiveFacilityMaxRigs(prev)) return prev;
+
+      const prevFab = buildDefaultFab(prev.fab);
+      const nextFabInv = prevFab.inventory.map((i) => ({ ...i }));
+      for (const spec of usedCustomList) {
+        const match = nextFabInv.find(
+          (item) =>
+            item.blueprintId === spec.blueprintId &&
+            (item.partCategory ?? 'compute') === spec.partCategory &&
+            item.qty > 0
+        );
+        if (!match) return prev;
+        match.qty -= 1;
+      }
+      const cleanedFabInv = nextFabInv.filter((i) => i.qty > 0);
+
       const slot = findOpenGridSlot(fac, prev.rigs, prev.coolingUnits ?? []);
       const rooms = getFacilityRooms(prev);
       const assignedRoomId =
         config.roomId && rooms.some((r) => r.id === config.roomId)
           ? config.roomId
           : findOpenRoomId(rooms, prev.rigs);
+
+      const customComp = config.customParts?.compute;
+      const customAsicSpec = customComp
+        ? {
+            blueprintId: customComp.blueprintId,
+            name: customComp.name,
+            algo: customComp.algo ?? 'SHA256',
+            processNode: customComp.processNode,
+            hashRate: customComp.hashrates?.[customComp.algo ?? 'SHA256'] ?? 0,
+            watts: customComp.watts ?? 2800,
+            heatC: customComp.heatC ?? 60,
+          }
+        : undefined;
+
+      const totalBuiltValue = Math.max(cost, Math.round(calculateBaseRigPartsCost(config)));
 
       const newRig: MiningRig = {
         ...config,
@@ -1669,6 +1765,7 @@ export default function App() {
         soloBlocksWon: 0,
         lastStepBlockHit: false,
         illicitMod: null,
+        customAsicSpec,
         enabled: true,
         gridX: slot.gridX,
         gridY: slot.gridY,
@@ -1680,7 +1777,7 @@ export default function App() {
         ageSteps: 0,
         failureCount: 0,
         isUsedPurchase: false,
-        purchasePriceUsd: cost,
+        purchasePriceUsd: totalBuiltValue,
         status: 'MINING',
         lastStepCoins: 0,
         lastStepUsd: 0,
@@ -1694,6 +1791,7 @@ export default function App() {
       return {
         ...prev,
         cash: prev.cash - cost,
+        fab: usedCustomList.length > 0 ? { ...prevFab, inventory: cleanedFabInv } : prev.fab,
         currentCycleStats: {
           ...prev.currentCycleStats,
           otherSpendUsd: prev.currentCycleStats.otherSpendUsd + cost,
@@ -1705,7 +1803,14 @@ export default function App() {
           usedOnlyEligible: false,
         },
         transactions: [
-          makeTx(prev.stepCount, 'HARDWARE', -cost, `Built & deployed ${config.name}`),
+          makeTx(
+            prev.stepCount,
+            'HARDWARE',
+            -cost,
+            usedCustomList.length > 0
+              ? `Built & deployed ${config.name} (${usedCustomList.length} fab part(s))`
+              : `Built & deployed ${config.name}`
+          ),
           ...(prev.transactions ?? []),
         ].slice(0, 200),
         rigs: [...prev.rigs, newRig],
@@ -3887,7 +3992,10 @@ export default function App() {
                       summary: `Not enough bay slots (${state.rigs.length + count}/${maxRigs} max rigs).`,
                     };
                   }
-                  const baseUnitCost = calculateRigBuildCost(src, state);
+                  const baseUnitCost = calculateRigBuildCost(
+                    { ...src, customParts: undefined },
+                    state
+                  );
                   const hasBulkRd = state.unlockedResearch.includes('res_bulk_procurement');
                   const discPct =
                     hasBulkRd && count >= 2 ? 0.1 : count >= 3 ? 0.05 : 0;
@@ -3984,6 +4092,7 @@ export default function App() {
                 onCloseShort={handleCloseShort}
                 onBuildFabLine={handleBuildFabLine}
                 onDesignCustomChip={handleDesignCustomChip}
+                onDesignCustomComponent={handleDesignCustomComponent}
                 onQueueFabProduction={handleQueueFabProduction}
                 onDeployCustomAsic={handleDeployCustomAsic}
                 onSellCustomAsic={handleSellCustomAsic}

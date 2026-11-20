@@ -575,7 +575,7 @@ export const CODEX_ENTRIES: CodexEntry[] = [
     body: [
       '  - Unlocked at Warehouse tier + "Semiconductor Wafer Lithography" R&D ("fab").',
       '  - Commission 1..3 cleanroom fab lines ("fab line build"), then tape out custom',
-      '    silicon blueprints across 7nm, 5nm, 3nm, or 2nm ("fab design <name> <algo> <node>").',
+      '    silicon across 7nm, 5nm, 3nm, 2nm, 1nm, or photonic ("fab design <name> <algo> <node>").',
       '  - Manufacture wafer batches ("fab produce <bp#> <qty>") and either install finished',
       '    chips directly onto rigs ("fab deploy <inv#> <rig#>") or export wholesale ("fab sell").',
     ],

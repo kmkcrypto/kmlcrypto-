@@ -59,6 +59,13 @@ export const SCENARIOS: ScenarioSpec[] = [
       'Gen-6 AI-ASIC blades and Neural Tensor GPUs on 16kW HVDC with AI thermal fabric cooling.',
   },
   {
+    id: 'GEN7',
+    name: 'Gen-7 Quantum & Photonic',
+    tagline: 'Megafarm · He-3 Cryo',
+    description:
+      'Gen-7 Photonic Laser-Matrix cores and QGPU backplanes under dilution cryostats with full R&D.',
+  },
+  {
     id: 'MANUFACTURING',
     name: 'Custom Manufacturing',
     tagline: 'Foundry · 2 fab lines',
@@ -77,7 +84,7 @@ export const SCENARIOS: ScenarioSpec[] = [
     name: 'Custom Scenario',
     tagline: 'Everything unlocked',
     description:
-      'Free-form sandbox: all catalog gates bypassed, all coins unlocked and $5M in working capital.',
+      'Free-form sandbox: all catalog gates bypassed, all coins unlocked and $25M in working capital.',
   },
 ];
 
@@ -86,6 +93,7 @@ const SCENARIO_SEED: Record<DevScenarioId, string> = {
   INDUSTRIAL: 'DEV-INDUSTRIAL',
   GEN5: 'DEV-GEN5',
   GEN6: 'DEV-GEN6',
+  GEN7: 'DEV-GEN7',
   MANUFACTURING: 'DEV-FAB',
   MULTIPLAYER: 'DEV-WORLD',
   CUSTOM: 'DEV-CUSTOM',
@@ -224,7 +232,7 @@ export function createScenarioState(id: DevScenarioId): GameState {
   const gen5Parts: RigParts = {
     chassisId: 'chassis_cryo_monolith',
     computeId: 'asic_chronos_2nm',
-    storageId: 'stor_chia_u3_160tb',
+    storageId: 'stor_exascale_960tb',
     psuId: 'psu_9000w_hvdc',
     coolingId: 'cool_two_phase_immersion',
     osId: 'os_quantum_stratum',
@@ -238,6 +246,16 @@ export function createScenarioState(id: DevScenarioId): GameState {
     psuId: 'psu_16000w_hvdc',
     coolingId: 'cool_ai_thermal_fabric',
     osId: 'os_neural_fleet',
+    targetCoin: 'BTC',
+  };
+
+  const gen7Parts: RigParts = {
+    chassisId: 'chassis_quantum_cryo_bay',
+    computeId: 'asic_photonic_sha_core',
+    storageId: 'stor_photonic_holo_2560tb',
+    psuId: 'psu_24000w_supercond',
+    coolingId: 'cool_quantum_dilution',
+    osId: 'os_quantum_qec_kernel',
     targetCoin: 'BTC',
   };
 
@@ -270,7 +288,7 @@ export function createScenarioState(id: DevScenarioId): GameState {
       };
     }
     case 'GEN5': {
-      const s = withRigs('fac_industrial', gen5Parts, 8, 12_000_000);
+      const s = withRigs('fac_industrial', gen5Parts, 8, 18_000_000);
       return {
         ...s,
         unlockedResearch: researchClosure([
@@ -289,7 +307,7 @@ export function createScenarioState(id: DevScenarioId): GameState {
       };
     }
     case 'GEN6': {
-      const s = withRigs('fac_megafarm', gen6Parts, 6, 45_000_000);
+      const s = withRigs('fac_megafarm', gen6Parts, 6, 65_000_000);
       return {
         ...s,
         unlockedResearch: researchClosure(['res_gen6_ai_convergence', 'res_ai_thermal_fabric']),
@@ -303,8 +321,26 @@ export function createScenarioState(id: DevScenarioId): GameState {
         ]),
       };
     }
+    case 'GEN7': {
+      const s = withRigs('fac_megafarm', gen7Parts, 6, 220_000_000);
+      return {
+        ...s,
+        unlockedResearch: researchClosure([
+          'res_gen7_quantum_photonic',
+          'res_gen7_dilution_cryo',
+        ]),
+        employees: buildEmployees([
+          'TECHNICIAN',
+          'TECHNICIAN',
+          'ELECTRICIAN',
+          'MANAGER',
+          'RESEARCHER',
+          'SYS_ENGINEER',
+        ]),
+      };
+    }
     case 'MANUFACTURING': {
-      const s = withRigs('fac_industrial', gen5Parts, 4, 8_000_000);
+      const s = withRigs('fac_industrial', gen5Parts, 4, 16_000_000);
       return {
         ...s,
         unlockedResearch: researchClosure([
@@ -323,7 +359,7 @@ export function createScenarioState(id: DevScenarioId): GameState {
       };
     }
     case 'MULTIPLAYER': {
-      const s = withRigs('fac_warehouse', industrialParts, 6, 2_000_000);
+      const s = withRigs('fac_warehouse', industrialParts, 6, 2_500_000);
       let world = { ...buildDefaultWorld(seed), seasonLabel: 'Season 1 · Open Beta World' };
       for (let i = 0; i < 12; i += 1) {
         world = stepSharedWorld(world, { ...s, stepCount: i }, 180).nextWorld;
@@ -337,7 +373,7 @@ export function createScenarioState(id: DevScenarioId): GameState {
     }
     case 'CUSTOM':
     default: {
-      const s = withRigs('fac_garage', midParts, 2, 5_000_000);
+      const s = withRigs('fac_garage', midParts, 2, 25_000_000);
       return {
         ...s,
         devUnlockAll: true,

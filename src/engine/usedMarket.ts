@@ -8,13 +8,23 @@ import {
   STORAGE_PARTS,
 } from '../data/catalog';
 import {
+  ChassisPart,
   CoinSymbol,
+  ComputePart,
+  CoolingPart,
+  CustomAsicSpec,
+  CustomComponentSpec,
   GameState,
+  GpuPart,
   HardwareConditionTier,
   HardwareGen,
   MiningRig,
+  OsPart,
+  PsuPart,
   RigBuildConfig,
   RigComponentHealth,
+  RigCustomPartsMap,
+  StoragePart,
   UsedMarketListing,
 } from '../types/game';
 import { createSeededRng } from '../utils/rng';
@@ -76,11 +86,198 @@ export function computeAverageRigHealth(comp: RigComponentHealth): number {
   return Number(Math.max(20, Math.min(100, avg)).toFixed(1));
 }
 
-export function getRigGeneration(config: RigBuildConfig & { customAsicSpec?: MiningRig['customAsicSpec'] }): HardwareGen {
+export function customSpecToChassis(spec: CustomComponentSpec): ChassisPart {
+  return {
+    id: `custom_${spec.blueprintId}`,
+    name: `[FAB] ${spec.name}`,
+    category: 'chassis',
+    era: spec.generation >= 7 ? 'QUANTUM' : spec.generation >= 6 ? 'AI' : 'ASIC',
+    generation: spec.generation,
+    cost: Math.max(spec.unitCostUsd, Math.round(spec.wholesaleValueUsd * 0.85)),
+    maxGpus: spec.maxGpus ?? (spec.isAsicRack ? 0 : 8),
+    maxStorage: spec.maxStorage ?? 8,
+    isAsicRack: Boolean(spec.isAsicRack),
+    maxAsics: spec.maxAsics ?? (spec.isAsicRack ? 1 : 0),
+    baseWatts: spec.baseWatts ?? 45,
+    coolingBonus: spec.coolingBonus ?? 24,
+    noiseModifier: spec.noiseModifier ?? 0,
+    description: `Custom Foundry ${spec.processNode} ${spec.architecture} enclosure.`,
+  };
+}
+
+export function customSpecToCompute(spec: CustomComponentSpec): ComputePart {
+  return {
+    id: `custom_${spec.blueprintId}`,
+    name: `[FAB] ${spec.name}`,
+    category: 'compute',
+    kind: spec.computeKind ?? 'ASIC',
+    era: spec.generation >= 7 ? 'QUANTUM' : spec.generation >= 6 ? 'AI' : 'ASIC',
+    generation: spec.generation,
+    cost: Math.max(spec.unitCostUsd, Math.round(spec.wholesaleValueUsd * 0.85)),
+    watts: spec.watts ?? 2800,
+    heatC: spec.heatC ?? 60,
+    noiseDba: spec.noiseDba ?? 32,
+    hashrates: spec.hashrates ?? (spec.algo ? { [spec.algo]: 100 } : {}),
+    description: `Custom Foundry ${spec.processNode} ${spec.architecture} compute silicon.`,
+  };
+}
+
+export function customSpecToGpu(spec: CustomComponentSpec): GpuPart {
+  return {
+    id: `custom_${spec.blueprintId}`,
+    name: `[FAB] ${spec.name}`,
+    category: 'gpu',
+    era: spec.generation >= 7 ? 'QUANTUM' : spec.generation >= 6 ? 'AI' : 'ASIC',
+    generation: spec.generation,
+    cost: Math.max(spec.unitCostUsd, Math.round(spec.wholesaleValueUsd * 0.85)),
+    watts: spec.watts ?? 320,
+    heatC: spec.heatC ?? 36,
+    noiseDba: spec.noiseDba ?? 14,
+    hashrates: spec.hashrates ?? { ETHASH: 140 },
+    description: `Custom Foundry ${spec.processNode} ${spec.architecture} accelerator card.`,
+  };
+}
+
+export function customSpecToStorage(spec: CustomComponentSpec): StoragePart {
+  return {
+    id: `custom_${spec.blueprintId}`,
+    name: `[FAB] ${spec.name}`,
+    category: 'storage',
+    era: spec.generation >= 7 ? 'QUANTUM' : spec.generation >= 6 ? 'AI' : 'ASIC',
+    generation: spec.generation,
+    cost: Math.max(spec.unitCostUsd, Math.round(spec.wholesaleValueUsd * 0.85)),
+    ramGb: spec.ramGb ?? 64,
+    storageTb: spec.storageTb ?? 160,
+    watts: spec.watts ?? 90,
+    heatC: spec.heatC ?? 12,
+    efficiencyBonus: spec.efficiencyBonus ?? 0.12,
+    description: `Custom Foundry ${spec.processNode} ${spec.architecture} memory & plot array.`,
+  };
+}
+
+export function customSpecToPsu(spec: CustomComponentSpec): PsuPart {
+  return {
+    id: `custom_${spec.blueprintId}`,
+    name: `[FAB] ${spec.name}`,
+    category: 'psu',
+    era: spec.generation >= 7 ? 'QUANTUM' : spec.generation >= 6 ? 'AI' : 'ASIC',
+    generation: spec.generation,
+    cost: Math.max(spec.unitCostUsd, Math.round(spec.wholesaleValueUsd * 0.85)),
+    maxWatts: spec.maxWatts ?? 3600,
+    efficiency: spec.efficiency ?? 0.96,
+    noiseDba: spec.noiseDba ?? 9,
+    description: `Custom Foundry ${spec.processNode} ${spec.architecture} power delivery module.`,
+  };
+}
+
+export function customSpecToCooling(
+  spec: CustomComponentSpec
+): CoolingPart & { isImmersion?: boolean } {
+  return {
+    id: `custom_${spec.blueprintId}`,
+    name: `[FAB] ${spec.name}`,
+    category: 'cooling',
+    era: spec.generation >= 7 ? 'QUANTUM' : spec.generation >= 6 ? 'AI' : 'ASIC',
+    generation: spec.generation,
+    cost: Math.max(spec.unitCostUsd, Math.round(spec.wholesaleValueUsd * 0.85)),
+    coolingPowerC: spec.coolingPowerC ?? 120,
+    watts: spec.watts ?? 80,
+    noiseDba: spec.noiseDba ?? 10,
+    isImmersion: spec.isImmersion,
+    description: `Custom Foundry ${spec.processNode} ${spec.architecture} thermal system.`,
+  };
+}
+
+export function customSpecToOs(spec: CustomComponentSpec): OsPart {
+  return {
+    id: `custom_${spec.blueprintId}`,
+    name: `[FAB] ${spec.name}`,
+    category: 'os',
+    era: spec.generation >= 7 ? 'QUANTUM' : spec.generation >= 6 ? 'AI' : 'ASIC',
+    generation: spec.generation,
+    cost: Math.max(spec.unitCostUsd, Math.round(spec.wholesaleValueUsd * 0.85)),
+    hashrateMultiplier: spec.hashrateMultiplier ?? 1.18,
+    powerMultiplier: spec.powerMultiplier ?? 0.92,
+    stabilityBonus: spec.stabilityBonus ?? 0.3,
+    description: `Custom Foundry ${spec.processNode} ${spec.architecture} firmware kernel.`,
+  };
+}
+
+export function getEffectivePartBundle(
+  config: RigBuildConfig & {
+    customAsicSpec?: CustomAsicSpec;
+    customParts?: RigCustomPartsMap;
+  }
+): {
+  chassis: ChassisPart;
+  compute: ComputePart;
+  gpus: GpuPart[];
+  storage: StoragePart;
+  psu: PsuPart;
+  cooling: CoolingPart & { isImmersion?: boolean };
+  os: OsPart;
+} {
+  const cp = config.customParts;
+  const chassis = cp?.chassis
+    ? customSpecToChassis(cp.chassis)
+    : CHASSIS_PARTS.find((c) => c.id === config.chassisId) ?? CHASSIS_PARTS[0];
+  const compute = cp?.compute
+    ? customSpecToCompute(cp.compute)
+    : COMPUTE_PARTS.find((c) => c.id === config.computeId) ?? COMPUTE_PARTS[0];
+  const gpus = config.gpuIds
+    .map((id, idx) => {
+      const customG = cp?.gpus?.[idx];
+      if (customG) return customSpecToGpu(customG);
+      return GPU_PARTS.find((g) => g.id === id);
+    })
+    .filter((g): g is GpuPart => Boolean(g));
+  const storage = cp?.storage
+    ? customSpecToStorage(cp.storage)
+    : STORAGE_PARTS.find((s) => s.id === config.storageId) ?? STORAGE_PARTS[0];
+  const psu = cp?.psu
+    ? customSpecToPsu(cp.psu)
+    : PSU_PARTS.find((p) => p.id === config.psuId) ?? PSU_PARTS[0];
+  const cooling = cp?.cooling
+    ? customSpecToCooling(cp.cooling)
+    : COOLING_PARTS.find((c) => c.id === config.coolingId) ?? COOLING_PARTS[0];
+  const os = cp?.os
+    ? customSpecToOs(cp.os)
+    : OS_PARTS.find((o) => o.id === config.osId) ?? OS_PARTS[0];
+  return { chassis, compute, gpus, storage, psu, cooling, os };
+}
+
+export function getRigGeneration(
+  config: RigBuildConfig & {
+    customAsicSpec?: MiningRig['customAsicSpec'];
+    customParts?: RigCustomPartsMap;
+  }
+): HardwareGen {
+  const cp = config.customParts;
+  let customMax = 0;
   if (config.customAsicSpec) {
-    if (config.customAsicSpec.processNode === '2nm') return 5;
-    if (config.customAsicSpec.processNode === '3nm' || config.customAsicSpec.processNode === '5nm') return 4;
-    return 3;
+    if (config.customAsicSpec.processNode === 'photonic') customMax = Math.max(customMax, 7);
+    else if (config.customAsicSpec.processNode === '1nm') customMax = Math.max(customMax, 6);
+    else if (config.customAsicSpec.processNode === '2nm') customMax = Math.max(customMax, 5);
+    else if (
+      config.customAsicSpec.processNode === '3nm' ||
+      config.customAsicSpec.processNode === '5nm'
+    )
+      customMax = Math.max(customMax, 4);
+    else customMax = Math.max(customMax, 3);
+  }
+  if (cp) {
+    const list: (CustomComponentSpec | null | undefined)[] = [
+      cp.chassis,
+      cp.compute,
+      ...(cp.gpus ?? []),
+      cp.storage,
+      cp.psu,
+      cp.cooling,
+      cp.os,
+    ];
+    for (const s of list) {
+      if (s?.generation) customMax = Math.max(customMax, s.generation);
+    }
   }
   const ch = CHASSIS_PARTS.find((c) => c.id === config.chassisId);
   const comp = COMPUTE_PARTS.find((c) => c.id === config.computeId);
@@ -88,7 +285,12 @@ export function getRigGeneration(config: RigBuildConfig & { customAsicSpec?: Min
     .map((id) => GPU_PARTS.find((g) => g.id === id))
     .filter((g): g is NonNullable<typeof g> => Boolean(g));
   const maxGpuGen = gpus.reduce((m, g) => Math.max(m, g.generation ?? 1), 0);
-  const g = Math.max(comp?.generation ?? 1, ch?.generation ?? 1, maxGpuGen) as HardwareGen;
+  const g = Math.max(
+    customMax,
+    comp?.generation ?? 1,
+    ch?.generation ?? 1,
+    maxGpuGen
+  ) as HardwareGen;
   return g;
 }
 
@@ -115,18 +317,47 @@ export function getGlobalResaleValueMult(
   return evtMult * brokerMult;
 }
 
-export function calculateBaseRigPartsCost(config: RigBuildConfig): number {
-  const chassis = CHASSIS_PARTS.find((c) => c.id === config.chassisId) ?? CHASSIS_PARTS[0];
-  const compute = COMPUTE_PARTS.find((c) => c.id === config.computeId) ?? COMPUTE_PARTS[0];
-  const gpus = config.gpuIds
-    .map((id) => GPU_PARTS.find((g) => g.id === id))
-    .filter((g): g is NonNullable<typeof g> => Boolean(g));
-  const storage = STORAGE_PARTS.find((s) => s.id === config.storageId) ?? STORAGE_PARTS[0];
-  const psu = PSU_PARTS.find((p) => p.id === config.psuId) ?? PSU_PARTS[0];
-  const cooling = COOLING_PARTS.find((c) => c.id === config.coolingId) ?? COOLING_PARTS[0];
-  const os = OS_PARTS.find((o) => o.id === config.osId) ?? OS_PARTS[0];
+/**
+ * Total replacement / valuation cost of all installed parts (including custom-manufactured parts).
+ * Used for resale value, repaste fees, and company valuation.
+ */
+export function calculateBaseRigPartsCost(
+  config: RigBuildConfig & { customAsicSpec?: CustomAsicSpec; customParts?: RigCustomPartsMap }
+): number {
+  const { chassis, compute, gpus, storage, psu, cooling, os } = getEffectivePartBundle(config);
   const gpuCost = gpus.reduce((sum, g) => sum + g.cost, 0);
   return chassis.cost + compute.cost + gpuCost + storage.cost + psu.cost + cooling.cost + os.cost;
+}
+
+/**
+ * Retail checkout cost for building a rig, skipping slots supplied directly from Foundry Inventory
+ * (which were already manufactured & paid for).
+ */
+export function calculateStockBuildPartsCost(config: RigBuildConfig): number {
+  const cp = config.customParts;
+  const chassisCost = cp?.chassis
+    ? 0
+    : (CHASSIS_PARTS.find((c) => c.id === config.chassisId) ?? CHASSIS_PARTS[0]).cost;
+  const computeCost = cp?.compute
+    ? 0
+    : (COMPUTE_PARTS.find((c) => c.id === config.computeId) ?? COMPUTE_PARTS[0]).cost;
+  const gpuCost = config.gpuIds.reduce((sum, id, idx) => {
+    if (cp?.gpus?.[idx]) return sum;
+    return sum + (GPU_PARTS.find((g) => g.id === id)?.cost ?? 0);
+  }, 0);
+  const storageCost = cp?.storage
+    ? 0
+    : (STORAGE_PARTS.find((s) => s.id === config.storageId) ?? STORAGE_PARTS[0]).cost;
+  const psuCost = cp?.psu
+    ? 0
+    : (PSU_PARTS.find((p) => p.id === config.psuId) ?? PSU_PARTS[0]).cost;
+  const coolingCost = cp?.cooling
+    ? 0
+    : (COOLING_PARTS.find((c) => c.id === config.coolingId) ?? COOLING_PARTS[0]).cost;
+  const osCost = cp?.os
+    ? 0
+    : (OS_PARTS.find((o) => o.id === config.osId) ?? OS_PARTS[0]).cost;
+  return chassisCost + computeCost + gpuCost + storageCost + psuCost + coolingCost + osCost;
 }
 
 export function calculateRigResaleValue(

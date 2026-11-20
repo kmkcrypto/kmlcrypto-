@@ -77,17 +77,30 @@ import {
 import {
   buildDefaultFab,
   buildFabLine,
+  CustomBlueprintDesignInput,
   deployCustomAsicToRig,
+  deployCustomInventoryToRig,
   designCustomChipBlueprint,
+  designCustomComponentBlueprint,
+  formatCustomComponentSummaryLine,
   formatFabStatusReport,
   getFabCycleUpkeep,
+  getFabEngineeringPointBudget,
   getFabInventoryValueUsd,
   getFabLineCost,
+  getFocusOptionsForDesign,
+  getUnlockedFabArchitectures,
+  getUnlockedFabCategories,
+  getUnlockedFabNodes,
+  getUnlockedFabSubFeatures,
+  inventoryItemToCustomSpec,
   isFabUnlocked,
+  previewCustomComponentDesign,
   queueFabProduction,
   sellCustomAsicsWholesale,
   stepFabProduction,
   stripCustomAsicFromRig,
+  stripCustomPartFromRig,
 } from './fab';
 import {
   computeCompanyValuation,
@@ -137,13 +150,17 @@ export { computeWorkloadSummary, getEmployeeEfficiencyMult } from './eventsAndSt
 import {
   calculateBaseRigPartsCost,
   calculateRigResaleValue,
+  calculateStockBuildPartsCost,
   computeAverageRigHealth,
   createInitialComponentHealth,
   ensureRigComponentHealth,
   generateUsedMarketListings,
+  getEffectivePartBundle,
   getGlobalHardwarePriceMult,
   getRigGeneration,
 } from './usedMarket';
+
+export type { CustomBlueprintDesignInput };
 
 export {
   analyzeCoinForecast,
@@ -160,30 +177,43 @@ export {
   createInitialComponentHealth,
   createInitialRivals,
   deployCustomAsicToRig,
+  deployCustomInventoryToRig,
   designCustomChipBlueprint,
+  designCustomComponentBlueprint,
   ensureRigComponentHealth,
   executeSpotBuy,
   executeSpotSell,
+  formatCustomComponentSummaryLine,
   formatFabStatusReport,
   formatMarketForecastReport,
   formatWalletAndExchangeReport,
   generateContractBoard,
   generateUsedMarketListings,
+  getEffectivePartBundle,
   getFabCycleUpkeep,
+  getFabEngineeringPointBudget,
   getFabInventoryValueUsd,
   getFabLineCost,
+  getFocusOptionsForDesign,
   getPlayerRivalComparison,
   getRivalInvestigateCost,
   getShortPositionsEquityUsd,
   getSpotExchangeFeePct,
+  getUnlockedFabArchitectures,
+  getUnlockedFabCategories,
+  getUnlockedFabNodes,
+  getUnlockedFabSubFeatures,
   getWalletMarketValueUsd,
+  inventoryItemToCustomSpec,
   investigateRivalSyndicate,
   isFabUnlocked,
   openShortPosition,
   placeLimitOrder,
+  previewCustomComponentDesign,
   queueFabProduction,
   sellCustomAsicsWholesale,
   stripCustomAsicFromRig,
+  stripCustomPartFromRig,
 };
 
 export const BILLING_CYCLE_STEPS = 30;
@@ -202,24 +232,20 @@ export function getFacilityUpgradeCost(upgradeId: FacilityUpgradeId, currentLeve
   return Math.round(spec.baseCost * Math.pow(spec.costScale, currentLevel));
 }
 
-export function getPartBundle(config: RigBuildConfig) {
-  const chassis = CHASSIS_PARTS.find((c) => c.id === config.chassisId) ?? CHASSIS_PARTS[0];
-  const compute = COMPUTE_PARTS.find((c) => c.id === config.computeId) ?? COMPUTE_PARTS[0];
-  const gpus = config.gpuIds
-    .map((id) => GPU_PARTS.find((g) => g.id === id))
-    .filter((g): g is NonNullable<typeof g> => Boolean(g));
-  const storage = STORAGE_PARTS.find((s) => s.id === config.storageId) ?? STORAGE_PARTS[0];
-  const psu = PSU_PARTS.find((p) => p.id === config.psuId) ?? PSU_PARTS[0];
-  const cooling = COOLING_PARTS.find((c) => c.id === config.coolingId) ?? COOLING_PARTS[0];
-  const os = OS_PARTS.find((o) => o.id === config.osId) ?? OS_PARTS[0];
-  return { chassis, compute, gpus, storage, psu, cooling, os };
+export function getPartBundle(
+  config: RigBuildConfig & {
+    customAsicSpec?: CustomAsicSpec;
+    customParts?: MiningRig['customParts'];
+  }
+) {
+  return getEffectivePartBundle(config);
 }
 
 export function calculateRigBuildCost(
   config: RigBuildConfig,
   state?: Pick<GameState, 'activeMarketModifiers'> & { marketRegime?: GameState['marketRegime'] }
 ): number {
-  const base = calculateBaseRigPartsCost(config);
+  const base = calculateStockBuildPartsCost(config);
   const mult = state ? getGlobalHardwarePriceMult(state) : 1.0;
   return Math.round(base * mult);
 }
@@ -331,7 +357,7 @@ export function getRigRepairCost(
 
 export function getRigRepasteCost(rig: MiningRig): number {
   const buildCost = calculateBaseRigPartsCost(rig);
-  return Math.max(12, Math.round(Math.min(180, buildCost * 0.04)));
+  return Math.max(12, Math.round(Math.min(25000, buildCost * 0.015)));
 }
 
 export function getEmpireAlignment(
@@ -466,6 +492,7 @@ export function computeRigTelemetry(
     ageSteps?: number;
     status?: MiningRig['status'];
     customAsicSpec?: CustomAsicSpec;
+    customParts?: MiningRig['customParts'];
   },
   facility: FacilityTier,
   unlockedResearch: string[],
@@ -537,7 +564,10 @@ export function computeRigTelemetry(
   const isImmersion =
     cooling.id === 'cool_immersion' ||
     cooling.id === 'cool_cryo_phase' ||
-    cooling.id === 'cool_two_phase_immersion';
+    cooling.id === 'cool_two_phase_immersion' ||
+    cooling.id === 'cool_ai_thermal_fabric' ||
+    cooling.id === 'cool_quantum_dilution' ||
+    Boolean(cooling.isImmersion);
   const gpuNoise =
     gpus.length > 0 ? Math.max(...gpus.map((g) => g.noiseDba)) + gpus.length * 1.8 : 0;
   const ventBaffle = (facilityUpgrades?.ventilation_ducts ?? 0) * 3;
@@ -690,12 +720,41 @@ export function computeStepCoinOutput(
   if (!coin.unlocked || effectiveHashrate <= 0 || efficiencyFactor <= 0) {
     return { minedCoins: 0, autoSoldUsd: 0, soloBlockHit: false };
   }
+  const piece4 = (
+    r: number,
+    e1: number,
+    k2: number,
+    e2: number,
+    k3: number,
+    e3: number,
+    k4?: number,
+    e4?: number
+  ): number => {
+    if (r <= k2) return Math.pow(r, e1);
+    if (r <= k3) return Math.pow(k2, e1) * Math.pow(r / k2, e2);
+    if (!k4 || r <= k4) return Math.pow(k2, e1) * Math.pow(k3 / k2, e2) * Math.pow(r / k3, e3);
+    return (
+      Math.pow(k2, e1) *
+      Math.pow(k3 / k2, e2) *
+      Math.pow(k4 / k3, e3) *
+      Math.pow(r / k4, e4 ?? e3)
+    );
+  };
+
   const ratio = effectiveHashrate / Math.max(1e-6, coin.baselineHash);
   let scale = 0;
   if (ratio < 1) {
     scale = Math.pow(ratio, 0.72);
-  } else if (coin.algorithm === 'SCRYPT' && ratio > 1000) {
-    scale = Math.pow(1000, coin.hashExponent) * Math.pow(ratio / 1000, 0.34);
+  } else if (coin.algorithm === 'SHA256') {
+    scale = piece4(ratio, 0.2, 1e9, 0.42, 4e10, 1.15, 2e11, 1.38);
+  } else if (coin.algorithm === 'SCRYPT') {
+    scale = piece4(ratio, 0.3, 1000, 0.36, 4e6, 1.25, 2e7, 1.55);
+  } else if (coin.algorithm === 'RANDOMX') {
+    scale = piece4(ratio, 0.55, 20, 0.95, 120, 1.85);
+  } else if (coin.algorithm === 'ETHASH') {
+    scale = piece4(ratio, 0.62, 12, 1.15, 55, 1.72);
+  } else if (coin.algorithm === 'POST') {
+    scale = piece4(ratio, 0.62, 4, 1.15, 16, 2.08);
   } else {
     scale = Math.pow(ratio, coin.hashExponent);
   }
@@ -2368,19 +2427,35 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     const compH = ensureRigComponentHealth(rig);
     const { psu, storage, os } = getPartBundle(rig);
     const psuRatio = psu.maxWatts > 0 ? finalTelemetry.rawWatts / psu.maxWatts : 1;
-    const applyDelta = (cur: number, mult: number) => {
+    const cp = rig.customParts;
+    const applyDelta = (cur: number, mult: number, resistance = 0) => {
       const jitter = 0.85 + stepRng() * 0.3;
-      const nextVal = cur - totalWear * mult * jitter + techBonus.repairPerStep;
+      const resMult = Math.max(0.55, 1 - Math.max(0, Math.min(0.45, resistance)));
+      const nextVal = cur - totalWear * mult * resMult * jitter + techBonus.repairPerStep;
       return Number(Math.max(20, Math.min(100, nextVal)).toFixed(1));
     };
 
     const nextCompHealth: RigComponentHealth = {
-      chassis: applyDelta(compH.chassis, 0.4),
-      compute: applyDelta(compH.compute, nextTemp > 80 ? 1.4 : 1.15),
-      gpus: compH.gpus.map((gh) => applyDelta(gh, nextTemp > 80 ? 1.45 : 1.25)),
-      storage: applyDelta(compH.storage, storage.storageTb >= 40 ? 0.95 : 0.65),
-      psu: applyDelta(compH.psu, psuRatio > 0.85 ? 1.4 : 1.0),
-      cooling: applyDelta(compH.cooling, rig.firmwareProfile === 'TURBO' ? 1.25 : 0.95),
+      chassis: applyDelta(compH.chassis, 0.4, cp?.chassis?.wearResistance ?? 0),
+      compute: applyDelta(
+        compH.compute,
+        nextTemp > 80 ? 1.4 : 1.15,
+        cp?.compute?.wearResistance ?? 0
+      ),
+      gpus: compH.gpus.map((gh, gi) =>
+        applyDelta(gh, nextTemp > 80 ? 1.45 : 1.25, cp?.gpus?.[gi]?.wearResistance ?? 0)
+      ),
+      storage: applyDelta(
+        compH.storage,
+        storage.storageTb >= 40 ? 0.95 : 0.65,
+        cp?.storage?.wearResistance ?? 0
+      ),
+      psu: applyDelta(compH.psu, psuRatio > 0.85 ? 1.4 : 1.0, cp?.psu?.wearResistance ?? 0),
+      cooling: applyDelta(
+        compH.cooling,
+        rig.firmwareProfile === 'TURBO' ? 1.25 : 0.95,
+        cp?.cooling?.wearResistance ?? 0
+      ),
     };
     const nextHealth = computeAverageRigHealth(nextCompHealth);
     const minCompHealth = Math.min(
