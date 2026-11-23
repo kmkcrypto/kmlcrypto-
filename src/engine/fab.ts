@@ -1667,8 +1667,8 @@ export function previewCustomComponentDesign(
     primaryWatts = baseWatts;
     primaryHeatC = -coolingBonus;
     const allowedBranches: TechBranch[] = ['SILICON'];
-    if (isCryoRated || inferredBranch === 'QUANTUM') allowedBranches.push('QUANTUM');
-    if (isOpticalBackplane || inferredBranch === 'PHOTONIC') allowedBranches.push('PHOTONIC');
+    if (isCryoRated) allowedBranches.push('QUANTUM');
+    if (isOpticalBackplane) allowedBranches.push('PHOTONIC');
 
     customSpec = {
       ...customSpec,
@@ -2288,6 +2288,8 @@ export function compareBlueprints(
     `    #2 Spec        : ${b.customSpec ? formatCustomComponentSummaryLine(b.customSpec) : b.algo}`,
   ].join('\n');
 }
+
+export const formatBlueprintComparisonReport = compareBlueprints;
 
 /** Prototype bench validation & calibration (Section 2 & 3). */
 export function runPrototypeTest(

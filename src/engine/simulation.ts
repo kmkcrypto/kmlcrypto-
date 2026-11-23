@@ -90,7 +90,6 @@ import {
   deployCustomInventoryToRig,
   designCustomChipBlueprint,
   designCustomComponentBlueprint,
-  FabComponentParamsInput,
   formatBlueprintComparisonReport,
   formatCustomComponentSummaryLine,
   formatFabStatusReport,
@@ -186,7 +185,7 @@ import {
   getRigGeneration,
 } from './usedMarket';
 
-export type { CustomBlueprintDesignInput, FabComponentParamsInput, CreatePlayerCoinInput };
+export type { CustomBlueprintDesignInput, CreatePlayerCoinInput };
 
 export {
   analyzeCoinForecast,

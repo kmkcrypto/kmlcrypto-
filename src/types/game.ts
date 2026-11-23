@@ -117,6 +117,7 @@ export interface GpuPart {
   watts: number;
   heatC: number;
   noiseDba: number;
+  requiresCryoCooling?: boolean;
   requiresOpticalChassis?: boolean;
   hashrates: Partial<Record<MiningAlgorithm, number>>;
   description: string;
@@ -165,6 +166,7 @@ export interface CoolingPart {
   cost: number;
   coolingPowerC: number;
   isCryoRated?: boolean;
+  isImmersion?: boolean;
   watts: number;
   noiseDba: number;
   description: string;
@@ -201,15 +203,17 @@ export interface RigBuildConfig {
   payoutMode?: 'AUTOSELL' | 'HOLD';
   roomId?: string;
   customParts?: RigCustomPartsMap;
-  customPartSerials?: {
-    chassis?: string;
-    compute?: string;
-    gpus?: (string | null)[];
-    storage?: string;
-    psu?: string;
-    cooling?: string;
-    os?: string;
-  };
+  customPartSerials?: RigCustomPartSerialsMap;
+}
+
+export interface RigCustomPartSerialsMap {
+  chassis?: string;
+  compute?: string;
+  gpus?: (string | null)[];
+  storage?: string;
+  psu?: string;
+  cooling?: string;
+  os?: string;
 }
 
 export type RepairComponentSlot =

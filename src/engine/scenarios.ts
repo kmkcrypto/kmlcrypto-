@@ -354,6 +354,8 @@ export function createScenarioState(id: DevScenarioId): GameState {
         unlockedResearch: researchClosure([
           'res_gen7_quantum_photonic',
           'res_gen7_dilution_cryo',
+          'res_gen7_quantum_coherence',
+          'res_gen7_photonic_waveguides',
         ]),
         employees: buildEmployees([
           'TECHNICIAN',
@@ -404,7 +406,7 @@ export function createScenarioState(id: DevScenarioId): GameState {
         0,
         {
           chassisId: 'chassis_quantum_cryo_bay',
-          computeId: 'asic_quantum_qpu_cryo',
+          computeId: 'qpu_quantum_qhash_core',
           storageId: 'stor_photonic_holo_2560tb',
           psuId: 'psu_24000w_supercond',
           coolingId: 'cool_quantum_dilution',
@@ -417,12 +419,12 @@ export function createScenarioState(id: DevScenarioId): GameState {
         base.rigs[0],
         1,
         {
-          chassisId: 'chassis_photonic_optical_matrix',
+          chassisId: 'chassis_gen7_photonic_blade_array',
           computeId: 'asic_photonic_sha_core',
           gpuIds: ['gpu_photonic_qgpu', 'gpu_photonic_qgpu'],
           storageId: 'stor_photonic_holo_2560tb',
           psuId: 'psu_24000w_supercond',
-          coolingId: 'cool_photonic_liquid_mesh',
+          coolingId: 'cool_quantum_dilution',
           osId: 'os_quantum_qec_kernel',
           targetCoin: 'QBC',
         },
@@ -434,8 +436,9 @@ export function createScenarioState(id: DevScenarioId): GameState {
         unlockedResearch: researchClosure([
           'res_gen7_quantum_photonic',
           'res_gen7_dilution_cryo',
-          'res_gen7_photonic_interconnect',
-          'res_gen7_qec_verification',
+          'res_gen7_quantum_coherence',
+          'res_gen7_photonic_waveguides',
+          'res_gen7_hybrid_cryo_fabric',
           'res_wafer_lithography',
         ]),
         fab: { ...buildDefaultFab(), linesCount: 3 },

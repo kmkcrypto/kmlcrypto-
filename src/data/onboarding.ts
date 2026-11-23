@@ -1,5 +1,11 @@
 import { FACILITY_TIERS } from './catalog';
-import { GameState, OnboardingMode } from '../types/game';
+import {
+  GameState,
+  GuidedOnboardingState,
+  GuidedPaceMode,
+  GuidedSystemStatus,
+  OnboardingMode,
+} from '../types/game';
 
 /** Facility names/specs are read from the live catalog so guide text can never drift from the data. */
 const GARAGE_FACILITY_NAME = FACILITY_TIERS[1]?.name ?? 'Garage Operation';
@@ -20,7 +26,16 @@ const FACILITY_TIER_LINES = FACILITY_TIERS.flatMap((f, idx) => [
   `       -> ${FACILITY_TIER_NOTES[idx] ?? ''}`,
 ]);
 
-export type GuidedSystemId = 'contracts' | 'staff' | 'rivals' | 'pr' | 'ops' | 'blackmarket';
+export type GuidedSystemId =
+  | 'contracts'
+  | 'staff'
+  | 'rivals'
+  | 'pr'
+  | 'ops'
+  | 'blackmarket'
+  | 'fab'
+  | 'coins'
+  | 'gen7';
 
 export interface SystemUnlockStatus {
   contracts: boolean;
@@ -29,7 +44,174 @@ export interface SystemUnlockStatus {
   pr: boolean;
   ops: boolean;
   blackmarket: boolean;
+  fab: boolean;
+  coins: boolean;
+  gen7: boolean;
   unlockNotes: Record<GuidedSystemId, string>;
+}
+
+export interface GuidedStageTask {
+  id: string;
+  label: string;
+  hintCommand: string;
+  autoCheck: (state: GameState) => boolean;
+}
+
+export interface GuidedStageSpec {
+  id: string;
+  stageNumber: number;
+  title: string;
+  unlocksLabel: string;
+  unlockSystems: GuidedSystemId[];
+  tasks: GuidedStageTask[];
+}
+
+export const GUIDED_STAGES: GuidedStageSpec[] = [
+  {
+    id: 'stage_1_boot',
+    stageNumber: 1,
+    title: 'Stage 1: Boot Rig & Telemetry Basics',
+    unlocksLabel: 'Core terminal mining, inspection, and R&D loop',
+    unlockSystems: [],
+    tasks: [
+      {
+        id: 'task_inspect_starter',
+        label: 'Inspect your starter rig & component health bars',
+        hintCommand: 'inspect 1',
+        autoCheck: (s) => (s.seenTutorials ?? []).includes('ctx_inspect') || (s.seenTutorials ?? []).includes('ctx_rigs') || s.stepCount >= 2,
+      },
+      {
+        id: 'task_first_steps',
+        label: 'Mine 3 steps of live crypto revenue',
+        hintCommand: 'step 3',
+        autoCheck: (s) => s.stepCount >= 3,
+      },
+    ],
+  },
+  {
+    id: 'stage_2_contracts',
+    stageNumber: 2,
+    title: 'Stage 2: Contracts & First R&D',
+    unlocksLabel: 'Unlocks Enterprise Contracts ("contracts")',
+    unlockSystems: ['contracts'],
+    tasks: [
+      {
+        id: 'task_start_or_finish_rd',
+        label: 'Queue or complete an R&D technology node',
+        hintCommand: 'research start 1',
+        autoCheck: (s) => Boolean(s.activeResearchId) || s.unlockedResearch.length >= 1,
+      },
+      {
+        id: 'task_expand_or_repair',
+        label: 'Add a 2nd rig or service existing hardware',
+        hintCommand: 'build preset 1  (or "repair 1" / "repaste 1")',
+        autoCheck: (s) =>
+          s.rigs.length >= 2 ||
+          (s.stats?.rigPurchasesCount ?? 0) >= 1 ||
+          (s.stats?.repairsCompleted ?? 0) >= 1 ||
+          (s.seenTutorials ?? []).includes('ctx_repaste'),
+      },
+    ],
+  },
+  {
+    id: 'stage_3_staff',
+    stageNumber: 3,
+    title: 'Stage 3: Facilities & Crew Management',
+    unlocksLabel: 'Unlocks Staff Hiring ("staff") & Rivals/PR ("rivals" / "pr")',
+    unlockSystems: ['staff', 'rivals', 'pr'],
+    tasks: [
+      {
+        id: 'task_facility_or_cash',
+        label: `Rent ${GARAGE_FACILITY_NAME} or reach $1,800 cash`,
+        hintCommand: 'facilities',
+        autoCheck: (s) => s.facilityId !== 'fac_bedroom' || s.cash >= 1800 || s.stepCount >= 8,
+      },
+      {
+        id: 'task_hire_staff_or_contract',
+        label: 'Complete a contract or hire your first specialist',
+        hintCommand: 'staff  (or "contracts")',
+        autoCheck: (s) => s.employees.length >= 1 || (s.stats?.contractsCompleted ?? 0) >= 1 || s.stepCount >= 10,
+      },
+    ],
+  },
+  {
+    id: 'stage_4_underground',
+    stageNumber: 4,
+    title: 'Stage 4: Underground Ops & Risk Control',
+    unlocksLabel: 'Unlocks Covert Ops & Black Market ("ops" / "blackmarket")',
+    unlockSystems: ['ops', 'blackmarket'],
+    tasks: [
+      {
+        id: 'task_check_rivals',
+        label: 'Review rival market share & spot prices',
+        hintCommand: 'rivals',
+        autoCheck: (s) =>
+          s.facilityId !== 'fac_bedroom' || s.stepCount >= 14 || s.regulatoryScrutiny >= 18 || (s.stats?.covertOpsCount ?? 0) >= 1,
+      },
+    ],
+  },
+  {
+    id: 'stage_5_fab_coins',
+    stageNumber: 5,
+    title: 'Stage 5: Custom Foundry & Coin Economics',
+    unlocksLabel: 'Unlocks Custom Fab Engineering ("fab") & Coin Creation ("coin create")',
+    unlockSystems: ['fab', 'coins'],
+    tasks: [
+      {
+        id: 'task_wafer_rd',
+        label: 'Unlock Semiconductor Wafer Lithography or reach Warehouse tier',
+        hintCommand: 'research',
+        autoCheck: (s) =>
+          s.unlockedResearch.includes('res_wafer_lithography') ||
+          FACILITY_TIERS.findIndex((f) => f.id === s.facilityId) >= 3 ||
+          (s.fab?.linesCount ?? 0) > 0,
+      },
+      {
+        id: 'task_prototype_or_coin',
+        label: 'Build a Fab Line, test a prototype, or launch a legitimate custom coin',
+        hintCommand: 'fab  (or "coin create")',
+        autoCheck: (s) =>
+          (s.fab?.blueprints.length ?? 0) >= 1 ||
+          Object.values(s.coins).some((c) => Boolean(c.isPlayerCreated)),
+      },
+    ],
+  },
+  {
+    id: 'stage_6_gen7',
+    stageNumber: 6,
+    title: 'Stage 6: Gen-7 Quantum & Photonic Frontier',
+    unlocksLabel: 'Unlocks Gen-7 Quantum Cryo & Optical Matrix Engineering',
+    unlockSystems: ['gen7'],
+    tasks: [
+      {
+        id: 'task_gen7_rd',
+        label: 'Research Quantum-Photonic Hybrid Architecture',
+        hintCommand: 'tutorial gen7',
+        autoCheck: (s) => s.unlockedResearch.includes('res_gen7_quantum_photonic'),
+      },
+    ],
+  },
+];
+
+export function buildDefaultGuidedState(): GuidedOnboardingState {
+  return {
+    paused: false,
+    pace: 'NORMAL',
+    currentStageIdx: 0,
+    systemStatuses: {
+      contracts: 'LOCKED',
+      staff: 'LOCKED',
+      rivals: 'LOCKED',
+      pr: 'LOCKED',
+      ops: 'LOCKED',
+      blackmarket: 'LOCKED',
+      fab: 'LOCKED',
+      coins: 'LOCKED',
+      gen7: 'LOCKED',
+    },
+    completedChecklistIds: [],
+    revisitedTopics: [],
+  };
 }
 
 export function getEffectiveOnboardingMode(
@@ -39,10 +221,143 @@ export function getEffectiveOnboardingMode(
   return state.onboardingMode ?? 'GUIDED';
 }
 
+export function evaluateGuidedChecklist(state: GameState): {
+  mode: OnboardingMode;
+  paused: boolean;
+  pace: GuidedPaceMode;
+  currentStageIdx: number;
+  stages: Array<{
+    spec: GuidedStageSpec;
+    completed: boolean;
+    active: boolean;
+    tasks: Array<GuidedStageTask & { done: boolean }>;
+  }>;
+  completedTaskCount: number;
+  totalTaskCount: number;
+  nextHintCommand: string;
+} {
+  const mode = getEffectiveOnboardingMode(state);
+  const guided = state.guidedOnboarding ?? buildDefaultGuidedState();
+  const manualDone = new Set(guided.completedChecklistIds ?? []);
+
+  let allPriorDone = true;
+  let activeIdx = GUIDED_STAGES.length - 1;
+  let foundActive = false;
+
+  const stages = GUIDED_STAGES.map((spec, idx) => {
+    const tasks = spec.tasks.map((t) => ({
+      ...t,
+      done: manualDone.has(t.id) || t.autoCheck(state),
+    }));
+    const completed = allPriorDone && tasks.every((t) => t.done);
+    const active = !completed && allPriorDone && !foundActive;
+    if (active) {
+      activeIdx = idx;
+      foundActive = true;
+    }
+    if (!completed) allPriorDone = false;
+    return { spec, completed, active, tasks };
+  });
+
+  const completedTaskCount = stages.reduce(
+    (s, st) => s + st.tasks.filter((t) => t.done).length,
+    0
+  );
+  const totalTaskCount = stages.reduce((s, st) => s + st.tasks.length, 0);
+  const activeStage = stages[activeIdx];
+  const nextTask = activeStage?.tasks.find((t) => !t.done);
+  const nextHintCommand = nextTask?.hintCommand ?? 'status';
+
+  return {
+    mode,
+    paused: guided.paused,
+    pace: guided.pace,
+    currentStageIdx: activeIdx,
+    stages,
+    completedTaskCount,
+    totalTaskCount,
+    nextHintCommand,
+  };
+}
+
+export function completeGuidedTask(state: GameState, taskIdOrNum: string): { ok: boolean; nextState: GameState; summary: string } {
+  const guided = state.guidedOnboarding ?? buildDefaultGuidedState();
+  const checklist = evaluateGuidedChecklist(state);
+  const flatTasks = checklist.stages.flatMap((st) => st.tasks);
+
+  let target = flatTasks.find((t) => t.id === taskIdOrNum);
+  const numIdx = Number.parseInt(taskIdOrNum, 10);
+  if (!target && Number.isFinite(numIdx) && numIdx >= 1 && numIdx <= flatTasks.length) {
+    target = flatTasks[numIdx - 1];
+  }
+  if (!target) {
+    return { ok: false, nextState: state, summary: `Checklist task "${taskIdOrNum}" not found.` };
+  }
+  const doneSet = new Set(guided.completedChecklistIds ?? []);
+  doneSet.add(target.id);
+  const nextGuided: GuidedOnboardingState = {
+    ...guided,
+    completedChecklistIds: Array.from(doneSet),
+  };
+  const nextState = { ...state, guidedOnboarding: nextGuided };
+  const after = evaluateGuidedChecklist(nextState);
+  return {
+    ok: true,
+    nextState: {
+      ...nextState,
+      guidedOnboarding: { ...nextGuided, currentStageIdx: after.currentStageIdx },
+    },
+    summary: `Checked off guided task: "${target.label}". Progress: ${after.completedTaskCount}/${after.totalTaskCount}.`,
+  };
+}
+
+export function pauseGuidedOnboarding(state: GameState, paused: boolean): GameState {
+  const guided = state.guidedOnboarding ?? buildDefaultGuidedState();
+  return {
+    ...state,
+    guidedOnboarding: { ...guided, paused },
+  };
+}
+
+export function setGuidedPace(state: GameState, pace: GuidedPaceMode): GameState {
+  const guided = state.guidedOnboarding ?? buildDefaultGuidedState();
+  return {
+    ...state,
+    guidedOnboarding: { ...guided, pace },
+  };
+}
+
+export function dismissGuidedSystem(state: GameState, sysId: string): GameState {
+  const guided = state.guidedOnboarding ?? buildDefaultGuidedState();
+  return {
+    ...state,
+    guidedOnboarding: {
+      ...guided,
+      systemStatuses: {
+        ...guided.systemStatuses,
+        [sysId]: 'DISMISSED' as GuidedSystemStatus,
+      },
+    },
+  };
+}
+
+export function revisitGuidedTopic(state: GameState, topicId: string): GameState {
+  const guided = state.guidedOnboarding ?? buildDefaultGuidedState();
+  const list = Array.from(new Set([...(guided.revisitedTopics ?? []), topicId]));
+  return {
+    ...state,
+    guidedOnboarding: {
+      ...guided,
+      revisitedTopics: list,
+    },
+  };
+}
+
 export function getUnlockedSystems(
   state: Pick<
     GameState,
     | 'onboardingMode'
+    | 'guidedOnboarding'
     | 'devMode'
     | 'devUnlockAll'
     | 'isSandbox'
@@ -54,46 +369,68 @@ export function getUnlockedSystems(
     | 'regulatoryScrutiny'
     | 'employees'
     | 'stats'
+    | 'fab'
+    | 'coins'
   >
 ): SystemUnlockStatus {
   const mode = getEffectiveOnboardingMode(state);
   const allOpen = mode === 'VETERAN' || state.devUnlockAll;
   const facIdx = Math.max(0, FACILITY_TIERS.findIndex((f) => f.id === state.facilityId));
+  const doneIds = new Set(state.guidedOnboarding?.completedChecklistIds ?? []);
 
   const contracts =
     allOpen ||
     state.stepCount >= 3 ||
     state.rigs.length >= 2 ||
     state.unlockedResearch.length >= 1 ||
-    (state.stats?.contractsCompleted ?? 0) > 0;
+    (state.stats?.contractsCompleted ?? 0) > 0 ||
+    doneIds.has('task_first_steps');
 
   const staff =
     allOpen ||
     facIdx >= 1 ||
     state.cash >= 1800 ||
     state.stepCount >= 8 ||
-    state.employees.length > 0;
+    state.employees.length > 0 ||
+    doneIds.has('task_facility_or_cash');
 
   const rivals =
     allOpen ||
     facIdx >= 1 ||
     state.rigs.length >= 2 ||
-    state.stepCount >= 10;
+    state.stepCount >= 10 ||
+    doneIds.has('task_hire_staff_or_contract');
 
-  const pr =
-    allOpen ||
-    facIdx >= 1 ||
-    state.rigs.length >= 2 ||
-    state.stepCount >= 10;
+  const pr = rivals;
 
   const ops =
     allOpen ||
     facIdx >= 1 ||
     state.stepCount >= 14 ||
     state.regulatoryScrutiny >= 18 ||
-    (state.stats?.covertOpsCount ?? 0) > 0;
+    (state.stats?.covertOpsCount ?? 0) > 0 ||
+    doneIds.has('task_check_rivals');
 
   const blackmarket = ops;
+
+  const fab =
+    allOpen ||
+    facIdx >= 3 ||
+    state.unlockedResearch.includes('res_wafer_lithography') ||
+    (state.fab?.linesCount ?? 0) > 0 ||
+    doneIds.has('task_wafer_rd');
+
+  const coins =
+    allOpen ||
+    facIdx >= 2 ||
+    state.cash >= 5000 ||
+    Object.values(state.coins ?? {}).some((c) => Boolean(c.isPlayerCreated)) ||
+    doneIds.has('task_prototype_or_coin');
+
+  const gen7 =
+    allOpen ||
+    state.unlockedResearch.includes('res_gen7_quantum_photonic') ||
+    doneIds.has('task_gen7_rd');
 
   return {
     contracts,
@@ -102,6 +439,9 @@ export function getUnlockedSystems(
     pr,
     ops,
     blackmarket,
+    fab,
+    coins,
+    gen7,
     unlockNotes: {
       contracts: 'Unlocks at Step 3, 2nd rig, or 1st completed R&D node',
       staff: `Unlocks at ${GARAGE_FACILITY_NAME}, $1,800 Cash, or Step 8`,
@@ -109,6 +449,9 @@ export function getUnlockedSystems(
       pr: `Unlocks at ${GARAGE_FACILITY_NAME}, 2nd rig, or Step 10`,
       ops: `Unlocks at ${GARAGE_FACILITY_NAME}, Step 14, or Heat >= 18`,
       blackmarket: `Unlocks alongside Underground Ops at ${GARAGE_FACILITY_NAME} or Step 14`,
+      fab: 'Unlocks at Warehouse tier or "Semiconductor Wafer Lithography" R&D',
+      coins: `Unlocks at Commercial tier, $5,000 Cash, or Checklist Stage 5`,
+      gen7: 'Unlocks with "Quantum-Photonic Hybrid Architecture" R&D',
     },
   };
 }
@@ -208,25 +551,24 @@ export const TUTORIAL_TOPICS: Record<string, TutorialTopicGuide> = {
   hardware: {
     id: 'hardware',
     title: 'HARDWARE, RIG BUILDING & INDIVIDUAL COMPONENT HEALTH',
-    summary: 'How rig parts, individual component wear, single-part repairs, and used hardware work.',
+    summary: 'How rig parts, hybrid ASIC+GPU chassis, individual wear, and single-part repairs work.',
     lines: [
       '  8-PART RIG ARCHITECTURE:',
-      '    Chassis   -> Sets GPU slot limit (or ASIC rack mode) and passive cooling.',
-      '    Compute   -> CPU/FPGA/ASIC core hashing engine & algorithm family.',
-      '    GPUs      -> Stackable ETHASH/SCRYPT accelerators on GPU-ready frames.',
+      '    Chassis   -> Sets GPU slot limit (or ASIC rack / Hybrid ASIC+GPU mode) & passive cooling.',
+      '    Compute   -> CPU/FPGA/ASIC/QPU core hashing engine & algorithm family.',
+      '    GPUs      -> Stackable ETHASH/KAWPOW/EQUIHASH/SCRYPT/QHASH accelerators.',
       '    Storage   -> RAM/NVMe efficiency bonus (+% revenue) & POST storage plots.',
       '    PSU       -> Watt ceiling MUST cover raw component draw or rig halts.',
-      '    Cooling   -> Drops equilibrium temperature; keeps rigs below 82C throttle.',
+      '    Cooling   -> Drops equilibrium temperature; Cryo-rated units stabilize Quantum QPUs.',
       '    OS Kernel -> Multiplies hashrate & power draw; improves crash stability.',
       '',
       '  INDIVIDUAL COMPONENT HEALTH & TARGETED REPAIRS:',
       '    - Every rig tracks separate health % for chassis, compute, each GPU, storage, PSU, and cooling.',
       '    - Overall rig health shown in "rigs" is the AVERAGE of all installed components.',
       '    - If ANY single component falls to <= 20%, the entire rig halts (NEEDS_REPAIR).',
-      '    - Run "inspect <#>" to see component bars and exact single-part repair prices.',
+      '    - Run "inspect <#>" to see component bars, serial numbers, and single-part repair prices.',
       '    - Repair commands: "repair 1 gpu", "repair 1 gpu 2", "repair 1 psu", or "repair 1".',
       '    - Run "tinker <#>" to swap individual parts with 60% trade-in credit.',
-      '    - Check "usedmarket" for discounted Factory, Refurb, Used & Damaged rigs.',
     ],
     nextCommand: 'inspect 1',
   },
@@ -287,8 +629,7 @@ export const TUTORIAL_TOPICS: Record<string, TutorialTopicGuide> = {
       '    - Staff gain XP every step (Skill Lv 1..5); use "train <#>" to boost immediately.',
       '    - "shift <#> <day|night|24/7>": 24/7 boosts Engineer/Researcher output at +35% pay.',
       '    - "priority <#> <thermal|care|hash|research>": focuses specialist bonuses.',
-      '    - Keep payroll covered & workload balanced: low morale cuts output, risks quits,',
-      '      and mass low morale across a crew can trigger a facility-wide strike!',
+      '    - Keep payroll covered & workload balanced: mass low morale can trigger a strike!',
     ],
     nextCommand: 'staff',
   },
@@ -322,32 +663,101 @@ export const TUTORIAL_TOPICS: Record<string, TutorialTopicGuide> = {
       '  LEGAL PR OPERATIONS ("pr"):',
       '    - Launch Hype campaigns on coins you mine to boost spot prices & sentiment.',
       '    - Launch FUD campaigns on rival coins (costs some media credibility + small Heat).',
-      '    - Watch Regulatory Scrutiny ("Heat" 0-100): high Heat increases audit/raid risk.',
+      '    - Watch Regulatory Scrutiny ("Heat" 0-100): high Heat escalates investigations.',
     ],
     nextCommand: 'rivals',
   },
   blackmarket: {
     id: 'blackmarket',
-    title: 'UNDERGROUND OPS & BLACK MARKET',
+    title: 'UNDERGROUND OPS, SHELL LIFECYCLE, RAIDS & AUDITS',
     summary:
-      'High-risk covert actions: power siphoning, botnets, wash trading, pump & dumps, extortion, and illicit ROMs.',
+      'Staged shell coins, 2-phase vault raids, cumulative investigations, compliance recovery & illicit ROMs.',
     lines: [
-      '  COVERT ACTIONS ("ops"):',
-      '    - Power Siphon: -65% electricity bills & +25% grid cap, but +3.2 Heat every step.',
-      '    - Botnet Rental: Temporary massive hash surge on a coin for a fee + Heat spike.',
-      '    - Wash Trade / Rival Sabotage: Manipulate price or DDoS a rival syndicate.',
-      '    - Pump & Dump ("ops pump <COIN>"): Harder price spike than a wash trade, but a',
-      '      traceable pattern — regulators can fine you and Heat climbs faster.',
-      '    - Protection Racket ("ops extort <#>"): Demand cash from a rival syndicate;',
-      '      they may refuse, costing Heat, raising hostility and inviting retaliation.',
-      '    - Heat Mitigation: Run "ops launder" or "ops bribe" to shield against raids.',
+      '  STAGED SHELL TOKENS ("ops coin ...") — ILLEGAL SCAM TOKENS:',
+      '    - "ops coin dev <TICKER> <Name>": Draft token in CONCEPT stage.',
+      '    - "ops coin seed <TICKER> <usd> [spoof]": Seed pool & optionally spoof an audit badge.',
+      '    - "ops coin <TICKER> <Name>" / "ops shill" / "ops rug": Launch, pump hype, pull pool.',
+      '    - Traced rugs leave permanent Scandal Marks and drag market confidence.',
       '',
-      '  BLACK MARKET ("blackmarket"):',
-      '    - Buy illicit BIOS/firmware flashes (extra hash at higher wear/heat) or smuggled',
-      '      zero-serial rigs that bypass R&D gates at 35% discount — for major Heat gain.',
-      '    - WARNING: High Heat triggers Federal Audit / Raid events with heavy fines & seizures!',
+      '  2-PHASE VAULT RAIDS & CUMULATIVE INVESTIGATIONS:',
+      '    - "ops raid prep <rival#>": Recon defenses & loot range before striking.',
+      '    - "ops raid exec <stealth|zeroday|bribe>": Strike with tailored risk/loot/heat.',
+      '    - Heat & Suspicion climb through: NONE -> WATCHLIST -> FORMAL_AUDIT -> SANCTIONED -> PROBATION.',
+      '    - Sanctions penalize mining payout (-15%); recover via "ops comply" or "ops settle".',
+      '    - "ops log" shows persistent underground ledger records.',
     ],
     nextCommand: 'ops',
+  },
+  engineering: {
+    id: 'engineering',
+    title: 'ADVANCED HARDWARE ENGINEERING & BLUEPRINT REVISIONS',
+    summary: 'Architecting custom parts across 7 slots, live manufacturability, drafts & revisions.',
+    lines: [
+      '  MULTI-COMPONENT DESIGN WIZARD ("fab design"):',
+      '    - Design custom Chassis, Compute (ASIC/CPU/QPU), GPUs, Storage, PSU, Cooling, or OS.',
+      '    - Tune topology (MONOLITHIC / CHIPLET_QUAD / MESH_TENSOR), bus width, SRAM,',
+      '      voltage/clock bias, GPU HBM3/Optical memory, and Cryo vs Photonic Gen-7 parameters.',
+      '    - Balance the engineering point budget across Density, Efficiency, Thermals, Reliability.',
+      '    - Watch live Manufacturability % — extreme clocks/tiny nodes cut yield unless tuned!',
+      '',
+      '  DRAFTS, REVISIONS & COMPARISON:',
+      '    - Save work-in-progress inside the wizard as a Draft blueprint, or Tape Out immediately.',
+      '    - "fab revise <bp#> [profile]": Spin Rev 2+ from an existing blueprint for an incremental fee.',
+      '    - "fab compare <bp1#> <bp2#>": Side-by-side telemetry, watts, mfg %, and cost breakdown.',
+    ],
+    nextCommand: 'fab',
+  },
+  manufacturing: {
+    id: 'manufacturing',
+    title: 'PROTOTYPE QA, PRODUCTION BATCHES & SERIAL REGISTRY',
+    summary: 'Bench validation, serial numbers, inspection reports, and wafer yield tracking.',
+    lines: [
+      '  PROTOTYPE BENCH TESTING ("fab proto <bp#>"):',
+      '    - Validate designs BEFORE mass production to discover flaws and earn Yield & Wear bonuses.',
+      '    - Unvalidated risky blueprints suffer higher scrap rates on the fab line.',
+      '',
+      '  BATCHES, SERIALS & QUALITY CONTROL:',
+      '    - Every queued batch ("fab produce <bp#> <qty>") earns a unique Batch ID & Serial Numbers.',
+      '    - "fab batch [batch#]" inspects QC grade (A/B/C), defect scrap count, and serial roster.',
+      '    - "fab serial <SERIAL>" traces measured hash/watt calibration, wear resistance & installed rig.',
+      '    - "fab history" prints the chronological manufacturing & deployment log.',
+    ],
+    nextCommand: 'fab',
+  },
+  gen7: {
+    id: 'gen7',
+    title: 'GEN-7 QUANTUM CRYO vs PHOTONIC OPTICAL BRANCHES',
+    summary: 'Distinct late-game hardware paradigms: mK Dilution Quantum QPUs vs Optical Mesh Photonics.',
+    lines: [
+      '  TWO DISTINCT GEN-7 TECHNOLOGY BRANCHES:',
+      '    QUANTUM Branch ("res_gen7_dilution_cryo"):',
+      '      - Superconducting Qubit Cores tuned with logical qubits, coherence (us) & mK target.',
+      '      - Excels on QHASH (QBC) and extreme density, but REQUIRES Cryo cooling or Cryo bay.',
+      '      - Without Cryo-rated cooling/chassis, thermal decoherence drops output to 0.70x!',
+      '',
+      '    PHOTONIC Branch ("res_gen7_photonic_waveguides"):',
+      '      - Laser-Matrix waveguided compute & Optical QGPUs tuned by lanes, wavelength (1310/1550nm), WDM.',
+      '      - Runs vastly cooler with ultra-low watt-per-hash, thriving in Optical Backplane chassis.',
+      '      - Check "rig <#> inspect" or "fab design" to verify Cryo / Optical compatibility.',
+    ],
+    nextCommand: 'research',
+  },
+  coins: {
+    id: 'coins',
+    title: 'LEGITIMATE MINEABLE COINS & HARDWARE CONSTRAINTS',
+    summary: 'Multi-algorithm mining, VRAM/RAM/branch requirements, and launching your own coin.',
+    lines: [
+      '  9 STARTER COINS ACROSS 8 ALGORITHMS ("coins"):',
+      '    BTC (SHA256) · LTC/DOGE (SCRYPT) · RVN (KAWPOW >=4GB VRAM) · XMR (RANDOMX)',
+      '    ETH (ETHASH >=6GB VRAM) · ZEC (EQUIHASH >=4GB VRAM) · XCH (POST) · QBC (QHASH Quantum/Photonic)',
+      '',
+      '  LAUNCHING YOUR OWN LEGITIMATE COIN ("coin create"):',
+      '    - Completely separate from illegal underground shell coins ("ops coin").',
+      '    - Seed a real liquidity pool ($500+), choose algorithm, halving interval, and dev fee (0-5%).',
+      '    - Any rig can mine it ("rig <#> coin <SYM>"), earning spot payouts, wallet holdings, and dev fees!',
+      '    - Market adoption & price evolve organically with mining activity and PR sentiment.',
+    ],
+    nextCommand: 'coins',
   },
 };
 
@@ -417,7 +827,7 @@ export const CONTEXTUAL_GUIDES: Record<
   },
   ctx_ops: {
     title: 'COVERT OPERATIONS & REGULATORY HEAT',
-    body: 'Power siphoning, botnets, wash trading, pump & dumps, extortion and sabotage offer huge shortcuts at the cost of Regulatory Scrutiny ("Heat"). Bigger schemes can be traced and fined. Keep Heat controlled with "ops launder" / "ops bribe" or risk federal raids.',
+    body: 'Covert shortcuts escalate Suspicion through WATCHLIST -> FORMAL_AUDIT -> SANCTIONED. Use "ops raid prep <#>" before striking, and recover via "ops comply" / "ops settle".',
     tipCommand: 'tutorial blackmarket',
   },
   ctx_blackmarket: {
@@ -435,12 +845,34 @@ export const CONTEXTUAL_GUIDES: Record<
     body: 'A component dropped to critical condition! Run "inspect <#>" to pinpoint which component is degraded, then run "repair <rig#> <part>" to fix just that part or "repair <#>" for the full rig.',
     tipCommand: 'tutorial hardware',
   },
+  ctx_fab: {
+    title: 'CUSTOM FOUNDRY WORKSPACE',
+    body: 'Design all 7 hardware categories via "fab design", validate prototypes with "fab proto <#>", inspect batches ("fab batch") and serial numbers ("fab serial <ID>").',
+    tipCommand: 'tutorial engineering',
+  },
+  ctx_proto: {
+    title: 'PROTOTYPE BENCH TESTING',
+    body: 'Testing a blueprint with "fab proto <#>" catches layout flaws early, raises production yield, and improves wear resistance on deployed parts.',
+    tipCommand: 'tutorial manufacturing',
+  },
+  ctx_coins: {
+    title: 'PLAYER-CREATED MINEABLE COINS',
+    body: 'Launch your own legitimate mineable cryptocurrency with "coin create" to earn dev fees and trade on the spot market.',
+    tipCommand: 'tutorial coins',
+  },
+  ctx_gen7: {
+    title: 'GEN-7 QUANTUM & PHOTONIC ARCHITECTURE',
+    body: 'Pair Quantum QPUs with Cryo-rated cooling/chassis and Photonic cores with Optical backplanes to avoid coherence & coupling penalties.',
+    tipCommand: 'tutorial gen7',
+  },
 };
 
 export interface CodexEntry {
   key: string;
   title: string;
+  category: 'CORE' | 'HARDWARE' | 'ECONOMY' | 'OPERATIONS' | 'PROGRESSION';
   keywords: string[];
+  relatedKeys?: string[];
   body: string[];
 }
 
@@ -448,10 +880,12 @@ export const CODEX_ENTRIES: CodexEntry[] = [
   {
     key: 'mining',
     title: 'CORE MINING LOOP & AUTO-SELL',
+    category: 'CORE',
     keywords: ['step', 'hashrate', 'pps', 'pplns', 'solo', 'coin', 'payout'],
+    relatedKeys: ['market', 'custom_coins'],
     body: [
       '  - Time advances only when you run "step [n]" or while the 30s auto-step timer runs.',
-      '  - Every step, active rigs mine their target coin and AUTO-SELL output into Cash.',
+      '  - Every step, active rigs mine their target coin and AUTO-SELL output (or HOLD to Wallet).',
       '  - Pool modes ("rig <#> pool <pps|pplns|solo>"): PPS = steady 98%; PPLNS = ~105% with',
       '    variance; SOLO = low hit chance per step for massive block jackpot payouts.',
       '  - Overclock ("overclock <#> <80..150>") trades nonlinearly higher watts/heat for hash.',
@@ -459,13 +893,15 @@ export const CODEX_ENTRIES: CodexEntry[] = [
   },
   {
     key: 'hardware',
-    title: 'RIG ARCHITECTURE & COMPONENT HEALTH',
-    keywords: ['chassis', 'compute', 'gpu', 'psu', 'storage', 'os', 'health', 'repair', 'tinker'],
+    title: 'RIG ARCHITECTURE, HYBRID CHASSIS & COMPONENT HEALTH',
+    category: 'HARDWARE',
+    keywords: ['chassis', 'compute', 'gpu', 'psu', 'storage', 'os', 'health', 'repair', 'tinker', 'hybrid'],
+    relatedKeys: ['hybrid_rigs', 'gen7', 'fab'],
     body: [
       '  - Each rig combines Chassis, Compute, optional GPUs, Storage/RAM, PSU, Cooling, and OS.',
       '  - Every physical part has its own 0-100% health; Rig Health = average across parts.',
       '  - If average health OR any single component reaches <=20%, the rig halts (NEEDS_REPAIR).',
-      '  - Run "inspect <#>" to view per-part bars and exact repair prices.',
+      '  - Hybrid Converged chassis allow 1 ASIC/QPU AND multiple GPUs simultaneously!',
       '  - Target a single part: "repair 1 psu", "repair 1 gpu", or "repair 1 gpu 2".',
       '  - Swap parts anytime via "tinker <#>" with 60% trade-in credit on replaced hardware.',
     ],
@@ -473,11 +909,12 @@ export const CODEX_ENTRIES: CodexEntry[] = [
   {
     key: 'power',
     title: 'ELECTRICITY, CONTRACTS & COOLING',
+    category: 'HARDWARE',
     keywords: ['watt', 'kw', 'breaker', 'bill', 'cycle', 'cooling', 'repaste', 'thermal', 'noise'],
+    relatedKeys: ['facilities', 'gen7'],
     body: [
       '  - Facility power cap (kW) limits total simultaneous wall draw of rigs + room cooling.',
-      '  - Exceeding kW cap triggers UNDERPOWERED breaker trips. Use "power contract <1..4>"',
-      '    or "facility upgrade 1" (circuits) to balance $/kWh rates vs. capacity.',
+      '  - Exceeding kW cap trips breakers and halts rigs (UNDERPOWERED). Use "power contract <1..4>".',
       '  - Thermal zones: <82C optimal | 82-95C throttled | >=96C emergency thermal shutdown.',
       '  - Refresh paste ("repaste <#>") for -6C relief over 16 steps or add cooling units ("cool").',
       '  - Exceeding facility noise cap (dBA) incurs municipal fines every 5 steps.',
@@ -486,98 +923,166 @@ export const CODEX_ENTRIES: CodexEntry[] = [
   {
     key: 'facilities',
     title: 'FACILITIES, ROOMS & INFRASTRUCTURE UPGRADES',
+    category: 'PROGRESSION',
     keywords: ['bedroom', 'garage', 'warehouse', 'rent', 'buy', 'upgrade', 'rooms', 'floorplan', 'expand'],
+    relatedKeys: ['power', 'employees'],
     body: [
       `  - ${FACILITY_TIERS.length} progression tiers from ${FIRST_FACILITY.name} (${FIRST_FACILITY.maxRigs} slots, ${FIRST_FACILITY.maxPowerKw} kW) to ${LAST_FACILITY.name} (${LAST_FACILITY.maxRigs} slots, ${LAST_FACILITY.maxPowerKw} kW).`,
       '  - Renting requires lower upfront cash; Buying removes recurring 30-step rent.',
       '  - Run "rooms" for an interactive ASCII floor-plan; move rigs ("rig <#> room <#>") into',
       '    Cold Aisles or baffled Cleanrooms, place coolers ("cool room <#> <room#>"), or "room expand".',
-      '  - Facility Upgrades ("facility upgrade <1..6>") add circuits, ventilation, bays, cooling',
-      '    manifolds, power distribution savings, and backup UPS power.',
+      '  - Facility Upgrades ("facility upgrade <1..6>") add circuits, ventilation, bays, and UPS power.',
     ],
   },
   {
     key: 'employees',
     title: 'STAFF SPECIALISTS, SHIFTS & MORALE',
+    category: 'OPERATIONS',
     keywords: ['staff', 'hire', 'train', 'shift', 'priority', 'payroll', 'morale', 'strike'],
+    relatedKeys: ['facilities', 'research'],
     body: [
       '  - 7 roles: Technician, Electrician, Manager, Sys Engineer, Researcher, PR, Analyst.',
       '  - Staff earn XP each step up to Lv 5; "train <#>" levels them up faster (+10 morale).',
       '  - "shift <#> <day|night|24/7>" and "priority <#>" tune focus vs. +35% 24/7 salary.',
-      '  - Billing cycles settle payroll every 30 steps; keep morale & staffing balanced.',
+      '  - Low morale cuts output, triggers resignations, and mass burnout triggers Strikes.',
     ],
   },
   {
     key: 'market',
-    title: 'CRYPTO MARKET, REGIMES & HALVINGS',
-    keywords: ['btc', 'ltc', 'doge', 'xmr', 'eth', 'xch', 'regime', 'halving', 'chart'],
+    title: 'CRYPTO MARKET, ALGORITHMS, REGIMES & HALVINGS',
+    category: 'ECONOMY',
+    keywords: ['btc', 'ltc', 'doge', 'rvn', 'xmr', 'eth', 'zec', 'xch', 'qbc', 'regime', 'halving', 'chart'],
+    relatedKeys: ['custom_coins', 'exchange'],
     body: [
-      '  - Six coins across 5 hashing algorithms: BTC (SHA256), LTC/DOGE (SCRYPT), XMR',
-      '    (RANDOMX), ETH (ETHASH), and XCH (POST storage). Unlock tiers via "unlock <COIN>".',
-      '  - Market Regimes cycle through Accumulation, Bull Run, Mania Peak, Correction, Winter.',
-      '  - Block Halvings cut coin emission by 50% and trigger +24% supply-shock price surges.',
-      '  - View 1-step & 7-step changes in the right-side Crypto Market panel or "chart <COIN>".',
+      '  - 9 starter coins across 8 algorithms: BTC (SHA256), LTC/DOGE (SCRYPT), RVN (KAWPOW),',
+      '    XMR (RANDOMX), ETH (ETHASH), ZEC (EQUIHASH), XCH (POST), QBC (QHASH Quantum/Photonic).',
+      '  - KAWPOW/ETHASH/EQUIHASH enforce minimum GPU VRAM (4-6 GB) to avoid DAG thrash penalties.',
+      '  - Block Halvings cut coin emission by 50% and lift long-run fair value (+22%).',
+    ],
+  },
+  {
+    key: 'custom_coins',
+    title: 'PLAYER-CREATED MINEABLE CRYPTOCURRENCIES',
+    category: 'ECONOMY',
+    keywords: ['coin', 'create', 'launch', 'mainnet', 'dev fee', 'liquidity', 'adoption'],
+    relatedKeys: ['market', 'exchange', 'contracts'],
+    body: [
+      '  - Legitimate custom coins ("coin create") are full mainnet coins on the Exchange.',
+      '  - Completely separate from illegal underground shell coins ("ops coin").',
+      '  - Creators pick algorithm, halving cadence, seed liquidity ($500+), and 0-5% dev fee.',
+      '  - Active mining builds Adoption Score, appreciating price and creator revenue over time.',
     ],
   },
   {
     key: 'contracts',
     title: 'CONTRACTS, RIVALS & COVERT OPS',
-    keywords: ['contract', 'rival', 'pr', 'ops', 'blackmarket', 'heat', 'raid', 'siphon'],
+    category: 'OPERATIONS',
+    keywords: ['contract', 'rival', 'pr', 'ops', 'blackmarket', 'heat', 'raid', 'siphon', 'shell'],
+    relatedKeys: ['investigation', 'market'],
     body: [
       '  - Enterprise Contracts ("contracts") award Cash, RP & Reputation on completion.',
       '  - Rivals ("rivals") grow continuously and raise network difficulty across shared coins.',
-      '  - PR Campaigns ("pr") legally shift coin prices/sentiment; Covert Ops ("ops") and',
-      '    Black Market ("blackmarket") trade big shortcuts for Regulatory Scrutiny ("Heat").',
-      '  - Underground actions: "ops siphon", "ops botnet", "ops wash", "ops pump", "ops extort",',
-      '    "ops sabotage", "ops raid", "ops launder", "ops bribe". Bigger schemes raise more Heat and',
-      '    can be traced. Vault raids ("ops raid <#>") steal cash and hijack rival hashrate for 8 steps.',
-      '  - Shell coins ("ops coin <TICKER> <Name>", "ops shill", "ops rug") are manufactured tokens:',
-      '    hype decays every step, the liquidity pool is what a rug can take, and a traced rug draws a fine.',
+      '  - PR Campaigns ("pr") legally shift coin prices/sentiment.',
+      '  - Underground shell coins ("ops coin dev|seed|launch|shill|rug") & 2-phase Vault Raids',
+      '    ("ops raid prep" -> "ops raid exec") generate quick cash at major Heat/Scandal risk.',
+    ],
+  },
+  {
+    key: 'investigation',
+    title: 'REGULATORY INVESTIGATION LADDER & RECOVERY',
+    category: 'OPERATIONS',
+    keywords: ['audit', 'sanction', 'watchlist', 'probation', 'comply', 'settle', 'scandal', 'heat'],
+    relatedKeys: ['contracts', 'exchange'],
+    body: [
+      '  - Cumulative Heat & suspicion progress across: NONE -> WATCHLIST -> FORMAL_AUDIT -> SANCTIONED -> PROBATION.',
+      '  - SANCTIONED status enforces fines and -15% mining payout penalty until cleared.',
+      '  - Traced shell-coin rugs leave Scandal Marks that dampen market confidence.',
+      '  - Recover via "ops comply" (disconnect illegal ops) or "ops settle" (pay civil settlement).',
     ],
   },
   {
     key: 'seasons',
     title: 'SEASONS, LEADERBOARDS & HALL OF FAME',
+    category: 'PROGRESSION',
     keywords: ['season', 'leaderboard', 'rank', 'score', 'hall', 'fame', 'champion'],
+    relatedKeys: ['contracts', 'market'],
     body: [
       '  - A season lasts 60 steps. Run "leaderboard" (or "season") for live standings vs. every rival.',
       '  - Season score = company valuation + hash index x600 + reputation x450 + 5 per unspent RP.',
-      '  - When a season closes its standings are archived in the Hall of Fame and a champion is crowned.',
       '  - Finish a season at #1 to unlock the "Season Champion" achievement.',
     ],
   },
   {
     key: 'research',
     title: 'R&D TREE, ACHIEVEMENTS & CHALLENGES',
-    keywords: ['rp', 'research', 'milestone', 'achievement', 'challenge'],
+    category: 'PROGRESSION',
+    keywords: ['rp', 'research', 'milestone', 'achievement', 'challenge', 'gen7'],
+    relatedKeys: ['gen7', 'fab'],
     body: [
       '  - Research spans Hardware, Electrical, Cooling, Automation, and Business.',
       '  - Base RP accrues at +0.75/step plus Research Scientist output.',
-      '  - "milestones", "achievements", and "challenges" track long-term empire benchmarks.',
+      '  - Gen-7 branches diverge into Dilution Cryo (Quantum) and Optical Interconnect (Photonic).',
     ],
   },
   {
     key: 'exchange',
     title: 'TREASURY WALLET, HOLD PAYOUT & CRYPTO EXCHANGE',
+    category: 'ECONOMY',
     keywords: ['wallet', 'exchange', 'trade', 'hold', 'limit', 'short', 'margin'],
+    relatedKeys: ['market', 'custom_coins'],
     body: [
       '  - Switch any rig between Auto-Sell and Treasury Hold ("rig <#|all> payout <hold|sell>").',
-      '  - Held coins accumulate in your Wallet ("wallet") instead of converting immediately to USD.',
-      '  - Trade spot ("exchange buy <COIN> <usd>", "exchange sell <COIN> <qty|all>"), place',
-      '    automated limit orders ("exchange limit <buy|sell> <COIN> <px> <amt>"), or hedge',
-      '    bear cycles with 1x collateralized shorts ("exchange short <COIN> <usd>").',
+      '  - Trade spot ("exchange buy <COIN> <usd>", "exchange sell <COIN> <qty|all>"), limit orders,',
+      '    and 1x collateralized shorts across all core and player-created coins.',
     ],
   },
   {
     key: 'fab',
-    title: 'PROPRIETARY CHIP DESIGN & ASIC FOUNDRY',
-    keywords: ['fab', 'foundry', 'chip', 'asic', 'wafer', 'lithography', 'design', 'manufacture'],
+    title: 'PROPRIETARY CHIP DESIGN, PROTOTYPE QA & FOUNDRY',
+    category: 'HARDWARE',
+    keywords: ['fab', 'foundry', 'chip', 'asic', 'wafer', 'design', 'manufacture', 'prototype', 'serial', 'batch', 'revision'],
+    relatedKeys: ['gen7', 'hardware'],
     body: [
-      '  - Unlocked at Warehouse tier + "Semiconductor Wafer Lithography" R&D ("fab").',
-      '  - Commission 1..3 cleanroom fab lines ("fab line build"), then tape out custom',
-      '    silicon across 7nm, 5nm, 3nm, 2nm, 1nm, or photonic ("fab design <name> <algo> <node>").',
-      '  - Manufacture wafer batches ("fab produce <bp#> <qty>") and either install finished',
-      '    chips directly onto rigs ("fab deploy <inv#> <rig#>") or export wholesale ("fab sell").',
+      '  - Design custom parts across all 7 slots ("fab design") with Draft save & "fab revise".',
+      '  - Compare specs side-by-side ("fab compare <bp1#> <bp2#>") before committing wafers.',
+      '  - Test prototypes ("fab proto <bp#>") to boost yield, cut scrap, and verify Gen-7 margins.',
+      '  - Every production batch issues a Batch ID & tracked Serial Numbers ("fab batch" / "fab serial").',
+    ],
+  },
+  {
+    key: 'gen7',
+    title: 'GEN-7 QUANTUM vs PHOTONIC SYSTEMS',
+    category: 'HARDWARE',
+    keywords: ['quantum', 'photonic', 'qpu', 'qgpu', 'cryo', 'optical', 'qhash', 'qbc'],
+    relatedKeys: ['fab', 'hardware', 'research'],
+    body: [
+      '  - Quantum QPU hardware uses Cryo dilution (mK target, qubit topology, coherence us).',
+      '    Requires Cryo-rated cooling or Cryo chassis to avoid 0.70x decoherence penalty.',
+      '  - Photonic Matrix hardware uses Laser Wavelengths (1310/1550nm), WDM & waveguide lanes.',
+      '    Thrives in Optical Backplane chassis at ultra-low thermal footprint.',
+    ],
+  },
+  {
+    key: 'presets',
+    title: 'CAREER PRESETS & GUIDED CHECKLIST',
+    category: 'PROGRESSION',
+    keywords: ['preset', 'onboarding', 'guided', 'checklist', 'pause', 'pace'],
+    relatedKeys: ['facilities', 'mining'],
+    body: [
+      '  - Create, duplicate, rename, and launch custom reusable Career Presets from the Title Menu.',
+      '  - Presets toggle Starting Cash, Facility/Contract, Market Rules, and Starter Rig config.',
+      '  - Guided Mode enforces a strict stage checklist ("guide checklist", "guide pause", "guide pace").',
     ],
   },
 ];
+
+export function searchCodexEntries(query: string, category?: string): CodexEntry[] {
+  const q = query.trim().toLowerCase();
+  const cat = category?.trim().toUpperCase();
+  return CODEX_ENTRIES.filter((entry) => {
+    if (cat && cat !== 'ALL' && entry.category !== cat) return false;
+    if (!q) return true;
+    const hay = `${entry.key} ${entry.title} ${entry.keywords.join(' ')} ${entry.body.join(' ')}`.toLowerCase();
+    return hay.includes(q);
+  });
+}

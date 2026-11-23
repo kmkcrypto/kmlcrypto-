@@ -28,7 +28,7 @@ export const STEPS_PER_BLOCK = Math.max(1, Math.round(BLOCK_INTERVAL_MINUTES / M
 const BACKGROUND_NETWORK_HASH = 1200;
 const MAX_BLOCK_HISTORY = 24;
 
-const BLOCK_REWARD_COINS: Record<CoinSymbol, number> = {
+const BLOCK_REWARD_COINS: Partial<Record<CoinSymbol, number>> = {
   BTC: 3.125,
   LTC: 12.5,
   DOGE: 10_000,
@@ -107,7 +107,7 @@ function roll(worldId: string, height: number, salt: string): number {
 export interface WorldStepResult {
   nextWorld: SharedWorldState;
   /** Coins credited to the player's wallet for blocks won this step. */
-  rewardByCoin: Partial<Record<CoinSymbol, number>>;
+  rewardByCoin: Record<CoinSymbol, number>;
   rewardUsd: number;
   block: WorldBlockRecord | null;
 }
@@ -134,7 +134,7 @@ export function stepSharedWorld(
   const playerHash = Math.max(0, Math.round(playerHashIndex));
   const totalHash = Math.max(1, networkHashIndex + playerHash);
   const share = playerHash / totalHash;
-  const blockRewardCoins = BLOCK_REWARD_COINS[coin] ?? state.coins[coin]?.baseStepCoins * 25 ?? 2;
+  const blockRewardCoins = BLOCK_REWARD_COINS[coin] ?? (state.coins[coin]?.baseStepCoins ?? 0.08) * 25;
 
   // Deterministic block-winner draw so a save replays identically.
   const winnerRoll = roll(world.worldId, height, 'winner');
@@ -188,7 +188,7 @@ export function stepSharedWorld(
     blocksWon: p.blocksWon,
   }));
 
-  const rewardByCoin: Partial<Record<CoinSymbol, number>> = {};
+  const rewardByCoin: Record<CoinSymbol, number> = {};
   if (playerRewardCoins > 0) rewardByCoin[coin] = playerRewardCoins;
 
   return {

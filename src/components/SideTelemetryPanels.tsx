@@ -163,7 +163,17 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
     });
   }
 
-  if (state.regulatoryScrutiny >= 55) {
+  if ((state.underground.investigationStage ?? 'NONE') !== 'NONE') {
+    const invStage = state.underground.investigationStage!;
+    liveAlerts.push({
+      id: 'alert_investigation_stage',
+      severity: invStage === 'SANCTIONED' || invStage === 'FORMAL_AUDIT' ? 'CRIT' : 'WARN',
+      tag: 'AUDIT',
+      message: `Regulatory stage ${invStage} (${state.underground.scandalMarks ?? 0} scandal marks). Run "ops audit" or "ops comply".`,
+      actionLabel: 'Audit Dossier',
+      actionCmd: 'ops audit',
+    });
+  } else if (state.regulatoryScrutiny >= 55) {
     liveAlerts.push({
       id: 'alert_heat',
       severity: 'WARN',
@@ -285,7 +295,7 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
         </div>
 
         {marketOpen && (
-          <div className="relative z-10 p-3 overflow-x-auto">
+          <div className="relative z-10 p-3 max-h-[270px] overflow-x-auto overflow-y-auto">
             <table className="w-full font-mono text-[11px] border-collapse">
               <thead>
                 <tr className="text-[10px] uppercase tracking-wider text-green-400/65 border-b border-green-500/20">

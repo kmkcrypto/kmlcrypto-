@@ -1,19 +1,31 @@
 import React, { useRef, useState } from 'react';
 import {
+  Copy,
   Dices,
   Download,
   FolderArchive,
+  Layers,
+  Pencil,
   Play,
   Plus,
   RotateCcw,
   ShieldAlert,
   SlidersHorizontal,
+  Trash2,
   Trophy,
   Upload,
   Wrench,
 } from 'lucide-react';
-import { CHALLENGES, FACILITY_TIERS, MARKET_REGIME_SPECS } from '../data/catalog';
+import { CHALLENGES, FACILITY_TIERS, MARKET_REGIME_SPECS, POWER_CONTRACTS } from '../data/catalog';
 import {
+  deleteCareerPreset,
+  duplicateCareerPreset,
+  listCareerPresets,
+  renameCareerPreset,
+  saveCareerPreset,
+} from '../engine/presets';
+import {
+  CareerPreset,
   ChallengeId,
   DifficultyLevel,
   MarketRegime,
@@ -37,6 +49,11 @@ interface TitleMenuProps {
     challengeId?: ChallengeId | null,
     onboardingMode?: OnboardingMode
   ) => void;
+  onStartFromPreset: (
+    preset: CareerPreset,
+    runSeed?: string,
+    onboardingOverride?: OnboardingMode
+  ) => void;
   onResume: () => void;
   onResumeSandbox: () => void;
   onExportSave: (sandbox?: boolean) => string | null;
@@ -53,6 +70,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
   hasSavedSandbox,
   sandboxSummary,
   onStartNew,
+  onStartFromPreset,
   onResume,
   onResumeSandbox,
   onExportSave,
@@ -66,7 +84,25 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
   const [onboardingMode, setOnboardingMode] = useState<OnboardingMode>('GUIDED');
   const [runSeed, setRunSeed] = useState<string>(() => generateRandomSeed());
   const [selectedChallenge, setSelectedChallenge] = useState<ChallengeId | ''>('');
-  const [panelView, setPanelView] = useState<'NONE' | 'SANDBOX' | 'SAVES'>('NONE');
+  const [panelView, setPanelView] = useState<'NONE' | 'SANDBOX' | 'SAVES' | 'PRESETS'>('NONE');
+
+  // Career Presets State
+  const [presets, setPresets] = useState<CareerPreset[]>(() => listCareerPresets());
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState<string>('');
+  const [showNewPresetForm, setShowNewPresetForm] = useState<boolean>(false);
+  const [presetFeedback, setPresetFeedback] = useState<string | null>(null);
+  const [cpName, setCpName] = useState<string>('Custom Industrial');
+  const [cpIncludeCash, setCpIncludeCash] = useState<boolean>(true);
+  const [cpCash, setCpCash] = useState<number>(25000);
+  const [cpIncludeFacility, setCpIncludeFacility] = useState<boolean>(true);
+  const [cpFacilityId, setCpFacilityId] = useState<string>('fac_garage');
+  const [cpContractId, setCpContractId] = useState<CareerPreset['powerContractId']>('contract_standard');
+  const [cpIncludeMarket, setCpIncludeMarket] = useState<boolean>(true);
+  const [cpRegime, setCpRegime] = useState<MarketRegime>('ACCUMULATION');
+  const [cpUnlockCoins, setCpUnlockCoins] = useState<boolean>(false);
+  const [cpUnlockResearch, setCpUnlockResearch] = useState<boolean>(false);
+  const [cpIncludeRig, setCpIncludeRig] = useState<boolean>(true);
 
   // Sandbox Configurator State
   const [sbCash, setSbCash] = useState<number>(150000);
@@ -82,6 +118,8 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
   const [saveFeedback, setSaveFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const [confirmResetTarget, setConfirmResetTarget] = useState<'CAREER' | 'SANDBOX' | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const refreshPresets = () => setPresets(listCareerPresets());
 
   const difficulties: { id: DifficultyLevel; title: string; cash: string }[] = [
     { id: 'BOOTSTRAP', title: 'Bootstrap', cash: '$750' },
@@ -237,11 +275,24 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
             </span>
           </button>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <button
+              type="button"
+              onClick={() => setPanelView((v) => (v === 'PRESETS' ? 'NONE' : 'PRESETS'))}
+              className={`px-2.5 py-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
+                panelView === 'PRESETS'
+                  ? 'bg-cyan-500/20 border-cyan-400 text-cyan-100'
+                  : 'bg-[#051409] hover:bg-green-950 border-green-500/30 text-green-200'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Presets</span>
+            </button>
+
             <button
               type="button"
               onClick={() => setPanelView((v) => (v === 'SANDBOX' ? 'NONE' : 'SANDBOX'))}
-              className={`px-3 py-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
+              className={`px-2.5 py-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
                 panelView === 'SANDBOX'
                   ? 'bg-emerald-500/25 border-emerald-400 text-emerald-100'
                   : 'bg-[#051409] hover:bg-green-950 border-green-500/30 text-green-200'
@@ -254,7 +305,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
             <button
               type="button"
               onClick={() => setPanelView((v) => (v === 'SAVES' ? 'NONE' : 'SAVES'))}
-              className={`px-3 py-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
+              className={`px-2.5 py-2.5 rounded-lg border text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
                 panelView === 'SAVES'
                   ? 'bg-green-500/20 border-green-400 text-green-100'
                   : 'bg-[#051409] hover:bg-green-950 border-green-500/30 text-green-200'
@@ -267,13 +318,266 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
             <button
               type="button"
               onClick={() => onStartNew('TYCOON_SANDBOX', true, runSeed)}
-              className="px-3 py-2.5 rounded-lg bg-amber-500/12 hover:bg-amber-500/22 border border-amber-500/40 text-amber-300 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap"
+              className="px-2.5 py-2.5 rounded-lg bg-amber-500/12 hover:bg-amber-500/22 border border-amber-500/40 text-amber-300 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap"
             >
               <Wrench className="w-3.5 h-3.5" />
               <span>Dev Mode</span>
             </button>
           </div>
         </div>
+
+        {/* Career Presets Drawer */}
+        {panelView === 'PRESETS' && (
+          <div className="p-4 rounded-lg bg-[#020804] border border-cyan-500/35 space-y-3 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-cyan-300">Career &amp; Custom Presets</span>
+              <button
+                type="button"
+                onClick={() => setShowNewPresetForm((v) => !v)}
+                className="px-2 py-1 rounded bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/40 text-cyan-200 text-[11px] font-mono inline-flex items-center gap-1"
+              >
+                <Plus className="w-3 h-3" />
+                <span>{showNewPresetForm ? 'Hide Form' : 'New Preset'}</span>
+              </button>
+            </div>
+
+            {showNewPresetForm && (
+              <div className="p-3 rounded bg-[#030D06] border border-cyan-500/25 space-y-2.5">
+                <input
+                  type="text"
+                  value={cpName}
+                  onChange={(e) => setCpName(e.target.value)}
+                  placeholder="Preset name..."
+                  className="w-full px-2.5 py-1.5 rounded bg-[#020704] border border-green-500/30 font-mono text-xs text-green-100"
+                />
+                <div className="flex flex-wrap gap-3 text-[11px] text-green-200/85">
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={cpIncludeCash} onChange={(e) => setCpIncludeCash(e.target.checked)} className="accent-cyan-400" />
+                    <span>Cash</span>
+                  </label>
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={cpIncludeFacility} onChange={(e) => setCpIncludeFacility(e.target.checked)} className="accent-cyan-400" />
+                    <span>Facility</span>
+                  </label>
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={cpIncludeMarket} onChange={(e) => setCpIncludeMarket(e.target.checked)} className="accent-cyan-400" />
+                    <span>Market</span>
+                  </label>
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={cpIncludeRig} onChange={(e) => setCpIncludeRig(e.target.checked)} className="accent-cyan-400" />
+                    <span>Starter Rig</span>
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="space-y-1">
+                    <span className="text-[10px] text-green-300/75 block">Cash ($)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      value={cpCash}
+                      onChange={(e) => setCpCash(Math.max(0, Number(e.target.value) || 0))}
+                      className="w-full px-2 py-1 rounded bg-[#020704] border border-green-500/30 font-mono text-green-100"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[10px] text-green-300/75 block">Facility</span>
+                    <select
+                      value={cpFacilityId}
+                      onChange={(e) => setCpFacilityId(e.target.value)}
+                      className="w-full px-2 py-1 rounded bg-[#020704] border border-green-500/30 font-mono text-green-100"
+                    >
+                      {FACILITY_TIERS.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[10px] text-green-300/75 block">Power Contract</span>
+                    <select
+                      value={cpContractId}
+                      onChange={(e) => setCpContractId(e.target.value as CareerPreset['powerContractId'])}
+                      className="w-full px-2 py-1 rounded bg-[#020704] border border-green-500/30 font-mono text-green-100"
+                    >
+                      {POWER_CONTRACTS.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[10px] text-green-300/75 block">Regime</span>
+                    <select
+                      value={cpRegime}
+                      onChange={(e) => setCpRegime(e.target.value as MarketRegime)}
+                      className="w-full px-2 py-1 rounded bg-[#020704] border border-green-500/30 font-mono text-green-100"
+                    >
+                      {(Object.keys(MARKET_REGIME_SPECS) as MarketRegime[]).map((r) => (
+                        <option key={r} value={r}>
+                          {MARKET_REGIME_SPECS[r].label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="flex flex-wrap gap-3 text-[11px] text-green-200/85">
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={cpUnlockCoins} onChange={(e) => setCpUnlockCoins(e.target.checked)} className="accent-cyan-400" />
+                    <span>Unlock Coins</span>
+                  </label>
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" checked={cpUnlockResearch} onChange={(e) => setCpUnlockResearch(e.target.checked)} className="accent-cyan-400" />
+                    <span>Unlock R&amp;D</span>
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const saved = saveCareerPreset({
+                      name: cpName,
+                      description: `Custom ${FACILITY_TIERS.find((f) => f.id === cpFacilityId)?.name ?? cpFacilityId} preset`,
+                      includeCash: cpIncludeCash,
+                      startingCash: cpCash,
+                      difficulty,
+                      onboardingMode,
+                      includeFacility: cpIncludeFacility,
+                      startingFacilityId: cpFacilityId,
+                      powerContractId: cpContractId,
+                      includeMarketRules: cpIncludeMarket,
+                      marketRegime: cpRegime,
+                      operatingCostMult: 1.0,
+                      unlockAllCoins: cpUnlockCoins,
+                      unlockAllResearch: cpUnlockResearch,
+                      includeStarterRig: cpIncludeRig,
+                      starterRigConfig: {
+                        chassisId: 'chassis_bedroom_tower',
+                        computeId: 'cpu_core2_duo',
+                        gpuIds: [],
+                        storageId: 'stor_ddr3_4gb',
+                        psuId: 'psu_450w',
+                        coolingId: 'cool_stock_air',
+                        osId: 'os_windows7',
+                        targetCoin: 'BTC',
+                        overclockPct: 100,
+                      },
+                    });
+                    refreshPresets();
+                    setShowNewPresetForm(false);
+                    setPresetFeedback(`Saved custom preset "${saved.name}".`);
+                  }}
+                  className="w-full px-3 py-1.5 rounded bg-cyan-500 hover:bg-cyan-400 text-[#020804] font-semibold text-xs"
+                >
+                  Save Preset
+                </button>
+              </div>
+            )}
+
+            <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+              {presets.map((p) => (
+                <div key={p.id} className="p-2.5 rounded bg-[#030D06] border border-green-500/25 space-y-1.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      {renamingId === p.id ? (
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="text"
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            className="flex-1 px-2 py-0.5 rounded bg-[#020704] border border-cyan-400/50 font-mono text-[11px] text-green-100"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const r = renameCareerPreset(p.id, renameValue);
+                              setPresetFeedback(r.ok ? `Renamed to "${r.preset?.name}".` : r.reason ?? 'Rename failed.');
+                              setRenamingId(null);
+                              refreshPresets();
+                            }}
+                            className="px-2 py-0.5 rounded bg-cyan-500/25 text-cyan-200 text-[10px] font-semibold"
+                          >
+                            Save
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="font-semibold text-green-100 flex items-center gap-1.5">
+                          <span className="truncate">{p.name}</span>
+                          <span className="text-[10px] font-mono text-cyan-300/80">
+                            {p.isBuiltIn ? '[BUILT-IN]' : '[CUSTOM]'}
+                          </span>
+                        </div>
+                      )}
+                      <div className="text-[11px] text-green-200/70 leading-snug">{p.description}</div>
+                      <div className="text-[10px] font-mono text-green-400/80 mt-0.5">
+                        {p.includeCash ? formatUsd(p.startingCash) : 'Std Cash'} ·{' '}
+                        {p.includeFacility
+                          ? FACILITY_TIERS.find((f) => f.id === p.startingFacilityId)?.name ?? p.startingFacilityId
+                          : 'Std Facility'}{' '}
+                        · {p.onboardingMode}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => onStartFromPreset(p, runSeed, onboardingMode)}
+                      className="px-2.5 py-1 rounded bg-green-500 hover:bg-green-400 text-[#020804] font-semibold text-[11px] inline-flex items-center gap-1"
+                    >
+                      <Play className="w-3 h-3 fill-current" />
+                      <span>Launch</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const r = duplicateCareerPreset(p.id);
+                        refreshPresets();
+                        setPresetFeedback(r.ok ? `Duplicated as "${r.preset?.name}".` : r.reason ?? 'Copy failed.');
+                      }}
+                      className="px-2 py-1 rounded bg-[#051409] hover:bg-green-950 border border-green-500/30 text-green-200 text-[11px] inline-flex items-center gap-1"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>Duplicate</span>
+                    </button>
+                    {!p.isBuiltIn && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRenamingId(p.id);
+                            setRenameValue(p.name);
+                          }}
+                          className="px-2 py-1 rounded bg-[#051409] hover:bg-green-950 border border-green-500/30 text-green-200 text-[11px] inline-flex items-center gap-1"
+                        >
+                          <Pencil className="w-3 h-3" />
+                          <span>Rename</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const r = deleteCareerPreset(p.id);
+                            refreshPresets();
+                            setPresetFeedback(r.ok ? `Deleted "${p.name}".` : r.reason ?? 'Delete failed.');
+                          }}
+                          className="px-2 py-1 rounded bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 text-[11px] inline-flex items-center gap-1"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Delete</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {presetFeedback && (
+              <div className="px-2.5 py-1.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-[11px] font-mono text-cyan-200">
+                {presetFeedback}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Sandbox Configurator Drawer */}
         {panelView === 'SANDBOX' && (
@@ -374,7 +678,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
                   onChange={(e) => setSbUnlockCoins(e.target.checked)}
                   className="accent-emerald-400"
                 />
-                <span>Unlock All 6 Coins</span>
+                <span>Unlock All Coins</span>
               </label>
             </div>
 

@@ -14,9 +14,9 @@ import {
   ShieldAlert,
   Layers,
 } from 'lucide-react';
-import { MARKET_REGIME_SPECS } from '../data/catalog';
+import { FACILITY_TIERS, MARKET_REGIME_SPECS } from '../data/catalog';
 import { SCENARIOS } from '../engine/scenarios';
-import { CoinSymbol, DevScenarioId, GameState, MarketRegime } from '../types/game';
+import { CoinSymbol, DevScenarioId, GameState, InvestigationStage, MarketRegime, MiningAlgorithm, PartCategory } from '../types/game';
 import { formatStepLabel, formatUsd } from '../utils/format';
 
 interface DevPanelProps {
@@ -40,6 +40,13 @@ interface DevPanelProps {
   onDevSetRegime: (regime: MarketRegime) => void;
   onDevTriggerHalving: (symbol: CoinSymbol) => void;
   onDevSetHeat: (heat: number) => void;
+  onDevSetInvestigationStage: (stage: InvestigationStage, scandalMarks?: number) => void;
+  onDevGrantFabBatch: (partCategory?: PartCategory, qty?: number) => { ok: boolean; summary: string };
+  onDevLaunchCustomCoin: (
+    symbol?: string,
+    name?: string,
+    algorithm?: MiningAlgorithm
+  ) => { ok: boolean; summary: string };
   onDevRefreshBlackMarket: () => void;
 }
 
@@ -64,6 +71,9 @@ export const DevPanel: React.FC<DevPanelProps> = ({
   onDevSetRegime,
   onDevTriggerHalving,
   onDevSetHeat,
+  onDevSetInvestigationStage,
+  onDevGrantFabBatch,
+  onDevLaunchCustomCoin,
   onDevRefreshBlackMarket,
 }) => {
   const coinSymbols = Object.keys(state.coins) as CoinSymbol[];
@@ -295,6 +305,27 @@ export const DevPanel: React.FC<DevPanelProps> = ({
                   </button>
                 ))}
               </div>
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                <span className="text-[11px] text-green-300/70">
+                  Investigation ({state.underground.investigationStage ?? 'NONE'}):
+                </span>
+                {(['NONE', 'WATCHLIST', 'FORMAL_AUDIT', 'SANCTIONED', 'PROBATION'] as InvestigationStage[]).map(
+                  (stage) => (
+                    <button
+                      key={stage}
+                      type="button"
+                      onClick={() => onDevSetInvestigationStage(stage)}
+                      className={`px-2 py-0.5 rounded border text-[10px] font-mono transition-colors ${
+                        (state.underground.investigationStage ?? 'NONE') === stage
+                          ? 'bg-rose-500/25 border-rose-400 text-rose-200 font-bold'
+                          : 'bg-[#030B05] hover:bg-green-950 border-green-500/25 text-green-200'
+                      }`}
+                    >
+                      {stage}
+                    </button>
+                  )
+                )}
+              </div>
             </div>
 
             <div className="p-4 rounded-lg bg-[#020704] border border-green-500/20 space-y-3">
@@ -364,7 +395,7 @@ export const DevPanel: React.FC<DevPanelProps> = ({
                   onClick={onOwnAllFacilities}
                   className="px-3 py-2 rounded-lg bg-[#06180B] hover:bg-green-950 border border-green-500/30 text-xs font-medium text-green-100 transition-colors"
                 >
-                  Own All 6 Facilities
+                  Own All {FACILITY_TIERS.length} Facilities
                 </button>
                 <button
                   type="button"
@@ -401,6 +432,49 @@ export const DevPanel: React.FC<DevPanelProps> = ({
             </div>
           </div>
 
+          {/* Foundry & Custom Mainnet Coin Quick-Testers */}
+          <div className="p-4 rounded-lg bg-[#020704] border border-green-500/20 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-green-100">
+                <Layers className="w-4 h-4 text-emerald-400" />
+                <span>Foundry Batches &amp; Custom Mainnet Coins</span>
+              </div>
+              <span className="text-[11px] font-mono text-green-400/80">
+                Stock: {state.fab?.inventory.reduce((s, i) => s + i.qty, 0) ?? 0} unit(s)
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => onDevGrantFabBatch('compute', 2)}
+                className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-xs font-mono font-semibold text-emerald-300"
+              >
+                Grant +2 Fab Compute
+              </button>
+              <button
+                type="button"
+                onClick={() => onDevGrantFabBatch('gpu', 2)}
+                className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-xs font-mono font-semibold text-emerald-300"
+              >
+                Grant +2 Fab GPUs
+              </button>
+              <button
+                type="button"
+                onClick={() => onDevGrantFabBatch('chassis', 1)}
+                className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-xs font-mono font-semibold text-emerald-300"
+              >
+                Grant +1 Fab Hybrid Chassis
+              </button>
+              <button
+                type="button"
+                onClick={() => onDevLaunchCustomCoin()}
+                className="px-3 py-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/35 text-xs font-mono font-semibold text-cyan-300"
+              >
+                Launch Custom Coin
+              </button>
+            </div>
+          </div>
+
           {/* Coin Tiers, Halving & Spot Rate Overrides */}
           <div className="p-4 rounded-lg bg-[#020704] border border-green-500/20 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -413,7 +487,7 @@ export const DevPanel: React.FC<DevPanelProps> = ({
                 onClick={onUnlockAllCoins}
                 className="px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-xs font-semibold text-amber-300 transition-colors"
               >
-                Unlock All 6 Coin Tiers
+                Unlock All Coin Tiers
               </button>
             </div>
 
