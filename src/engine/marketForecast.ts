@@ -161,6 +161,12 @@ export function analyzeCoinForecast(
   };
 }
 
+function confidenceLabel(volatilityPct: number): string {
+  if (volatilityPct < 2) return 'HIGH (tight recent range)';
+  if (volatilityPct < 4) return 'MEDIUM (moderate step volatility)';
+  return 'LOW (high volatility)';
+}
+
 export function formatMarketForecastReport(
   state: GameState,
   targetCoin?: CoinSymbol
@@ -193,6 +199,7 @@ export function formatMarketForecastReport(
         hasQuant ? ` (Quant 5-step drift bias: ${f.projectedBiasPct >= 0 ? '+' : ''}${f.projectedBiasPct}%)` : ''
       }`,
       `    Catalysts:      ${f.catalysts.join(' · ')}`,
+      `    Confidence:     ${confidenceLabel(f.volatilityPct)} — estimate, not a guarantee`,
     ].join('\n');
   }
 
@@ -221,6 +228,7 @@ export function formatMarketForecastReport(
     '-'.repeat(header.length + 18),
     ...rows,
     ``,
+    `  Signals are probabilistic estimates from regime drift, momentum and RSI — not guarantees.`,
     `  Tip: Run "market forecast <COIN>" for support/resistance bands and full technicals.`,
   ].join('\n');
 }

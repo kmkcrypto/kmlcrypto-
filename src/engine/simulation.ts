@@ -2893,6 +2893,15 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
 
   const snapTotals = getFacilityTotals(nextState);
   const snapElecCost = snapTotals.stepPowerCostUsd;
+  // Net per step is operating profit: mining revenue minus power AND the
+  // per-step share of payroll, rent, maintenance and grid fees. Showing only
+  // revenue - power made loss-making operations look profitable.
+  const snapOtherOpex =
+    (snapTotals.cyclePayrollUsd +
+      snapTotals.cycleRentUsd +
+      snapTotals.cycleMaintenanceUsd +
+      snapTotals.cycleFixedContractFee) /
+    BILLING_CYCLE_STEPS;
   const snapshot: import('../types/game').PerformanceSnapshot = {
     step: nextStep,
     stepLabel,
@@ -2900,7 +2909,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     valuation: computeCompanyValuation(nextState),
     revenuePerStepUsd: stepMiningUsd,
     powerCostPerStepUsd: snapElecCost,
-    netPerStepUsd: stepMiningUsd - snapElecCost,
+    netPerStepUsd: stepMiningUsd - snapElecCost - snapOtherOpex,
     fleetHashScore: playerPowerScore,
     powerKw: snapTotals.totalPowerKw,
   };

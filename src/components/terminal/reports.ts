@@ -22,6 +22,11 @@ import {
   getPowerContract,
 } from '../../engine/simulation';
 import {
+  computeRigContributions,
+  computeStepEconomics,
+  formatCashRunway,
+} from '../../engine/economics';
+import {
   previewPowerContract,
   renderAsciiLineChart,
 } from '../../engine/previews';
@@ -65,6 +70,50 @@ export function formatValuationReport(state: GameState): string {
   ].join('\n');
 }
 
+export function formatOperatingEconomicsReport(state: GameState): string {
+  const econ = computeStepEconomics(state);
+  const contributions = computeRigContributions(state);
+  const active = contributions.filter((r) => r.active);
+  const underwater = active.filter(
+    (r) => r.producing && r.hasOperated && r.contributionPerStepUsd < 0
+  );
+  const signed = (v: number) => `${v >= 0 ? '+' : '-'}${formatUsd(Math.abs(v))}`;
+  const breakEvenPower =
+    econ.breakEvenPowerRatePerKwh === null
+      ? 'n/a (no active load)'
+      : econ.breakEvenPowerRatePerKwh <= 0
+      ? 'unreachable at any power price'
+      : `${formatUsd(econ.breakEvenPowerRatePerKwh)}/kWh (now ${formatUsd(
+          econ.currentPowerRatePerKwh
+        )}/kWh)`;
+
+  return [
+    `  OPERATING ECONOMICS (PER STEP)`,
+    `    Gross Revenue:        ${padL(signed(econ.grossRevenuePerStepUsd), 12)}   Power:          ${padL(
+      '-' + formatUsd(econ.powerCostPerStepUsd),
+      10
+    )}`,
+    `    Payroll:              ${padL('-' + formatUsd(econ.payrollPerStepUsd), 12)}   Facility Rent:  ${padL(
+      '-' + formatUsd(econ.rentPerStepUsd),
+      10
+    )}`,
+    `    Maintenance & Fab:    ${padL('-' + formatUsd(econ.maintenancePerStepUsd), 12)}   Grid Fees:      ${padL(
+      '-' + formatUsd(econ.fixedFeePerStepUsd),
+      10
+    )}`,
+    `    ────────────────────────────────────────`,
+    `    NET OPERATING PROFIT: ${padL(signed(econ.netOperatingPerStepUsd), 12)}   Margin:         ${padL(
+      `${econ.operatingMarginPct.toFixed(1)}%`,
+      10
+    )}`,
+    `    Cash Runway:          ${formatCashRunway(econ.cashRunwaySteps, state.stepHours ?? 24)}`,
+    `    Break-even Revenue:   ${formatUsd(
+      econ.breakEvenRevenuePerStepUsd
+    )}/step   Break-even Power: ${breakEvenPower}`,
+    `    Underwater Rigs:      ${underwater.length}/${active.length} active rigs cost more in power than they earn`,
+  ].join('\n');
+}
+
 export function formatStatsReport(state: GameState): string {
   const valuation = computeCompanyValuation(state);
   const st = state.stats;
@@ -85,7 +134,9 @@ export function formatStatsReport(state: GameState): string {
     `    Payroll Paid:      ${padL('-' + formatUsd(st.totalPayrollCostUsd), 12)}   Fines & Bribes:     -${formatUsd(st.totalFinesAndBribesUsd)}`,
     `    Hardware Bought:   ${padL('-' + formatUsd(st.totalHardwareSpendUsd), 12)}   Hardware Sold:      +${formatUsd(st.totalHardwareSalesUsd)}`,
     `    Facility & Cool:   ${padL('-' + formatUsd(st.totalFacilitySpendUsd + st.totalCoolingSpendUsd), 12)}   R&D Spend:          -${formatUsd(st.totalResearchSpendUsd)}`,
-    `    Net Operating P&L: ${padL(formatUsd(netMiningProfit), 12)}`,
+    `    Lifetime Net P&L:  ${padL(formatUsd(netMiningProfit), 12)}`,
+    ``,
+    formatOperatingEconomicsReport(state),
     ``,
     `  OPERATIONS & RELIABILITY`,
     `    Steps Simulated:   ${padL(String(state.stepCount), 8)} (${formatStepLabel(state.stepCount)})`,

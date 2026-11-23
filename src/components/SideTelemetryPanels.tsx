@@ -21,6 +21,11 @@ import {
   getFacility,
   getFacilityTotals,
 } from '../engine/simulation';
+import {
+  computeRigContributions,
+  computeStepEconomics,
+  formatCashRunway,
+} from '../engine/economics';
 import { CoinSymbol, GameState } from '../types/game';
 import { formatUsd } from '../utils/format';
 
@@ -65,6 +70,27 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
   const btc = state.coins.BTC;
   const btcDelta =
     btc && btc.prevPriceUsd > 0 ? ((btc.priceUsd - btc.prevPriceUsd) / btc.prevPriceUsd) * 100 : 0;
+
+  const economics = computeStepEconomics(state);
+  const contributions = computeRigContributions(state);
+  const activeContributions = contributions.filter((r) => r.active);
+  const underwaterRigs = activeContributions.filter(
+    (r) => r.producing && r.hasOperated && r.contributionPerStepUsd < 0
+  );
+  // Before the first step there is no produced revenue yet, so show dashes
+  // instead of a misleading -100% margin.
+  const awaitingFirstStep = state.stepCount === 0;
+  const netLabel = awaitingFirstStep
+    ? '—'
+    : `${economics.netOperatingPerStepUsd >= 0 ? '+' : '-'}${formatUsd(
+        Math.abs(economics.netOperatingPerStepUsd)
+      )}`;
+  const marginLabel = awaitingFirstStep ? '—' : `${economics.operatingMarginPct.toFixed(1)}%`;
+  const runwayLabel = awaitingFirstStep
+    ? '—'
+    : economics.cashRunwaySteps === null
+    ? 'Profitable'
+    : `${economics.cashRunwaySteps} st`;
 
   const liveAlerts: LiveAlertItem[] = [];
 
@@ -163,6 +189,31 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
     });
   }
 
+  if (economics.cashRunwaySteps !== null && economics.cashRunwaySteps <= 30) {
+    liveAlerts.push({
+      id: 'alert_runway',
+      severity: economics.cashRunwaySteps <= 10 ? 'CRIT' : 'WARN',
+      tag: 'RUNWAY',
+      message: `Cash runway ${formatCashRunway(
+        economics.cashRunwaySteps,
+        state.stepHours ?? 24
+      )} at current operating burn.`,
+      actionLabel: 'Stats',
+      actionCmd: 'stats',
+    });
+  }
+
+  if (underwaterRigs.length > 0) {
+    liveAlerts.push({
+      id: 'alert_underwater_rigs',
+      severity: 'WARN',
+      tag: 'ECON',
+      message: `${underwaterRigs.length}/${activeContributions.length} active rigs cost more in power than they earn at spot prices.`,
+      actionLabel: 'Rigs',
+      actionCmd: 'rigs',
+    });
+  }
+
   if (state.regulatoryScrutiny >= 55) {
     liveAlerts.push({
       id: 'alert_heat',
@@ -224,10 +275,6 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
   const criticalCount = liveAlerts.filter((a) => a.severity === 'CRIT').length;
   const warnCount = liveAlerts.filter((a) => a.severity === 'WARN').length;
 
-  const latestSnap =
-    state.performanceHistory && state.performanceHistory.length > 0
-      ? state.performanceHistory[state.performanceHistory.length - 1]
-      : null;
   const valuation = computeCompanyValuation(state);
   const nextObjective =
     getEffectiveOnboardingMode(state) === 'GUIDED'
@@ -412,9 +459,11 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
           </button>
           <div className="flex items-center gap-2 font-mono text-[10px]">
             <span className="text-green-400/80 tabular-nums">
-              {latestSnap
-                ? `Net ${latestSnap.netPerStepUsd >= 0 ? '+' : ''}${formatUsd(latestSnap.netPerStepUsd)}/st`
-                : `Bill ${stepsToBill}st`}
+              {awaitingFirstStep
+                ? `Bill ${stepsToBill}st`
+                : `Net ${economics.netOperatingPerStepUsd >= 0 ? '+' : ''}${formatUsd(
+                    economics.netOperatingPerStepUsd
+                  )}/st`}
             </span>
             <button
               type="button"
@@ -437,6 +486,58 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
               <div className="px-2.5 py-1.5 rounded bg-[#020704]/90 border border-green-500/20">
                 <div className="text-[9px] uppercase text-green-400/65">Cycle Bill Due</div>
                 <div className="font-bold text-green-200 tabular-nums">{stepsToBill} step(s)</div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="px-2.5 py-1.5 rounded bg-[#020704]/90 border border-green-500/20">
+                <div className="text-[9px] uppercase text-green-400/65">Net / Step</div>
+                <div
+                  className={`font-bold tabular-nums ${
+                    awaitingFirstStep
+                      ? 'text-green-500/60'
+                      : economics.netOperatingPerStepUsd >= 0
+                      ? 'text-emerald-300'
+                      : 'text-rose-400'
+                  }`}
+                >
+                  {netLabel}
+                </div>
+              </div>
+              <div className="px-2.5 py-1.5 rounded bg-[#020704]/90 border border-green-500/20">
+                <div className="text-[9px] uppercase text-green-400/65">Op Margin</div>
+                <div
+                  className={`font-bold tabular-nums ${
+                    awaitingFirstStep
+                      ? 'text-green-500/60'
+                      : economics.operatingMarginPct >= 0
+                      ? 'text-green-200'
+                      : 'text-rose-400'
+                  }`}
+                >
+                  {marginLabel}
+                </div>
+              </div>
+              <div className="px-2.5 py-1.5 rounded bg-[#020704]/90 border border-green-500/20">
+                <div className="text-[9px] uppercase text-green-400/65">Cash Runway</div>
+                <div
+                  className={`font-bold tabular-nums ${
+                    economics.cashRunwaySteps !== null && economics.cashRunwaySteps <= 10
+                      ? 'text-rose-400'
+                      : 'text-green-200'
+                  }`}
+                >
+                  {runwayLabel}
+                </div>
+              </div>
+              <div className="px-2.5 py-1.5 rounded bg-[#020704]/90 border border-green-500/20">
+                <div className="text-[9px] uppercase text-green-400/65">Underwater Rigs</div>
+                <div
+                  className={`font-bold tabular-nums ${
+                    underwaterRigs.length > 0 ? 'text-amber-300' : 'text-green-200'
+                  }`}
+                >
+                  {underwaterRigs.length}/{activeContributions.length}
+                </div>
               </div>
             </div>
             {nextObjective && (

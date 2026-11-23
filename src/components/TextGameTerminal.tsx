@@ -31,6 +31,7 @@ import {
   SEASON_LENGTH_STEPS,
 } from '../engine/leaderboard';
 import { getShellCoins } from '../engine/underground';
+import { computeMarketSensitivity, computeRigContributions } from '../engine/economics';
 import { formatWorldReport } from '../engine/world';
 import {
   BILLING_CYCLE_STEPS,
@@ -2764,15 +2765,22 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         ]);
         return;
       }
+      const contributions = computeRigContributions(state);
       const header = `  #  ${padRight('RIG NAME', 21)} ${padRight('STATUS', 11)} ${padRight(
         'COIN/POOL',
         10
       )} ${padRight('GEN/COND', 10)} ${padLeft('HLTH', 5)} ${padLeft('TEMP', 5)} ${padLeft(
         'STEP USD',
         11
-      )}`;
+      )} ${padLeft('NET/ST', 10)}`;
       const rows = state.rigs.map((rig, i) => {
         const modMark = (rig.illicitMod ? '*' : '') + (rig.customAsicSpec ? '[F]' : '');
+        const rigContribution = contributions[i];
+        const contribution = rigContribution?.contributionPerStepUsd ?? 0;
+        const lossTag =
+          rigContribution?.producing && rigContribution.hasOperated && contribution < 0
+            ? ' [LOSS]'
+            : '';
         const gen = getRigGeneration(rig);
         const condShort = (rig.conditionTier ?? 'NEW').slice(0, 4);
         const coinLabel = rig.payoutMode === 'HOLD' ? `${rig.targetCoin}/HLD` : `${rig.targetCoin}/${rig.poolMode}`;
@@ -2785,7 +2793,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         )} ${padLeft(`${Math.round(rig.healthPct)}%`, 5)} ${padLeft(
           `${rig.temperatureC}C`,
           5
-        )} ${padLeft(rig.payoutMode === 'HOLD' ? 'VAULTED' : formatUsd(rig.lastStepUsd), 11)}`;
+        )} ${padLeft(rig.payoutMode === 'HOLD' ? 'VAULTED' : formatUsd(rig.lastStepUsd), 11)} ${padLeft(
+          `${contribution >= 0 ? '+' : '-'}${formatUsd(Math.abs(contribution))}`,
+          10
+        )}${lossTag}`;
       });
       const avgHealth =
         state.rigs.reduce((s, r) => s + r.healthPct, 0) / Math.max(1, state.rigs.length);
@@ -2799,7 +2810,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
         { kind: 'PRE', text: [header, '-'.repeat(header.length), ...rows].join('\n') },
         {
           kind: 'TEXT',
-          text: 'Commands: "inspect <#>", "repair all", "retire <#>", "backup", "sell <#>", "tinker <#>", "overclock". (* = illicit mod)',
+          text: 'Commands: "inspect <#>", "repair all", "retire <#>", "backup", "sell <#>", "tinker <#>", "overclock". NET/ST = last step revenue minus rig power; [LOSS] = underwater at spot price. (* = illicit mod)',
         },
       ]);
       if (state.tutorialStep === 1) {
@@ -3946,6 +3957,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
       const modLines = (state.activeMarketModifiers ?? []).map(
         (m) => `  * ${m.label} (${m.stepsRemaining}st left): ${m.summary}`
       );
+      const spotImpact = computeMarketSensitivity(state, 0);
+      const downImpact = computeMarketSensitivity(state, -20);
+      const upImpact = computeMarketSensitivity(state, 20);
+      const signedUsd = (v: number) => `${v >= 0 ? '+' : '-'}${formatUsd(Math.abs(v))}`;
       append([
         {
           kind: 'HEAD',
@@ -3955,6 +3970,16 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = ({
           ? [{ kind: 'WARN' as const, text: `ACTIVE MARKET MODIFIERS:\n${modLines.join('\n')}` }]
           : []),
         { kind: 'PRE', text: [header, '-'.repeat(header.length), ...rows].join('\n') },
+        {
+          kind: downImpact.underwaterRigs > 0 ? ('WARN' as const) : ('TEXT' as const),
+          text: `FLEET IMPACT AT SPOT: ${spotImpact.activeRigs} active rigs · net ${signedUsd(
+            spotImpact.netPerStepUsd
+          )}/step. Revenue -20% -> ${signedUsd(
+            downImpact.netPerStepUsd
+          )}/step (${downImpact.underwaterRigs} rigs underwater); +20% -> ${signedUsd(
+            upImpact.netPerStepUsd
+          )}/step.`,
+        },
         {
           kind: 'TEXT',
           text: 'Commands: "market forecast [COIN]", "unlock <COIN>", "chart <COIN>", "usedmarket", "pr launch <1..5> <COIN>".',

@@ -569,6 +569,22 @@ export const CODEX_ENTRIES: CodexEntry[] = [
     ],
   },
   {
+    key: 'economics',
+    title: 'OPERATING ECONOMICS, RUNWAY & BREAK-EVEN',
+    keywords: ['profit', 'margin', 'runway', 'break-even', 'opex', 'cash flow', 'stats', 'underwater'],
+    body: [
+      '  - "stats" shows per-step operating economics: gross revenue, power, payroll, rent,',
+      '    maintenance, grid fees, net operating profit and margin.',
+      '  - Cash runway = steps until cash hits zero at the current operating burn.',
+      '  - Break-even power = the $/kWh where net operating profit reaches zero. If the current',
+      '    rate sits above it, the operation loses money on power alone.',
+      '  - "rigs" shows NET/ST per rig (last-step revenue minus its power) and flags [LOSS]',
+      '    when a rig is underwater at spot prices.',
+      '  - "market" projects fleet net at -20% / +20% mining revenue so a downturn can be planned',
+      '    for before it lands. Forecast signals are estimates, not guarantees.',
+    ],
+  },
+  {
     key: 'fab',
     title: 'PROPRIETARY CHIP DESIGN & ASIC FOUNDRY',
     keywords: ['fab', 'foundry', 'chip', 'asic', 'wafer', 'lithography', 'design', 'manufacture'],
