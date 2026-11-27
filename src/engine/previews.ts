@@ -7,11 +7,15 @@ import {
   computeFacilityCoolingSummary,
   computeRigTelemetry,
   computeStepCoinOutput,
+  findOpenRoomId,
   getAutoSellMultiplier,
+  getElectricianBonuses,
   getEffectiveElectricityRate,
   getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
   getFacility,
+  getFacilityNoiseDba,
+  getFacilityRooms,
   getFacilityTotals,
   getPowerContract,
   getSysEngineerBonus,
@@ -48,15 +52,18 @@ export function previewRigEconomics(
 ): RigPurchasePreview {
   const facility = getFacility(state.facilityId);
   const sysBonus = getSysEngineerBonus(state);
-  const activeCount = state.rigs.filter((r) => r.enabled).length + 1;
+  const activeCount = state.rigs.filter((r) => r.enabled && r.status !== 'FAILED').length + 1;
   const t = computeRigTelemetry(
-    config,
+    { ...config, roomId: config.roomId ?? findOpenRoomId(getFacilityRooms(state), state.rigs), pasteStepsRemaining: 16 },
     facility,
     state.unlockedResearch,
     sysBonus,
     state.coolingUnits ?? [],
     activeCount,
-    state.facilityUpgrades
+    state.facilityUpgrades,
+    getElectricianBonuses(state).powerWasteReduction,
+    state.facilityExtraRooms,
+    state.coins
   );
   const coin = state.coins[config.targetCoin];
   const autoSellMult = getAutoSellMultiplier(state);
@@ -71,8 +78,7 @@ export function previewRigEconomics(
 
   const powerKw = t.wallWatts / 1000;
   const effRate = getEffectiveElectricityRate(state);
-  const siphonSave = state.underground?.powerSiphonActive ? 0.28 : 0;
-  const powerCostPerStepUsd = powerKw * 24 * effRate * (1 - siphonSave);
+  const powerCostPerStepUsd = powerKw * 24 * effRate;
   const netPerStepUsd = est.autoSoldUsd - powerCostPerStepUsd;
   const paybackSteps =
     netPerStepUsd > 0.01 ? Math.ceil(costUsd / netPerStepUsd) : null;
@@ -81,7 +87,10 @@ export function previewRigEconomics(
   const facilityCapKw = getEffectiveFacilityPowerCapKw(state);
   const projectedTotalKw = totals.totalPowerKw + powerKw;
   const exceedsBreaker = projectedTotalKw > facilityCapKw;
-  const exceedsNoise = t.noiseDba > facility.noiseLimitDba;
+  const projectedNoiseDba = getFacilityNoiseDba(
+    Math.max(t.noiseDba, totals.loudestRigDba), activeCount, totals.coolingNoiseDba
+  );
+  const exceedsNoise = projectedNoiseDba > facility.noiseLimitDba;
   const isHotOrThrottled = t.equilibriumTempC >= 82;
 
   const warnings: string[] = [];
@@ -92,7 +101,7 @@ export function previewRigEconomics(
   }
   if (exceedsNoise) {
     warnings.push(
-      `Noise ${t.noiseDba} dBA exceeds ${facility.name} limit (${facility.noiseLimitDba} dBA)`
+      `Projected fleet noise ${projectedNoiseDba.toFixed(1)} dBA exceeds ${facility.name} limit (${facility.noiseLimitDba} dBA)`
     );
   }
   if (t.equilibriumTempC >= 96) {

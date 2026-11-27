@@ -8,8 +8,9 @@ export type TechBranch = 'SILICON' | 'QUANTUM' | 'PHOTONIC';
 
 export type HardwareGen = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
-/** Developer testing scenarios: each launches an isolated sandbox save at a known progression stage. */
+/** Developer testing scenarios launch temporary sessions at known progression stages. */
 export type DevScenarioId =
+  | 'GUIDED_ONBOARDING'
   | 'MIDGAME'
   | 'INDUSTRIAL'
   | 'GEN5'
@@ -512,12 +513,21 @@ export type RivalStrategy =
   | 'ADVANCED_TECH'
   | 'LOW_OVERHEAD';
 
+export type RivalProject = {
+  kind: 'EXPAND' | 'ADD_RACKS' | 'REFIT' | 'SWITCH_COIN' | 'LOCK_POWER';
+  completesAt: number;
+  costUsd: number;
+  targetCoin?: CoinSymbol;
+  followsPlayer?: boolean;
+};
+
 export interface RivalSyndicate {
   id: string;
   name: string;
   archetype: 'HYDRO_GIANT' | 'SILICON_CARTEL' | 'DARKNET_POOL';
   strategy: RivalStrategy;
   specialtyCoin: CoinSymbol;
+  secondaryCoin?: CoinSymbol;
   hashPowerIndex: number;
   cashReserveUsd: number;
   facilityTierIndex: number;
@@ -531,6 +541,9 @@ export interface RivalSyndicate {
   disruptedSteps: number;
   lastActionSummary: string;
   intelRevealedUntilStep?: number;
+  project?: RivalProject;
+  powerDealUntilStep?: number;
+  decisions?: { step: number; summary: string }[];
 }
 
 export type ContractType =
@@ -554,6 +567,8 @@ export interface ContractSpec {
   targetAmount: number;
   targetConditionPct?: number;
   targetFacilityIndex?: number;
+  targetFleetSize?: number;
+  targetNoiseDba?: number;
   minReputation: number;
   progress: number;
   durationSteps: number;
@@ -764,6 +779,7 @@ export interface PendingEvent {
 export interface CycleLedgerEntry {
   cycleNumber: number;
   label: string;
+  facilityId?: string;
   miningRevenueUsd: number;
   electricityCostUsd: number;
   rentCostUsd: number;
@@ -841,6 +857,7 @@ export interface EmpireStats {
   soloBlocksHit: number;
   contractsCompleted: number;
   contractsFailed: number;
+  highestCommissionedFacilityIndex?: number;
   covertOpsCount: number;
   raidsSurvived: number;
   totalFinesAndBribesUsd: number;
@@ -908,6 +925,7 @@ export interface GameState {
   mode: GameModeState;
   difficulty: DifficultyLevel;
   isSandbox?: boolean;
+  isDevSession?: boolean;
   sandboxConfig?: SandboxConfig;
   runSeed: string;
   stepCount: number;
@@ -916,6 +934,8 @@ export interface GameState {
   stepSeconds?: number;
   /** In-game hours that pass per step, used for the game clock (1-24). Defaults to 24. */
   stepHours?: number;
+  manualStepBudget?: { available: number; refillStartedAt: number };
+  rigQualifications?: RigQualification[];
   cash: number;
   researchPoints: number;
   unlockedResearch: string[];
@@ -981,6 +1001,15 @@ export interface GameState {
   world?: SharedWorldState;
   /** Completed seasons, newest first. Drives the "leaderboard" hall of fame. */
   seasonHistory?: SeasonRecord[];
+}
+
+export type RigQualificationGoal = 'efficiency' | 'output' | 'quiet';
+
+export interface RigQualification {
+  rigId: string;
+  goal: RigQualificationGoal;
+  reference: 'balanced' | 'stock';
+  step: number;
 }
 
 /**
@@ -1390,7 +1419,11 @@ export interface GuidedOnboardingState {
   currentStageIdx: number;
   systemStatuses: Record<string, GuidedSystemStatus>;
   completedChecklistIds: string[];
+  earnedChecklistIds?: string[];
   revisitedTopics: string[];
+  systemOpensAt?: Record<string, number>;
+  lessonQueue?: string[];
+  lastLessonAt?: number;
 }
 
 export interface CareerPreset {
@@ -1406,12 +1439,14 @@ export interface CareerPreset {
   includeFacility: boolean;
   startingFacilityId: string;
   powerContractId: PowerContractId;
+  startingFacilityOwned?: boolean;
   includeMarketRules: boolean;
   marketRegime: MarketRegime;
   operatingCostMult: number;
   unlockAllCoins: boolean;
   unlockAllResearch: boolean;
   includeStarterRig: boolean;
+  startingResearchIds?: string[];
   starterRigConfig: Omit<RigBuildConfig, 'name'>;
 }
 

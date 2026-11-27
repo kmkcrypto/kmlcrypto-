@@ -22,6 +22,8 @@ import {
   RaidApproachId,
   RepairComponentSlot,
   RigBuildConfig,
+  RigQualification,
+  RigQualificationGoal,
   RoomCoolingType,
   ShiftType,
   TaskPriority,
@@ -46,12 +48,14 @@ export interface StepBatchResult {
   billsSettledUsd: number;
   soloBlocksHit: number;
   haltedByEvent: PendingEvent | null;
+  manualStepWaitSeconds?: number;
 }
 
 export interface TextGameTerminalProps {
   state: GameState;
   commandTrigger: TerminalCommandTrigger | null;
   onStepSteps: (steps: number) => StepBatchResult | null;
+  onQualifyRig: (rigIndex: number, goal: RigQualificationGoal, reference: RigQualification['reference']) => { ok: boolean; summary: string };
   onResolveEvent: (choiceKey: string) => { ok: boolean; summary: string };
   onUnlockCoin: (symbol: CoinSymbol) => boolean;
   onCreatePlayerCoin: (
@@ -179,7 +183,8 @@ export interface TextGameTerminalProps {
     bpIdx: number,
     updates: Partial<CustomBlueprintDesignInput> & { revisionNote?: string }
   ) => { ok: boolean; summary: string };
-  onRunPrototypeTest: (bpIdx: number) => { ok: boolean; summary: string };
+  onRunPrototypeTest: (bpIdx: number, forcedStatus?: 'PASSED' | 'MARGINAL' | 'FAILED_FLAW') => { ok: boolean; summary: string };
+  onDevFinishFabBatch: (outcome: 'PASS' | 'SCRAP') => { ok: boolean; summary: string };
   onQueueFabProduction: (bpIdx: number, qty: number) => { ok: boolean; summary: string };
   onDeployCustomAsic: (
     invIdx: number,
@@ -219,6 +224,7 @@ export interface TextGameTerminalProps {
   onDevRefreshBlackMarket: () => void;
   onSetTutorialStep: (step: number) => void;
   onMarkTutorialSeen: (guideId: string) => void;
+  onFinishGuidedLesson: () => void;
   onSetOnboardingMode: (mode: OnboardingMode) => void;
   onCompleteGuidedTask: (taskIdOrNum: string) => { ok: boolean; summary: string };
   onPauseGuidedOnboarding: (paused: boolean) => void;

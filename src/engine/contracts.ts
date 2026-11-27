@@ -3,12 +3,71 @@ import { CoinSymbol, ContractSpec, GameState } from '../types/game';
 import { formatUsd } from '../utils/format';
 import { createSeededRng } from '../utils/rng';
 
+export const GUIDED_STARTER_CONTRACT_ID = 'ctr_guided_uptime';
+
+function buildEarlyCareerOffers(
+  state: Pick<GameState, 'stepCount' | 'rigs' | 'coins'>,
+  facilityIndex: number,
+  includeStarter: boolean,
+  highestCommissionedFacilityIndex: number
+): ContractSpec[] {
+  const offers: ContractSpec[] = [];
+  const shortOffer = {
+    progress: 0, durationSteps: 9, stepsRemaining: 9, rewardRp: 12,
+    minReputation: 0, penaltyCredibility: 2, penaltyCash: 35,
+  };
+  if (includeStarter) {
+    offers.push({
+      ...shortOffer, id: GUIDED_STARTER_CONTRACT_ID, title: 'Starter Uptime Trial',
+      clientName: 'Civic Grid Authority', type: 'UPTIME_STREAK', targetAmount: 5,
+      rewardCash: 300, penaltyCredibility: 0, penaltyCash: 0,
+      description: 'Mine for five consecutive steps without a breaker trip, overheat, or equipment failure.',
+    });
+  }
+  const targetNoiseDba = facilityIndex === 0 ? 34 : 43;
+  const facility = FACILITY_TIERS[facilityIndex + 1];
+  const duration = 7;
+  const coin = state.coins.BTC?.unlocked ? 'BTC' : Object.values(state.coins).find((coin) => coin.unlocked)?.symbol ?? 'BTC';
+  const currentCoinRevenue = state.rigs
+    .filter((rig) => rig.enabled && rig.targetCoin === coin)
+    .reduce((sum, rig) => sum + Math.max(0, rig.lastStepUsd), 0);
+  const revenueTarget = Math.max(facilityIndex === 0 ? 110 : 190, Math.round(currentCoinRevenue * duration * 1.06));
+  offers.push(
+    {
+      ...shortOffer, id: `ctr_quiet_${state.stepCount}`, title: 'Quiet Hours',
+      clientName: 'Building Services Co-op', type: 'LOW_NOISE_RUN', targetAmount: 6,
+      targetNoiseDba, rewardCash: facilityIndex === 0 ? 330 : 490,
+      description: `Mine for six steps at or below ${targetNoiseDba} dBA. Cool, quiet builds leave room for missed steps.`,
+    },
+    {
+      ...shortOffer, id: `ctr_delivery_${state.stepCount}`, title: `${coin} Delivery Sprint`,
+      clientName: 'Helios Clearing House', type: 'COIN_REVENUE', targetCoin: coin,
+      targetAmount: revenueTarget, durationSteps: duration, stepsRemaining: duration,
+      rewardCash: Math.round(300 + revenueTarget * 0.5), penaltyCash: 75, penaltyCredibility: 4,
+      description: `Deliver ${formatUsd(revenueTarget)} in ${coin} payouts over ${duration} steps (about ${formatUsd(revenueTarget / duration)}/step).`,
+    }
+  );
+  if (facilityIndex >= highestCommissionedFacilityIndex) {
+    offers.push({
+      ...shortOffer, id: `ctr_commission_${state.stepCount}`,
+      title: facilityIndex === 0 ? 'Garage Commissioning' : 'Commercial Commissioning',
+      clientName: 'Argon Hosting Partners', type: 'FACILITY_EXPANSION',
+      targetAmount: 3, targetFleetSize: 2, targetFacilityIndex: facilityIndex + 1,
+      durationSteps: 20, stepsRemaining: 20, rewardRp: 20,
+      rewardCash: Math.round(facility.cycleRent * 1.35 + 200), penaltyCash: 100,
+      description: `Move to ${facility.name} or above and run at least two earning rigs for three consecutive fault-free steps. Payment follows commissioning.`,
+    });
+  }
+  return offers;
+}
+
 export function generateContractBoard(
   state: Pick<
     GameState,
     'stepCount' | 'rigs' | 'coins' | 'facilityId' | 'runSeed' | 'mediaCredibility' | 'unlockedResearch'
   >,
-  count = 4
+  count = 4,
+  options: { earlyCareer?: boolean; includeStarter?: boolean; highestCommissionedFacilityIndex?: number } = {}
 ): ContractSpec[] {
   const rng = createSeededRng(`${state.runSeed}-contracts-${state.stepCount}-${Math.random()}`);
   const unlockedCoins = (Object.keys(state.coins) as CoinSymbol[]).filter(
@@ -23,6 +82,11 @@ export function generateContractBoard(
     0,
     FACILITY_TIERS.findIndex((f) => f.id === state.facilityId)
   );
+  if (options.earlyCareer && facIdx <= 1) {
+    return buildEarlyCareerOffers(
+      state, facIdx, Boolean(options.includeStarter), options.highestCommissionedFacilityIndex ?? 0
+    ).slice(0, count);
+  }
   const slaBonusMult = state.unlockedResearch?.includes('res_enterprise_sla') ? 1.22 : 1.0;
 
   const clients = [

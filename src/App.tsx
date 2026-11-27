@@ -1,6 +1,6 @@
 import { MARKET_REGIME_SPECS } from './data/catalog';
 import { getUnlockedSystems } from './data/onboarding';
-import { BILLING_CYCLE_STEPS, getEffectiveFacilityPowerCapKw, getFacilityTotals } from './engine/simulation';
+import { getEffectiveFacilityPowerCapKw, getFacilityTotals, getStepsUntilNextBill } from './engine/simulation';
 import { formatStepLabel, formatUsd } from './utils/format';
 import { soundFx } from './utils/sound';
 import { Binary, Pause, Play, SkipForward, Volume2, VolumeX, Wrench } from 'lucide-react';
@@ -83,8 +83,7 @@ export default function App() {
   const totals = getFacilityTotals(state);
   const effectiveCap = getEffectiveFacilityPowerCapKw(state);
   const stepRev = state.rigs.reduce((s, r) => s + r.lastStepUsd, 0);
-  const stepsUntilBill =
-    BILLING_CYCLE_STEPS - (state.stepCount % BILLING_CYCLE_STEPS || BILLING_CYCLE_STEPS);
+  const stepsUntilBill = getStepsUntilNextBill(state.stepCount);
   const regimeSpec = MARKET_REGIME_SPECS[state.marketRegime];
 
   const unlockedSystems = getUnlockedSystems(state);
@@ -337,6 +336,7 @@ export default function App() {
                 state={state}
                 commandTrigger={commandTrigger}
                 onStepSteps={actions.handleStepSteps}
+                onQualifyRig={actions.handleQualifyRig}
                 onResolveEvent={actions.handleResolveEvent}
                 onUnlockCoin={actions.handleUnlockCoin}
                 onCreatePlayerCoin={actions.handleCreatePlayerCoin}
@@ -415,6 +415,7 @@ export default function App() {
                 onTapeoutDraftBlueprint={actions.handleTapeoutDraftBlueprint}
                 onReviseBlueprint={actions.handleReviseBlueprint}
                 onRunPrototypeTest={actions.handleRunPrototypeTest}
+                onDevFinishFabBatch={actions.handleDevFinishFabBatch}
                 onQueueFabProduction={actions.handleQueueFabProduction}
                 onDeployCustomAsic={actions.handleDeployCustomAsic}
                 onSellCustomAsic={actions.handleSellCustomAsic}
@@ -442,6 +443,7 @@ export default function App() {
                 onDevRefreshBlackMarket={actions.handleDevRefreshBlackMarket}
                 onSetTutorialStep={actions.handleSetTutorialStep}
                 onMarkTutorialSeen={actions.handleMarkTutorialSeen}
+                onFinishGuidedLesson={actions.handleFinishGuidedLesson}
                 onSetOnboardingMode={actions.handleSetOnboardingMode}
                 onCompleteGuidedTask={actions.handleCompleteGuidedTask}
                 onPauseGuidedOnboarding={actions.handlePauseGuidedOnboarding}
@@ -463,7 +465,7 @@ export default function App() {
         </div>
       </main>
 
-      {devPanelOpen && state.devMode && (
+      {devPanelOpen && state.isDevSession && state.devMode && (
         <DevPanel
           state={state}
           onClose={() => setDevPanelOpen(false)}

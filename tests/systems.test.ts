@@ -130,12 +130,13 @@ describe('HASHRATE systems: halving, shared world, scenarios, foundry', () => {
     );
   });
 
-  it('3. Every scenario launches an isolated sandbox save at its stated stage', () => {
+  it('3. Every scenario launches a temporary Dev session at its stated stage', () => {
     assert.ok(SCENARIOS.length >= 6, 'Scenario catalog should cover the roadmap stages');
 
     for (const spec of SCENARIOS) {
       const state = createScenarioState(spec.id);
-      assert.equal(state.isSandbox, true, `${spec.id} must live in the sandbox save slot`);
+      assert.equal(state.isSandbox, true, `${spec.id} must use sandbox rules`);
+      assert.equal(state.isDevSession, true, `${spec.id} must stay out of save slots`);
       assert.equal(state.scenarioId, spec.id);
       assert.ok(state.rigs.length > 0, `${spec.id} must ship a working fleet`);
       assert.ok(state.cash > 0, `${spec.id} must ship working capital`);

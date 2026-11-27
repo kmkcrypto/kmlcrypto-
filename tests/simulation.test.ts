@@ -9,8 +9,11 @@ import {
   ROOM_COOLING_UNITS,
 } from '../src/data/catalog';
 import { generateContractBoard } from '../src/engine/contracts';
+import { getManualStepBudget, getManualStepWaitSeconds } from '../src/engine/manualSteps';
 import { computeValuationBreakdown, evaluateProgression } from '../src/engine/milestones';
 import {
+  formatRivalIntel,
+  getRivalCoinPressure,
   getPlayerRivalComparison,
   investigateRivalSyndicate,
   stepRivalSyndicates,
@@ -39,6 +42,7 @@ import {
   computeCompanyValuation,
   computeFacilityCoolingSummary,
   computeRigTelemetry,
+  computeStepCoinOutput,
   computeWorkloadSummary,
   createInitialComponentHealth,
   createNewGameState,
@@ -61,6 +65,7 @@ import {
   getFacilityUpgradeCost,
   getManagerBonuses,
   getRigRepairCost,
+  getStepsUntilNextBill,
   getTechnicianBonuses,
   openShortPosition,
   placeLimitOrder,
@@ -75,6 +80,50 @@ import {
 } from '../src/engine/usedMarket';
 
 describe('Blockworks Tycoon 2.0 Simulation Engine', () => {
+  it('counts down to the next bill across billing cycle boundaries', () => {
+    assert.equal(getStepsUntilNextBill(0), 30);
+    assert.equal(getStepsUntilNextBill(1), 29);
+    assert.equal(getStepsUntilNextBill(29), 1);
+    assert.equal(getStepsUntilNextBill(30), 30);
+  });
+
+  it('refills the saved Career manual step budget one step at a time, up to five', () => {
+    const now = 1_000_000;
+    const base = createNewGameState('STANDARD', false, 'TEST_MANUAL_STEPS');
+    assert.equal(getManualStepBudget(base.manualStepBudget, now).available, 5);
+
+    const spent = { ...base, manualStepBudget: { available: 0, refillStartedAt: now } };
+    const restored = validateAndParseImportedSave(serializeSaveEnvelope(spent)).state;
+    assert.deepEqual(restored?.manualStepBudget, spent.manualStepBudget);
+    assert.equal(getManualStepBudget(restored?.manualStepBudget, now + 29_999).available, 0);
+    assert.equal(getManualStepWaitSeconds(now, now + 29_999), 1);
+
+    const afterOneRefill = getManualStepBudget(restored?.manualStepBudget, now + 32_000);
+    assert.deepEqual(afterOneRefill, { available: 1, refillStartedAt: now + 30_000 });
+    assert.equal(getManualStepWaitSeconds(afterOneRefill.refillStartedAt, now + 32_000), 28);
+
+    const later = now + 300_000;
+    const full = getManualStepBudget(restored?.manualStepBudget, later);
+    assert.deepEqual(full, { available: 5, refillStartedAt: later });
+    assert.equal(getManualStepBudget({ ...full, available: 0 }, later).available, 0);
+  });
+
+  it('pays for dense Bitcoin builds and keeps entry Scrypt ASICs near Bitcoin ASIC margins', () => {
+    const state = createNewGameState('STANDARD', false, 'PAYOUT_BALANCE');
+    const payout = (hash: number, symbol: 'BTC' | 'DOGE') => computeStepCoinOutput(
+      hash, { ...state.coins[symbol], unlocked: true }, 1, 1, 'PPS', true
+    ).autoSoldUsd;
+
+    const singleCard = payout(410, 'BTC');
+    const threeCards = payout(3 * 410, 'BTC');
+    assert.ok(threeCards > singleCard * 2.75);
+    assert.ok(payout(8 * 410, 'BTC') > threeCards * 1.4);
+
+    const bitcoinAsic = payout(14_000_000, 'BTC');
+    const scryptAsic = payout(9_500, 'DOGE');
+    assert.ok(scryptAsic > bitcoinAsic * 0.6 && scryptAsic < bitcoinAsic * 1.5);
+  });
+
   it('1. Electricity & power contracts affect rates, capacity, and continuous billing', () => {
     const base = createNewGameState('STANDARD', false, 'TEST_ELEC');
     const stdRate = getEffectiveElectricityRate(base);
@@ -286,6 +335,53 @@ describe('Blockworks Tycoon 2.0 Simulation Engine', () => {
     assert.ok(cmp.some((e) => e.isPlayer), 'Rival comparison table must include the player');
   });
 
+  it('rivals commit funds, follow a profitable player desk, and change difficulty on the coins they mine', () => {
+    const state = createNewGameState('STANDARD', false, 'RIVAL_DESKS');
+    const initial = state.rivals.find((r) => r.archetype === 'DARKNET_POOL')!;
+    let rival = initial;
+    let step = 0;
+    while (!rival.project && step < 16) {
+      [rival] = stepRivalSyndicates([rival], ++step, 'ACCUMULATION', 120, 1, state.runSeed, 1, {
+        coins: state.coins, playerPrimaryCoin: 'ETH',
+      });
+    }
+    const plan = rival.project!;
+    assert.equal(plan.kind, 'SWITCH_COIN');
+    assert.equal(plan.targetCoin, 'ETH');
+    assert.equal(plan.followsPlayer, true);
+    assert.equal(rival.specialtyCoin, initial.specialtyCoin);
+    assert.equal(getRivalCoinPressure(rival, 'ETH'), 0);
+
+    const paid = investigateRivalSyndicate({ ...state, stepCount: step, rivals: [rival] }, 0);
+    assert.ok(paid.ok && paid.cost > 0);
+    const reloaded = hydrateSavedState(paid.nextState)!;
+    assert.deepEqual(reloaded.rivals[0].project, plan);
+    assert.match(formatRivalIntel(reloaded, reloaded.rivals[0]), /ETH.*committed/);
+    const reopened = investigateRivalSyndicate(reloaded, 0);
+    assert.equal(reopened.cost, 0);
+    assert.equal(reopened.nextState.researchPoints, reloaded.researchPoints);
+
+    [rival] = stepRivalSyndicates([reloaded.rivals[0]], plan.completesAt, 'ACCUMULATION', 120);
+    assert.equal(rival.specialtyCoin, 'ETH');
+    assert.equal(rival.secondaryCoin, initial.specialtyCoin);
+    assert.ok(getRivalCoinPressure(rival, 'ETH') > getRivalCoinPressure(rival, initial.specialtyCoin));
+    assert.match(rival.decisions?.[0].summary ?? '', /compete with your fleet/);
+    const next = advanceOneStep({ ...state, rivals: [{ ...rival, hashPowerIndex: 200 }] }).nextState;
+    assert.ok(next.coins.ETH.networkDifficulty > next.coins.XMR.networkDifficulty);
+  });
+
+  it('cheap-power rivals hedge a tariff shock while foundries reinvest in silicon', () => {
+    const state = createNewGameState('STANDARD', false, 'RIVAL_PROJECTS');
+    const nordic = state.rivals[0];
+    const apex = { ...state.rivals[1], rigCount: 8 };
+    let rivals = [nordic, apex];
+    for (let step = 1; step <= 16; step++) {
+      rivals = stepRivalSyndicates(rivals, step, 'CRYPTO_WINTER', 50, 1, state.runSeed, 1.4, { coins: state.coins });
+    }
+    assert.ok((rivals[0].powerDealUntilStep ?? 0) > 16);
+    assert.ok(rivals[1].hardwareQuality > apex.hardwareQuality);
+  });
+
   it('9. Milestones, achievements, and challenges evaluate win/fail states', () => {
     const boot = createNewGameState('BOOTSTRAP', false, 'TEST_CHG', undefined, 'challenge_bootstrap');
     boot.cash = 3500;
@@ -347,6 +443,25 @@ describe('Blockworks Tycoon 2.0 Simulation Engine', () => {
     assert.equal(badJson.ok, false);
     const missingFields = validateAndParseImportedSave('{"foo": "bar"}');
     assert.equal(missingFields.ok, false);
+  });
+
+  it('restores custom speed from autosaves and exports in career and sandbox', () => {
+    for (const difficulty of ['STANDARD', 'SANDBOX'] as const) {
+      const base = createNewGameState(difficulty, false, 'TEST_SAVE_SPEED');
+      const state = { ...base, stepSeconds: 45, stepHours: 6 };
+      const autosave = hydrateSavedState(JSON.parse(JSON.stringify(state)));
+      const imported = validateAndParseImportedSave(serializeSaveEnvelope(state));
+
+      assert.equal(autosave?.stepSeconds, 45);
+      assert.equal(autosave?.stepHours, 6);
+      assert.equal(imported.state?.stepSeconds, 45);
+      assert.equal(imported.state?.stepHours, 6);
+
+      const invalid = hydrateSavedState({ ...state, stepSeconds: 0, stepHours: '6' });
+      assert.ok(invalid);
+      assert.equal(invalid.stepSeconds, undefined);
+      assert.equal(invalid.stepHours, undefined);
+    }
   });
 
   it('11. Individual component health averages cleanly and single-part repair costs price individually', () => {
@@ -426,12 +541,21 @@ describe('Blockworks Tycoon 2.0 Simulation Engine', () => {
     assert.equal(vetLocks.staff, true, 'Veteran mode starts with staff unlocked');
     assert.equal(vetLocks.ops, true, 'Veteran mode starts with ops unlocked');
 
-    // Advancing 3 steps unlocks contracts and awards early objective bonuses
+    // Time alone does not unlock contracts. A working fleet and an inspection do.
     let s = guided;
     for (let i = 0; i < 3; i++) {
       s = advanceOneStep({ ...s, pendingEvent: null }).nextState;
     }
-    assert.equal(getUnlockedSystems(s).contracts, true, 'Step 3 should unlock Contracts in Guided mode');
+    assert.equal(getUnlockedSystems(s).contracts, false);
+    s = { ...s, seenTutorials: ['inspected_rig'] };
+    assert.equal(getUnlockedSystems(s).contracts, true);
+    assert.equal(s.availableContracts[0].title, 'Starter Uptime Trial');
+    const starter = s.availableContracts[0];
+    s = { ...s, activeContract: starter, availableContracts: s.availableContracts.slice(1) };
+    for (let i = 0; i < 5; i++) {
+      s = advanceOneStep({ ...s, pendingEvent: null }).nextState;
+    }
+    assert.equal(s.stats.contractsCompleted, 1);
     const claimed = claimCompletedObjectives(s);
     assert.ok((claimed.nextState.claimedObjectives ?? []).includes('obj_advance_steps'));
     assert.ok(Object.keys(TUTORIAL_TOPICS).length >= 7);

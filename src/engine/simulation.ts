@@ -55,10 +55,10 @@ import {
   TransactionCategory,
   TransactionEntry,
 } from '../types/game';
-import { EarlyObjective, evaluateEarlyObjectives, getUnlockedSystems } from '../data/onboarding';
+import { announceGuidedUnlocks, EarlyObjective, evaluateEarlyObjectives, getEffectiveOnboardingMode, recordGuidedProgress } from '../data/onboarding';
 import { formatStepLabel, formatUsd } from '../utils/format';
 import { createSeededRng, generateRandomSeed } from '../utils/rng';
-import { generateContractBoard } from './contracts';
+import { generateContractBoard, GUIDED_STARTER_CONTRACT_ID } from './contracts';
 import {
   buildDefaultWallet,
   cancelLimitOrder,
@@ -126,6 +126,7 @@ import { buildDefaultWorld, stepSharedWorld } from './world';
 import {
   createInitialRivals,
   getPlayerRivalComparison,
+  getRivalDifficultyRise,
   getRivalInvestigateCost,
   investigateRivalSyndicate,
   stepRivalSyndicates,
@@ -261,6 +262,10 @@ export {
 };
 
 export const BILLING_CYCLE_STEPS = 30;
+
+export function getStepsUntilNextBill(stepCount: number): number {
+  return BILLING_CYCLE_STEPS - (stepCount % BILLING_CYCLE_STEPS);
+}
 
 export function getFacility(facilityId: string): FacilityTier {
   return FACILITY_TIERS.find((f) => f.id === facilityId) ?? FACILITY_TIERS[0];
@@ -775,6 +780,15 @@ export function getAutoSellMultiplier(
   return 1 + quantBonus + analystBonus + mgrBonus;
 }
 
+const MINING_PAYOUT_CURVES: Partial<Record<MiningAlgorithm, readonly (readonly [number, number])[]>> = {
+  // Each band applies its exponent only to hashrate above the previous band's upper ratio.
+  SHA256: [[2e4, 0.125], [2.2e5, 0.94], [7.5e5, 0.26], [2e9, 0.055], [2e11, 0.38], [Infinity, 0.5]],
+  SCRYPT: [[96, 0.26], [1.6e6, 0.125], [1.5e7, 0.55], [Infinity, 0.7]],
+  RANDOMX: [[18, 0.32], [135, 0.44], [Infinity, 0.65]],
+  ETHASH: [[5, 0.54], [32, 0.60], [Infinity, 0.85]],
+  POST: [[4, 0.62], [16, 0.75], [Infinity, 0.90]],
+};
+
 export function computeStepCoinOutput(
   effectiveHashrate: number,
   coin: CoinMarketState,
@@ -787,48 +801,23 @@ export function computeStepCoinOutput(
   if (!coin.unlocked || effectiveHashrate <= 0 || efficiencyFactor <= 0) {
     return { minedCoins: 0, autoSoldUsd: 0, soloBlockHit: false };
   }
-  const piece4 = (
-    r: number,
-    e1: number,
-    k2: number,
-    e2: number,
-    k3: number,
-    e3: number,
-    k4?: number,
-    e4?: number
-  ): number => {
-    if (r <= k2) return Math.pow(r, e1);
-    if (r <= k3) return Math.pow(k2, e1) * Math.pow(r / k2, e2);
-    if (!k4 || r <= k4) return Math.pow(k2, e1) * Math.pow(k3 / k2, e2) * Math.pow(r / k3, e3);
-    return (
-      Math.pow(k2, e1) *
-      Math.pow(k3 / k2, e2) *
-      Math.pow(k4 / k3, e3) *
-      Math.pow(r / k4, e4 ?? e3)
-    );
-  };
-
   const ratio = effectiveHashrate / Math.max(1e-6, coin.baselineHash);
-  let scale = 0;
-  if (ratio < 1) {
-    scale = Math.pow(ratio, 0.72);
-  } else if (coin.algorithm === 'SHA256') {
-    scale = piece4(ratio, 0.2, 1e9, 0.42, 4e10, 1.15, 2e11, 1.38);
-  } else if (coin.algorithm === 'SCRYPT') {
-    scale = piece4(ratio, 0.3, 1000, 0.36, 4e6, 1.25, 2e7, 1.55);
-  } else if (coin.algorithm === 'RANDOMX') {
-    scale = piece4(ratio, 0.55, 20, 0.95, 120, 1.85);
-  } else if (coin.algorithm === 'ETHASH') {
-    scale = piece4(ratio, 0.62, 12, 1.15, 55, 1.72);
-  } else if (coin.algorithm === 'POST') {
-    scale = piece4(ratio, 0.62, 4, 1.15, 16, 2.08);
-  } else {
-    scale = Math.pow(ratio, coin.hashExponent);
+  const bands = MINING_PAYOUT_CURVES[coin.algorithm];
+  let scale = Math.pow(ratio, ratio < 1 ? 0.72 : coin.hashExponent);
+  if (ratio >= 1 && bands) {
+    scale = 1;
+    let lower = 1;
+    for (const [upper, exponent] of bands) {
+      scale *= Math.pow(Math.min(ratio, upper) / lower, exponent);
+      if (ratio <= upper) break;
+      lower = upper;
+    }
   }
 
   const diffFactor = 1 / Math.max(0.5, coin.networkDifficulty ?? 1);
   const halvingScale = coin.blockRewardScale ?? 1;
-  const rawCoins = coin.baseStepCoins * scale * efficiencyFactor * diffFactor * halvingScale;
+  const marketPayout = coin.symbol === 'XCH' ? 0.45 : coin.symbol === 'ETH' ? 0.72 : 1;
+  const rawCoins = coin.baseStepCoins * scale * efficiencyFactor * diffFactor * halvingScale * marketPayout;
 
   if (deterministicEstimate) {
     const evMult = poolMode === 'PPS' ? 0.98 : poolMode === 'PPLNS' ? 1.05 : 1.12;
@@ -954,9 +943,15 @@ export function getEffectiveElectricityRate(
   return facility.powerRatePerKwh * contract.rateMultiplier * ppaMult * siphonMult * evtMult * sandboxMult;
 }
 
+export function getFacilityNoiseDba(loudestRigDba: number, activeRigs: number, coolingNoiseDba: number): number {
+  return Math.max(loudestRigDba + Math.min(8, activeRigs * 0.7), coolingNoiseDba);
+}
+
 export function getFacilityTotals(state: GameState): {
   totalPowerKw: number;
   maxNoiseDba: number;
+  loudestRigDba: number;
+  coolingNoiseDba: number;
   rigCount: number;
   maxRigs: number;
   stepPowerCostUsd: number;
@@ -973,8 +968,8 @@ export function getFacilityTotals(state: GameState): {
   const sandboxMult = state.sandboxConfig?.operatingCostMult ?? 1.0;
 
   let totalWatts = 0;
-  let peakNoise = 28;
-  const enabledCount = state.rigs.filter((r) => r.enabled).length;
+  let loudestRigDba = 28;
+  const enabledCount = state.rigs.filter((r) => r.enabled && r.status !== 'FAILED').length;
 
   for (const rig of state.rigs) {
     if (!rig.enabled || rig.status === 'FAILED') continue;
@@ -991,9 +986,7 @@ export function getFacilityTotals(state: GameState): {
       state.coins
     );
     totalWatts += t.wallWatts;
-    if (t.noiseDba > peakNoise) {
-      peakNoise = t.noiseDba + Math.min(8, enabledCount * 0.7);
-    }
+    loudestRigDba = Math.max(loudestRigDba, t.noiseDba);
   }
 
   const coolingSummary = computeFacilityCoolingSummary(
@@ -1003,9 +996,6 @@ export function getFacilityTotals(state: GameState): {
     state.facilityUpgrades
   );
   totalWatts += coolingSummary.totalCoolingWatts;
-  if (coolingSummary.maxCoolingNoiseDba > peakNoise) {
-    peakNoise = coolingSummary.maxCoolingNoiseDba;
-  }
 
   const totalPowerKw = totalWatts / 1000;
   const stepPowerCostUsd = totalPowerKw * 24 * effectiveRate;
@@ -1047,7 +1037,9 @@ export function getFacilityTotals(state: GameState): {
 
   return {
     totalPowerKw,
-    maxNoiseDba: Math.round(peakNoise),
+    maxNoiseDba: Math.round(getFacilityNoiseDba(loudestRigDba, enabledCount, coolingSummary.maxCoolingNoiseDba)),
+    loudestRigDba,
+    coolingNoiseDba: coolingSummary.maxCoolingNoiseDba,
     rigCount: state.rigs.length,
     maxRigs: getEffectiveFacilityMaxRigs(state),
     stepPowerCostUsd,
@@ -1137,7 +1129,7 @@ export function createNewGameState(
       : onboardingMode;
   const runSeed = customSeed?.trim() || generateRandomSeed();
   const rng = createSeededRng(`${runSeed}-init`);
-  const isSandbox = difficulty === 'SANDBOX' || Boolean(sandboxConfig);
+  const isSandbox = devMode || difficulty === 'SANDBOX' || Boolean(sandboxConfig);
 
   const startingCash = isSandbox && sandboxConfig
     ? sandboxConfig.startingCash
@@ -1221,6 +1213,7 @@ export function createNewGameState(
     mode: 'PLAYING',
     difficulty,
     isSandbox,
+    isDevSession: devMode,
     sandboxConfig,
     runSeed,
     stepCount: 0,
@@ -1329,7 +1322,10 @@ export function createNewGameState(
     devUnlockAll: devMode,
   };
 
-  baseState.availableContracts = generateContractBoard(baseState, 4);
+  baseState.availableContracts = generateContractBoard(baseState, 4, {
+    earlyCareer: !isSandbox && !devMode,
+    includeStarter: effectiveOnboarding === 'GUIDED',
+  });
   baseState.usedMarketListings = generateUsedMarketListings(baseState);
   baseState.underground.blackMarketListings = generateBlackMarketListings(baseState);
   return baseState;
@@ -2119,11 +2115,6 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   const researchers = nextEmployees.filter((e) => e.role === 'RESEARCHER');
 
   // 4. Advance dynamic market prices, network difficulty & halvings
-  const activeRivalFactor = prev.rivals.reduce(
-    (sum, rv) => sum + (rv.disruptedSteps > 0 ? rv.hashPowerIndex * 0.45 : rv.hashPowerIndex),
-    0
-  );
-
   const confidenceDragMult = Math.max(
     0.72,
     1 - (prev.underground?.marketConfidencePenaltyPct ?? 0) / 100
@@ -2187,8 +2178,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       );
     }
 
-    const diffStepScale =
-      1 + 0.0022 * (1 + Math.min(1.2, activeRivalFactor / 7500));
+    const diffStepScale = 1 + 0.0022 + getRivalDifficultyRise(prev.rivals, sym);
     const nextDiff = Number(Math.min(12, coin.networkDifficulty * diffStepScale).toFixed(3));
 
     const scandalDrag = coin.isPlayerCreated ? (confidenceDragMult - 1) * 0.15 : 0;
@@ -2260,7 +2250,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   // 6. Fleet power, breaker cap & noise check
   const sysBonus = getSysEngineerBonus(prev);
   let totalWallWatts = 0;
-  let peakNoiseDba = 28;
+  let loudestRigDba = 28;
   const enabledRigsCount = prev.rigs.filter((r) => r.enabled && r.status !== 'FAILED').length;
 
   for (const r of prev.rigs) {
@@ -2278,9 +2268,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       nextCoins
     );
     totalWallWatts += t.wallWatts;
-    if (t.noiseDba > peakNoiseDba) {
-      peakNoiseDba = t.noiseDba + Math.min(8, enabledRigsCount * 0.7);
-    }
+    loudestRigDba = Math.max(loudestRigDba, t.noiseDba);
   }
 
   const coolingSummary = computeFacilityCoolingSummary(
@@ -2290,9 +2278,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     prev.facilityUpgrades
   );
   totalWallWatts += coolingSummary.totalCoolingWatts;
-  if (coolingSummary.maxCoolingNoiseDba > peakNoiseDba) {
-    peakNoiseDba = coolingSummary.maxCoolingNoiseDba;
-  }
+  const peakNoiseDba = getFacilityNoiseDba(loudestRigDba, enabledRigsCount, coolingSummary.maxCoolingNoiseDba);
 
   const totalPowerKw = totalWallWatts / 1000;
   nextStats.maxPowerKwObserved = Math.max(nextStats.maxPowerKwObserved, Number(totalPowerKw.toFixed(2)));
@@ -2846,6 +2832,12 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   }
 
   const modPowerMult = nextModifiers.reduce((s, m) => s * m.powerRateMult, 1.0);
+  const miningByDesk: Partial<Record<CoinSymbol, number>> = {};
+  for (const rig of nextRigs) {
+    const value = rig.lastStepCoins * (nextCoins[rig.targetCoin]?.priceUsd ?? 0);
+    miningByDesk[rig.targetCoin] = (miningByDesk[rig.targetCoin] ?? 0) + value;
+  }
+  const topDesk = Object.entries(miningByDesk).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))[0];
   const calibratedRivals = stepRivalSyndicates(
     prev.rivals,
     nextStep,
@@ -2853,8 +2845,16 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     playerPowerScore,
     modRivalGrowth,
     prev.runSeed,
-    modPowerMult
+    modPowerMult,
+    { coins: nextCoins, playerPrimaryCoin: (topDesk?.[1] ?? 0) >= 120 ? topDesk?.[0] : undefined }
   );
+  for (const [idx, rival] of calibratedRivals.entries()) {
+    const previous = prev.rivals[idx];
+    if (previous.specialtyCoin !== rival.specialtyCoin) {
+      pushNews(`${rival.name} shifts to ${rival.specialtyCoin}`,
+        `The ${rival.specialtyCoin} network will face more competition. Run "rivals markets ${rival.specialtyCoin}" to see who is mining there.`, 'MARKET');
+    }
+  }
 
   // 10. Active Contract tracking (including expanded contract types)
   let nextActiveContract = prev.activeContract ? { ...prev.activeContract } : null;
@@ -2862,6 +2862,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   nextStats.soloBlocksHit += soloBlocksHit;
   let finalCredibility = nextCredibility;
   let finalRp = nextRp;
+  const earningRigs = nextRigs.filter((rig) => rig.lastStepCoins > 0).length;
 
   if (nextActiveContract) {
     nextActiveContract.stepsRemaining -= 1;
@@ -2870,7 +2871,9 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     } else if (nextActiveContract.type === 'POOL_HASH') {
       nextActiveContract.progress += stepMiningUsd;
     } else if (nextActiveContract.type === 'LOW_NOISE_RUN') {
-      if (peakNoiseDba <= facility.noiseLimitDba - 4 && enabledRigsCount > 0) {
+      const quietLimit = Math.min(facility.noiseLimitDba - 4, nextActiveContract.targetNoiseDba ?? Infinity);
+      const hasOutput = nextActiveContract.targetNoiseDba === undefined ? enabledRigsCount > 0 : earningRigs > 0;
+      if (peakNoiseDba <= quietLimit && hasOutput) {
         nextActiveContract.progress += 1;
       }
     } else if (nextActiveContract.type === 'MAINTENANCE_SLA') {
@@ -2879,7 +2882,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
         nextActiveContract.progress += 1;
       }
     } else if (nextActiveContract.type === 'UPTIME_STREAK') {
-      if (enabledRigsCount > 0 && !anyFailureOrOverheatThisStep) {
+      const hasOutput = nextActiveContract.id === GUIDED_STARTER_CONTRACT_ID ? earningRigs > 0 : enabledRigsCount > 0;
+      if (hasOutput && !anyFailureOrOverheatThisStep) {
         nextActiveContract.progress += 1;
       } else {
         nextActiveContract.progress = 0;
@@ -2891,7 +2895,11 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     } else if (nextActiveContract.type === 'RESEARCH_PARTNERSHIP') {
       nextActiveContract.progress += stepRp;
     } else if (nextActiveContract.type === 'FACILITY_EXPANSION') {
-      if (facIdx >= (nextActiveContract.targetFacilityIndex ?? 1)) {
+      const atSite = facIdx >= (nextActiveContract.targetFacilityIndex ?? 1);
+      if (nextActiveContract.targetFleetSize !== undefined) {
+        nextActiveContract.progress = atSite && earningRigs >= nextActiveContract.targetFleetSize && !anyFailureOrOverheatThisStep
+          ? nextActiveContract.progress + 1 : 0;
+      } else if (atSite) {
         nextActiveContract.progress = nextActiveContract.targetAmount;
       }
     } else if (nextActiveContract.type === 'EQUIPMENT_SUPPLY') {
@@ -2904,6 +2912,11 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       finalCredibility = Math.min(100, finalCredibility + 5);
       nextStats.contractsCompleted += 1;
       nextStats.totalContractIncomeUsd += nextActiveContract.rewardCash;
+      if (nextActiveContract.targetFleetSize !== undefined && nextActiveContract.targetFacilityIndex !== undefined) {
+        nextStats.highestCommissionedFacilityIndex = Math.max(
+          nextStats.highestCommissionedFacilityIndex ?? 0, nextActiveContract.targetFacilityIndex
+        );
+      }
       milestoneHit = true;
       pushTx('CONTRACT', nextActiveContract.rewardCash, `Contract complete: ${nextActiveContract.title}`);
       pushNews(
@@ -2935,7 +2948,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     }
   }
 
-  if (nextStep % 12 === 0 || nextAvailableContracts.length === 0) {
+  if (nextStep % 12 === 0 || nextAvailableContracts.length === 0 || (!nextActiveContract && prev.activeContract)) {
     nextAvailableContracts = generateContractBoard(
       {
         stepCount: nextStep,
@@ -2946,7 +2959,13 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
         mediaCredibility: finalCredibility,
         unlockedResearch: nextUnlocked,
       },
-      4
+      4,
+      {
+        earlyCareer: !prev.isSandbox && !prev.devMode,
+        includeStarter: getEffectiveOnboardingMode(prev) === 'GUIDED' &&
+          nextStats.contractsCompleted === 0 && nextActiveContract?.id !== GUIDED_STARTER_CONTRACT_ID,
+        highestCommissionedFacilityIndex: nextStats.highestCommissionedFacilityIndex,
+      }
     );
   }
 
@@ -3008,6 +3027,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     nextLedger.unshift({
       cycleNumber,
       label: cycleLabel,
+      facilityId: prev.facilityId,
       miningRevenueUsd: nextCycleStats.miningRevenueUsd,
       electricityCostUsd: cycleElec,
       rentCostUsd: cycleRent,
@@ -3134,30 +3154,9 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   }
 
   // Notify player if Guided mode unlocked new systems on this step
-  const prevSys = getUnlockedSystems(prev);
-  const nextSys = getUnlockedSystems(nextState);
-  const unlockedNames: string[] = [];
-  if (!prevSys.contracts && nextSys.contracts) unlockedNames.push('Contracts ("contracts")');
-  if (!prevSys.staff && nextSys.staff) unlockedNames.push('Employees ("staff")');
-  if (!prevSys.rivals && nextSys.rivals) unlockedNames.push('Rivals & PR ("rivals" / "pr")');
-  if (!prevSys.ops && nextSys.ops) unlockedNames.push('Covert Ops & Black Market ("ops" / "blackmarket")');
-  if (unlockedNames.length > 0) {
-    milestoneHit = true;
-    nextState = {
-      ...nextState,
-      news: [
-        {
-          id: `news_unlock_${nextStep}`,
-          step: nextStep,
-          stepLabel,
-          title: `New Systems Unlocked: ${unlockedNames.join(', ')}`,
-          detail: 'Run the new command or "tutorial list" for dedicated step-by-step guides.',
-          category: 'MILESTONE' as const,
-        },
-        ...nextState.news,
-      ].slice(0, 60),
-    };
-  }
+  const recorded = recordGuidedProgress(nextState);
+  nextState = announceGuidedUnlocks(prev, recorded);
+  if (nextState !== recorded) milestoneHit = true;
 
   // 13. Interactive Decision Event Roll (Strike takes priority)
   let eventTriggered: PendingEvent | null = null;

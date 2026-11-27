@@ -33,10 +33,12 @@ import {
 } from '../types/game';
 import { formatHashrate, formatStepLabel, formatUsd } from '../utils/format';
 import { createSeededRng } from '../utils/rng';
+import { checkRigCoinCompatibility } from './coins';
 import {
   computeAverageRigHealth,
   ensureRigComponentHealth,
   getEffectivePartBundle,
+  getRigChassisIssue,
   getGlobalHardwarePriceMult,
 } from './usedMarket';
 
@@ -54,16 +56,18 @@ export const DESIGN_PROFILE_SPECS: Record<
     wattMult: number;
     heatMult: number;
     costMult: number;
+    noiseOffset: number;
     blurb: string;
   }
 > = {
   PERF: {
     label: 'Performance',
-    hashMult: 1.15,
-    wattMult: 1.18,
-    heatMult: 1.08,
-    costMult: 1.08,
-    blurb: '+15% output, +18% power draw',
+    hashMult: 1.23,
+    wattMult: 1.27,
+    heatMult: 1.18,
+    costMult: 1.12,
+    noiseOffset: 4,
+    blurb: 'Maximum output or capacity at higher power, heat, noise, and unit cost.',
   },
   BALANCED: {
     label: 'Balanced',
@@ -71,23 +75,26 @@ export const DESIGN_PROFILE_SPECS: Record<
     wattMult: 1,
     heatMult: 1,
     costMult: 1,
-    blurb: 'Reference spec, no trade-off',
+    noiseOffset: 0,
+    blurb: 'Lowest unit cost for the same architecture and engineering allocation.',
   },
   EFF: {
     label: 'Efficiency',
-    hashMult: 0.9,
-    wattMult: 0.8,
-    heatMult: 0.9,
-    costMult: 1.15,
-    blurb: '-20% power draw, -10% output',
+    hashMult: 0.95,
+    wattMult: 0.67,
+    heatMult: 0.88,
+    costMult: 1.2,
+    noiseOffset: -1,
+    blurb: 'Best power efficiency, with less peak capacity and the highest unit cost.',
   },
   COMPACT: {
     label: 'Compact',
-    hashMult: 0.95,
-    wattMult: 0.85,
-    heatMult: 0.7,
-    costMult: 1.05,
-    blurb: '-30% heat/noise, -15% power, -5% output',
+    hashMult: 0.87,
+    wattMult: 0.87,
+    heatMult: 0.57,
+    costMult: 1.08,
+    noiseOffset: -7,
+    blurb: 'Best thermal and acoustic behavior, with the lowest peak output.',
   },
 };
 
@@ -1505,7 +1512,7 @@ export function previewCustomComponentDesign(
       14,
       Math.round(baseH * profileSpec.heatMult * thermHeatMult * subSpec.heatMult * branchHeatMult)
     );
-    const noise = Math.max(8, Math.round((isPowerAsic ? 32 : 16) + thermNoiseDelta));
+    const noise = Math.max(4, Math.round((isPowerAsic ? 32 : 16) + thermNoiseDelta + profileSpec.noiseOffset));
 
     const hashrates: Partial<Record<MiningAlgorithm, number>> = { [algo]: primaryHashRate };
     if (architecture === 'HYBRID_FPGA') {
@@ -1608,7 +1615,7 @@ export function previewCustomComponentDesign(
     );
     const noise = Math.max(
       8,
-      Math.round((architecture === 'LOW_VOLT_CARD' ? 10 : 15) + thermNoiseDelta)
+      Math.round((architecture === 'LOW_VOLT_CARD' ? 10 : 15) + thermNoiseDelta + profileSpec.noiseOffset)
     );
 
     customSpec = {
@@ -1638,7 +1645,8 @@ export function previewCustomComponentDesign(
         ? 0
         : 8;
     const bonusSlot = !isAsicRack && eng.density >= 4 ? 1 : 0;
-    const maxGpus = isAsicRack ? 0 : Math.min(14, baseGpuSlots + bonusSlot);
+    const profileSlots = profile === 'PERF' ? 1 : profile === 'COMPACT' ? -1 : 0;
+    const maxGpus = isAsicRack ? 0 : Math.min(14, baseGpuSlots + bonusSlot + profileSlots);
     const maxStorage = isConverged ? 14 : Math.max(6, maxGpus + 2);
     const baseWatts = Math.max(
       25,
@@ -1655,10 +1663,12 @@ export function previewCustomComponentDesign(
     const coolingBonus = Math.round(
       (22 + nodeMult * 12 + (focus === 'HYDRO_BAY' || isCryoRated ? 18 : 0)) *
         (1 + thermDelta * 0.08) *
-        (subSpec.id === 'GRAPHENE_TIM' ? 1.18 : 1)
+        (subSpec.id === 'GRAPHENE_TIM' ? 1.18 : 1) *
+        (profile === 'COMPACT' ? 1.2 : profile === 'PERF' ? 0.92 : 1)
     );
     const noiseMod = Math.round(
-      (architecture === 'SEALED_BAFFLE' ? -14 : isConverged ? -6 : 2) + thermNoiseDelta * 0.7
+      (architecture === 'SEALED_BAFFLE' ? -14 : isConverged ? -6 : 2) +
+      thermNoiseDelta * 0.7 + profileSpec.noiseOffset
     );
     if (isConverged) baseUnitUsd = Math.round(baseUnitUsd * 1.45);
     if (architecture === 'SEALED_BAFFLE') baseUnitUsd = Math.round(baseUnitUsd * 1.15);
@@ -1690,7 +1700,7 @@ export function previewCustomComponentDesign(
     const ramBase = Math.round(32 * nodeMult * (focus === 'BANDWIDTH_EFF' ? 2 : 1));
     const tbBase =
       focus === 'CHIA_VAULT'
-        ? 220 * nodeMult
+        ? 220 * nodeMult * (processNode === 'photonic' ? 6 : processNode === '1nm' ? 3 : 1)
         : focus === 'BALANCED_ARRAY'
         ? 110 * nodeMult
         : 16 * nodeMult;
@@ -1750,17 +1760,18 @@ export function previewCustomComponentDesign(
       architecture === 'GAN_HIGH_EFF' ? 0.96 : architecture === 'SILENT_PASSIVE' ? 0.945 : 0.94;
     const efficiency = Number(
       Math.min(
-        0.996,
+        profile === 'EFF' ? 0.998 : 0.994,
         baseEff +
           nodeMult * 0.009 +
           effDelta * 0.004 +
           (focus === 'ULTRA_EFF' ? 0.012 : 0) +
+          (profile === 'EFF' ? 0.008 : profile === 'PERF' ? -0.01 : 0) +
           (subSpec.id === 'REDUNDANT_VRM' ? 0.008 : 0)
       ).toFixed(3)
     );
     const noise = Math.max(
       1,
-      Math.round((architecture === 'SILENT_PASSIVE' ? 3 : 10) + thermNoiseDelta * 0.5)
+      Math.round((architecture === 'SILENT_PASSIVE' ? 3 : 10) + thermNoiseDelta * 0.5 + profileSpec.noiseOffset)
     );
     primaryHashRate = maxWatts;
     primaryWatts = maxWatts;
@@ -1789,7 +1800,7 @@ export function previewCustomComponentDesign(
         archCoolMult *
         focusCoolMult *
         densOutputMult *
-        profileSpec.hashMult *
+        (profile === 'COMPACT' ? 1.05 : profileSpec.hashMult) *
         subSpec.perfMult *
         qualityMult
     );
@@ -1806,7 +1817,7 @@ export function previewCustomComponentDesign(
     const noise = Math.max(
       2,
       Math.round(
-        (isImmersion ? 3 : focus === 'SILENT_FLOW' ? 6 : 14) + thermNoiseDelta * 0.6
+        (isImmersion ? 3 : focus === 'SILENT_FLOW' ? 6 : 14) + thermNoiseDelta * 0.6 + profileSpec.noiseOffset
       )
     );
     if (isImmersion) baseUnitUsd = Math.round(baseUnitUsd * 1.38);
@@ -2294,7 +2305,8 @@ export const formatBlueprintComparisonReport = compareBlueprints;
 /** Prototype bench validation & calibration (Section 2 & 3). */
 export function runPrototypeTest(
   state: GameState,
-  blueprintIdx: number
+  blueprintIdx: number,
+  forcedStatus?: Exclude<PrototypeTestReport['status'], 'UNVALIDATED'>
 ): { ok: boolean; nextState: GameState; summary: string } {
   const fab = buildDefaultFab(state.fab);
   const bp = fab.blueprints[blueprintIdx];
@@ -2325,7 +2337,8 @@ export function runPrototypeTest(
     iterationLift +
     ((bp.engineering?.reliability ?? 2) * 3) +
     (rng() * 14 - 4);
-  const validatedScore = Math.max(25, Math.min(99, Math.round(rawScore)));
+  const devStatus = state.isDevSession && state.devMode ? forcedStatus : undefined;
+  const validatedScore = devStatus ? { PASSED: 90, MARGINAL: 65, FAILED_FLAW: 40 }[devStatus] : Math.max(25, Math.min(99, Math.round(rawScore)));
 
   const flaws: string[] = [];
   const params = bp.componentParams;
@@ -2342,12 +2355,12 @@ export function runPrototypeTest(
     flaws.push('Mask alignment drift on outer wafer reticle');
   }
 
-  const status: PrototypeTestReport['status'] =
+  const status: PrototypeTestReport['status'] = devStatus ?? (
     validatedScore >= 76 && flaws.length === 0
       ? 'PASSED'
       : validatedScore >= 52
       ? 'MARGINAL'
-      : 'FAILED_FLAW';
+      : 'FAILED_FLAW');
 
   const yieldBonusPct = Number(
     (status === 'PASSED' ? 3.5 + prevRuns * 0.8 : status === 'MARGINAL' ? 1.5 : 0).toFixed(1)
@@ -2366,7 +2379,7 @@ export function runPrototypeTest(
       bp.branch === 'QUANTUM' || bp.branch === 'PHOTONIC'
         ? Math.min(99, Math.round(74 + validatedScore * 0.25))
         : 100,
-    discoveredFlaws: flaws,
+    discoveredFlaws: devStatus === 'PASSED' ? [] : flaws,
     yieldBonusPct,
     defectReductionPct,
     reliabilityBonus,
@@ -2577,7 +2590,8 @@ function applyYieldToCustomSpec(
 export function stepFabProduction(
   fabInput: FabState | undefined,
   nextStep: number,
-  stepLabel: string
+  stepLabel: string,
+  forcedQa?: 'PASS' | 'SCRAP'
 ): { nextFab: FabState; news: NewsItem[] } {
   const fab = buildDefaultFab(fabInput);
   if (fab.linesCount <= 0 || fab.productionQueue.length === 0) {
@@ -2620,8 +2634,8 @@ export function stepFabProduction(
       let defectRate = Math.max(0, (74 - mfgPct) / 140) * (1 - defectRelief);
       if (bp?.prototypeReport?.status === 'FAILED_FLAW') defectRate = Math.max(defectRate, 0.25);
       const rawScrap = ord.qty >= 3 ? Math.floor(ord.qty * defectRate) : 0;
-      const scrappedQty = Math.min(Math.max(0, ord.qty - 1), rawScrap);
-      const passedQty = Math.max(1, ord.qty - scrappedQty);
+      const scrappedQty = forcedQa === 'SCRAP' ? ord.qty : forcedQa === 'PASS' ? 0 : Math.min(Math.max(0, ord.qty - 1), rawScrap);
+      const passedQty = ord.qty - scrappedQty;
 
       manufacturedAdd += passedQty;
       scrappedAdd += scrappedQty;
@@ -2659,13 +2673,14 @@ export function stepFabProduction(
         });
       }
 
-      const qcScore = Math.max(
+      const normalQcScore = Math.max(
         55,
         Math.min(
           100,
           Math.round(mfgPct * 0.45 + roll * 45 + (ord.prototypeValidated ? 10 : 0) - scrappedQty * 3)
         )
       );
+      const qcScore = forcedQa === 'PASS' ? 100 : forcedQa === 'SCRAP' ? 0 : normalQcScore;
 
       if (bp) {
         nextBatches.unshift({
@@ -2686,12 +2701,12 @@ export function stepFabProduction(
           completedStep: nextStep,
           stepLabel,
           serialNumbers: batchSerials,
-          notes:
-            scrappedQty > 0
+          notes: forcedQa ? 'Dev QA override.' : scrappedQty > 0
               ? `${scrappedQty} unit(s) scrapped due to ${mfgPct}% manufacturability limits.`
               : `100% wafer pass (${qcScore}/100 QC).`,
         });
-
+      }
+      if (bp && passedQty > 0) {
         const stackHash =
           cat === 'compute' || cat === 'gpu'
             ? bp.algo === 'RANDOMX'
@@ -2742,7 +2757,7 @@ export function stepFabProduction(
         nextHistory,
         nextStep,
         'BATCH_DONE',
-        `${batchId}: ${passedQty}/${ord.qty}x "${ord.blueprintName}" passed QA (QC ${qcScore}/100 · Serials ${batchSerials[0]}..${batchSerials[batchSerials.length - 1]})`
+        `${batchId}: ${passedQty}/${ord.qty}x "${ord.blueprintName}" passed QA (QC ${qcScore}/100${batchSerials.length ? ` · Serials ${batchSerials[0]}..${batchSerials.at(-1)}` : ''})`
       );
 
       news.push({
@@ -2770,6 +2785,20 @@ export function stepFabProduction(
       totalUnitsScrapped: (fab.totalUnitsScrapped ?? 0) + scrappedAdd,
     },
     news,
+  };
+}
+
+export function finishDevFabBatch(state: GameState, outcome: 'PASS' | 'SCRAP'): { ok: boolean; nextState: GameState; summary: string } {
+  const fab = buildDefaultFab(state.fab);
+  const [first, ...rest] = fab.productionQueue;
+  if (!state.isDevSession || !state.devMode || !first || fab.linesCount < 1) {
+    return { ok: false, nextState: state, summary: 'Dev QA requires an active line and a queued batch in a Dev session.' };
+  }
+  const result = stepFabProduction({ ...fab, productionQueue: [{ ...first, stepsRemaining: 1 }] }, state.stepCount, formatStepLabel(state.stepCount), outcome);
+  return {
+    ok: true,
+    nextState: { ...state, fab: { ...result.nextFab, productionQueue: rest }, news: [...result.news, ...state.news].slice(0, 60) },
+    summary: `Dev QA finished the first batch with ${outcome === 'PASS' ? 'all units passed' : 'all units scrapped'}.`,
   };
 }
 
@@ -3012,6 +3041,11 @@ export function deployCustomInventoryToRig(
     return updated;
   });
 
+  const fitIssue = getRigChassisIssue(nextRigs[rigIdx]);
+  if (fitIssue) return { ok: false, nextState: state, summary: fitIssue };
+  const compatibility = checkRigCoinCompatibility(nextRigs[rigIdx], state.coins[rig.targetCoin]);
+  if (compatibility.warnings.length) warningNote += ` ${compatibility.warnings.join(' ')}`;
+
   const nextSerialRegistry = serialAllocated
     ? (fab.serialRegistry ?? []).map((sr) =>
         sr.serialNumber === serialAllocated
@@ -3239,6 +3273,9 @@ export function stripCustomPartFromRig(
       };
     }
   });
+
+  const fitIssue = getRigChassisIssue(nextRigs[rigIdx]);
+  if (fitIssue) return { ok: false, nextState: state, summary: `Cannot strip this part. ${fitIssue}` };
 
   const nextSerialRegistry = serialToRestore
     ? (fab.serialRegistry ?? []).map((sr) =>

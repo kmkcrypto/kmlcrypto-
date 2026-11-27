@@ -20,6 +20,7 @@ import {
   getEffectiveFacilityPowerCapKw,
   getFacility,
   getFacilityTotals,
+  getStepsUntilNextBill,
 } from '../engine/simulation';
 import { CoinSymbol, GameState } from '../types/game';
 import { formatUsd } from '../utils/format';
@@ -243,7 +244,7 @@ export const SideTelemetryPanels: React.FC<SideTelemetryPanelsProps> = ({
     getEffectiveOnboardingMode(state) === 'GUIDED'
       ? evaluateEarlyObjectives(state).find((o) => !o.completed)
       : undefined;
-  const stepsToBill = 30 - (state.stepCount % 30);
+  const stepsToBill = getStepsUntilNextBill(state.stepCount);
 
   return (
     <aside className="w-full lg:w-[375px] xl:w-[410px] shrink-0 flex flex-col gap-3 lg:h-[calc(100vh-158px)] lg:min-h-[540px]">

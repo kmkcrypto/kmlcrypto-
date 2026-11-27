@@ -137,12 +137,12 @@ export const DevPanel: React.FC<DevPanelProps> = ({
               <Layers className="w-4 h-4 text-green-400" />
               <span>Progression Scenarios</span>
               <span className="ml-auto text-[10px] font-mono font-semibold text-amber-300/80">
-                ISOLATED SANDBOX SAVE
+                TEMPORARY DEV SESSION
               </span>
             </div>
             <p className="text-xs text-green-200/70 leading-relaxed">
-              Jump straight to a progression stage. A scenario replaces the sandbox save slot
-              only — your career save is never touched.
+              Jump to a progression stage in a temporary session. For foundry QA use
+              <code> dev proto &lt;#&gt; &lt;pass|marginal|fail&gt;</code> or <code>dev qa &lt;pass|scrap&gt;</code> in the terminal.
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
               {SCENARIOS.map((scn) => (

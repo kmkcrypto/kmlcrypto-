@@ -10,7 +10,7 @@ import {
   TransactionEntry,
 } from '../types/game';
 import { formatStepLabel, formatUsd } from '../utils/format';
-import { getEffectivePartBundle } from './usedMarket';
+import { getEffectivePartBundle, getRigChassisIssue } from './usedMarket';
 
 export interface CreatePlayerCoinInput {
   symbol: string;
@@ -206,25 +206,28 @@ export function checkRigCoinCompatibility(
   }
 
   const bundle = existingBundle ?? getEffectivePartBundle(rig);
+  const fitIssue = getRigChassisIssue(rig, bundle);
+  if (fitIssue) return { compatible: false, efficiencyMult: 0, warnings: [fitIssue], notes };
   const { chassis, compute, gpus, storage, cooling } = bundle;
   let efficiencyMult = 1.0;
 
   // 1. Hardware branch / chassis infrastructure compatibility
   const chassisBranches = chassis.allowedBranches;
-  const computeBranch = compute.branch ?? 'SILICON';
+  const legacyCompute = rig.customParts?.compute ? undefined : rig.customAsicSpec;
+  const computeBranch = legacyCompute?.branch ?? compute.branch ?? 'SILICON';
   if (chassisBranches && computeBranch !== 'SILICON' && !chassisBranches.includes(computeBranch)) {
     warnings.push(
       `Chassis "${chassis.name}" lacks ${computeBranch} bay support (0.65x penalty).`
     );
     efficiencyMult *= 0.65;
   }
-  if (compute.requiresCryoCooling && !cooling.isCryoRated && !chassis.isCryoRated) {
+  if ((compute.requiresCryoCooling || legacyCompute?.branch === 'QUANTUM') && !cooling.isCryoRated && !chassis.isCryoRated) {
     warnings.push(
       `${compute.name} requires Cryo cooling or a Cryo-rated chassis for stable coherence (0.70x output).`
     );
     efficiencyMult *= 0.7;
   }
-  if (compute.requiresOpticalChassis && !chassis.isOpticalBackplane) {
+  if ((compute.requiresOpticalChassis || legacyCompute?.branch === 'PHOTONIC') && !chassis.isOpticalBackplane) {
     warnings.push(
       `${compute.name} lacks an optical backplane chassis (0.82x photonic coupling).`
     );
@@ -232,9 +235,7 @@ export function checkRigCoinCompatibility(
   }
   if (
     gpus.some((g) => g.requiresOpticalChassis) &&
-    !chassis.isOpticalBackplane &&
-    chassis.generation &&
-    chassis.generation >= 7
+    !chassis.isOpticalBackplane
   ) {
     warnings.push('Photonic QGPU cards perform best in an optical backplane chassis (0.88x).');
     efficiencyMult *= 0.88;
@@ -246,14 +247,26 @@ export function checkRigCoinCompatibility(
 
   // 2. Coin VRAM & RAM constraints
   if (coin.minVramGb && coin.minVramGb > 0) {
+    const minVramGb = coin.minVramGb;
     const maxCardVram = gpus.reduce((m, g) => Math.max(m, g.vramGb ?? 4), 0);
-    const totalVram = gpus.reduce((s, g) => s + (g.vramGb ?? 4), 0);
-    const computeAlgoHash = compute.hashrates[coin.algorithm] ?? 0;
-    if (gpus.length > 0 && maxCardVram < coin.minVramGb && totalVram < coin.minVramGb * 2) {
+    const customAsic = 'customAsicSpec' in rig ? rig.customAsicSpec : undefined;
+    const computeAlgoHash = customAsic?.algo === coin.algorithm ? customAsic.hashRate : compute.hashrates[coin.algorithm] ?? 0;
+    let nominalHash = computeAlgoHash;
+    let memoryLimitedHash = 0;
+    let limitedCards = 0;
+    for (const gpu of gpus) {
+      const hash = gpu.hashrates[coin.algorithm] ?? 0;
+      nominalHash += hash;
+      if (hash > 0 && (gpu.vramGb ?? 4) < minVramGb) {
+        memoryLimitedHash += hash;
+        limitedCards += 1;
+      }
+    }
+    if (limitedCards > 0 && nominalHash > 0) {
       warnings.push(
-        `${coin.symbol} requires >=${coin.minVramGb} GB VRAM per GPU (max installed ${maxCardVram} GB -> 0.55x DAG thrash).`
+        `${coin.symbol} needs ${minVramGb} GB VRAM per GPU. ${limitedCards} undersized card(s) run at 55% output.`
       );
-      efficiencyMult *= 0.55;
+      efficiencyMult *= 1 - (memoryLimitedHash / nominalHash) * 0.45;
     } else if (gpus.length === 0 && computeAlgoHash <= 0) {
       warnings.push(`${coin.symbol} (${coin.algorithm}) needs >=${coin.minVramGb} GB VRAM GPUs.`);
     } else if (gpus.length > 0 && maxCardVram >= coin.minVramGb * 2) {

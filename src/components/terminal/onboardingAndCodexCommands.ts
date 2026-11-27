@@ -1,9 +1,12 @@
 import {
   CODEX_ENTRIES,
+  CONTEXTUAL_GUIDES,
   TUTORIAL_TOPICS,
   evaluateEarlyObjectives,
   evaluateGuidedChecklist,
   getEffectiveOnboardingMode,
+  getActiveGuidedLesson,
+  getUnlockedSystems,
   searchCodexEntries,
 } from '../../data/onboarding';
 import { formatUsd } from '../../utils/format';
@@ -49,8 +52,8 @@ export const handleOnboardingAndCodexCommand: TerminalCommandHandler = (ctx) => 
           kind: 'OK',
           text:
             nextMode === 'GUIDED'
-              ? 'Switched to GUIDED mode: stage-by-stage checklist & contextual mentors enabled. Run "guide" to view progress.'
-              : 'Switched to VETERAN mode: strict checklist gating bypassed; all mechanics immediately accessible.',
+              ? 'Switched to Guided Mode. Run "guide" to see which milestones you have earned.'
+              : 'Switched to Veteran Mode. Systems use their normal research, facility, and cost requirements.',
         },
       ]);
       return true;
@@ -69,13 +72,38 @@ export const handleOnboardingAndCodexCommand: TerminalCommandHandler = (ctx) => 
 
   if (cmd === 'guide') {
     const checklist = evaluateGuidedChecklist(state);
+    const activeLesson = getActiveGuidedLesson(state);
+    const current = Object.values(CONTEXTUAL_GUIDES).find((item) => item.system === activeLesson && activeLesson);
+    if (arg1 === 'lessons') {
+      const access = getUnlockedSystems(state);
+      append([{ kind: 'HEAD', text: 'GUIDED LESSONS' }, { kind: 'PRE', text: Object.values(CONTEXTUAL_GUIDES)
+        .flatMap((lesson) => {
+          if (!lesson.system) return [];
+          const status = state.guidedOnboarding?.systemStatuses[lesson.system];
+          const label = !access[lesson.system] ? access.unlockNotes[lesson.system]
+            : status && status !== 'LOCKED' ? status : 'Available on first use';
+          return [`  ${lesson.title} · ${label}`];
+        }).join('\n') }]);
+      return true;
+    }
+    if (arg1 === 'lesson' || arg1 === 'learned') {
+      if (!activeLesson || !current || checklist.mode !== 'GUIDED') {
+        append([{ kind: 'TEXT', text: 'No active Guided lesson. Use "guide" to see progression and queued lessons.' }]);
+      } else if (arg1 === 'learned') {
+        props.onFinishGuidedLesson();
+        append([{ kind: 'OK', text: `Lesson learned: ${current.title}. Revisit it with "tutorial ${current.topic}".` }]);
+      } else {
+        append([{ kind: 'HEAD', text: current.title }, { kind: 'TEXT', text: `${current.body} Try "${TUTORIAL_TOPICS[current.topic].nextCommand}". When ready, enter "guide learned".` }]);
+      }
+      return true;
+    }
 
     if (arg1 === 'pause') {
       props.onPauseGuidedOnboarding(true);
       append([
         {
           kind: 'OK',
-          text: 'Guided checklist paused — all systems remain usable without gate prompts while paused. Run "guide resume" anytime.',
+          text: 'Automatic tutorial prompts paused. Milestones still count and system requirements still apply. Run "guide resume" to restore the prompts.',
         },
       ]);
       return true;
@@ -97,10 +125,15 @@ export const handleOnboardingAndCodexCommand: TerminalCommandHandler = (ctx) => 
         return true;
       }
       props.onSetGuidedPace(picked);
-      append([{ kind: 'OK', text: `Guided onboarding pace set to ${picked}.` }]);
+      const details = {
+        SLOW: 'Wait four steps between lessons and show a practice command.',
+        NORMAL: 'Wait two steps between lessons.',
+        FAST: 'Open the next queued lesson as soon as you finish the current one.',
+      };
+      append([{ kind: 'OK', text: `Guide pace: ${picked.toLowerCase()}. ${details[picked]} Milestones stay the same.` }]);
       return true;
     }
-    if (arg1 === 'complete') {
+    if (arg1 === 'complete' || arg1 === 'check') {
       if (!arg2) {
         append([{ kind: 'ERR', text: 'Usage: guide complete <task#|task_id>' }]);
         return true;
@@ -110,8 +143,8 @@ export const handleOnboardingAndCodexCommand: TerminalCommandHandler = (ctx) => 
       return true;
     }
     if (arg1 === 'dismiss') {
-      if (!arg2) {
-        append([{ kind: 'ERR', text: 'Usage: guide dismiss <systemId>' }]);
+      if (!Object.hasOwn(getUnlockedSystems(state).unlockNotes, arg2) && !Object.hasOwn(CONTEXTUAL_GUIDES, arg2)) {
+        append([{ kind: 'ERR', text: 'Usage: guide dismiss <systemId|ctx_tipId>. Run "tutorial context" for tip IDs.' }]);
         return true;
       }
       props.onDismissGuidedSystem(arg2);
@@ -125,9 +158,9 @@ export const handleOnboardingAndCodexCommand: TerminalCommandHandler = (ctx) => 
         ]);
         return true;
       }
-      props.onRevisitGuidedTopic(arg2);
-      const topic = TUTORIAL_TOPICS[arg2];
+      const topic = Object.hasOwn(TUTORIAL_TOPICS, arg2) ? TUTORIAL_TOPICS[arg2] : undefined;
       if (topic) {
+        props.onRevisitGuidedTopic(arg2);
         append([
           { kind: 'HEAD', text: `REVISITING: ${topic.title}` },
           { kind: 'PRE', text: topic.lines.join('\n') },
@@ -136,7 +169,7 @@ export const handleOnboardingAndCodexCommand: TerminalCommandHandler = (ctx) => 
             : []),
         ]);
       } else {
-        append([{ kind: 'OK', text: `Marked topic "${arg2}" as revisited.` }]);
+        append([{ kind: 'ERR', text: 'Unknown topic. Run "tutorial list" for the available guides.' }]);
       }
       return true;
     }
@@ -144,7 +177,7 @@ export const handleOnboardingAndCodexCommand: TerminalCommandHandler = (ctx) => 
     let flatIdx = 0;
     const rows = checklist.stages.flatMap((st) => {
       const stageTag = st.completed ? 'COMPLETE' : st.active ? 'ACTIVE  ' : 'QUEUED  ';
-      const headerLine = `  [${stageTag}] ${st.spec.title} — ${st.spec.unlocksLabel}`;
+      const headerLine = `  [${stageTag}] ${st.spec.title}${st.spec.unlockSystems.length ? ` · Opens: ${st.spec.unlocksLabel}` : ''}`;
       const taskLines = st.tasks.map((t) => {
         flatIdx += 1;
         const mark = t.done ? '[x]' : st.active ? '[>]' : '[ ]';
@@ -164,22 +197,26 @@ export const handleOnboardingAndCodexCommand: TerminalCommandHandler = (ctx) => 
         }`,
       },
       { kind: 'PRE', text: rows.join('\n') },
+      ...(checklist.mode === 'GUIDED' ? [{
+        kind: 'TEXT' as const,
+        text: `Lesson: ${current?.title ?? 'None active'} · Queued: ${(state.guidedOnboarding?.lessonQueue ?? []).filter((id) => state.guidedOnboarding?.systemStatuses[id] === 'ENCOUNTERED').length}. Use "guide lesson" or "guide learned".`,
+      }] : []),
       ...(nextTask
         ? [
             {
               kind: 'OK' as const,
-              text: `NEXT STEP: ${nextTask.label} (try "${nextTask.hintCommand}" or "guide complete ${nextTask.id}")`,
+              text: `NEXT MILESTONE: ${nextTask.label}. Try "${nextTask.hintCommand}".`,
             },
           ]
         : [
             {
               kind: 'OK' as const,
-              text: 'All guided checklist stages completed! Every advanced system is unlocked.',
+              text: 'Guided career complete. Your foundry has produced a part that beat its stock reference.',
             },
           ]),
       {
         kind: 'TEXT',
-        text: 'Commands: "guide complete <#>", "guide pause|resume", "guide pace <slow|normal|fast>", "guide dismiss <sys>", "guide revisit <topic>", "mode veteran".',
+        text: 'Milestones update from play. Commands: "guide check <#>", "guide pause|resume", "guide pace <slow|normal|fast>", "guide dismiss <sys>", "guide revisit <topic>".',
       },
     ]);
     return true;

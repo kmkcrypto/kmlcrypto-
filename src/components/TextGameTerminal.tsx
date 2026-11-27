@@ -23,13 +23,15 @@ import {
   ROOM_COOLING_UNITS,
   STORAGE_PARTS,
 } from '../data/catalog';
-import { getRivalStrategyLabel } from '../engine/rivals';
+import { formatRivalIntel, formatRivalMarkets, getRivalStrategyLabel, hasRivalIntel } from '../engine/rivals';
 import {
   buildSeasonStandings,
   getSeasonStatus,
   SEASON_LENGTH_STEPS,
 } from '../engine/leaderboard';
 import { formatWorldReport } from '../engine/world';
+import { MANUAL_STEP_CAPACITY, MANUAL_STEP_REFILL_SECONDS } from '../engine/manualSteps';
+import { getRigChassisIssue } from '../engine/usedMarket';
 import {
   BILLING_CYCLE_STEPS,
   calculatePartTradeInCost,
@@ -54,10 +56,11 @@ import {
   getFocusOptionsForDesign,
   getPowerContract,
   getRivalInvestigateCost,
+  getStepsUntilNextBill,
   getSysEngineerBonus,
   getUnlockedFabArchitectures,
   getUnlockedFabCategories,
-  getUnlockedFabNodes,
+  getUnlockedFabNodes as getResearchFabNodes,
   getUnlockedFabSubFeatures,
   inventoryItemToCustomSpec,
   isFabUnlocked,
@@ -82,7 +85,9 @@ import {
 import {
   CONTEXTUAL_GUIDES,
   evaluateEarlyObjectives,
+  getCycleOperatingProfit,
   getEffectiveOnboardingMode,
+  getActiveGuidedLesson,
   getUnlockedSystems,
   GuidedSystemId,
   TUTORIAL_TOPICS,
@@ -350,6 +355,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
     onDevSetHeat,
     onDevSetInvestigationStage,
     onDevGrantFabBatch,
+    onDevFinishFabBatch,
     onDevLaunchCustomCoin,
     onDevRefreshBlackMarket,
     onSetTutorialStep,
@@ -379,6 +385,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
   const seenNewsIdsRef = useRef<Set<string>>(new Set());
   const seenEventIdRef = useRef<string | null>(null);
   const lastTutorialStepRef = useRef<number | null>(null);
+  const rigLessonActiveRef = useRef(false);
   const bootedRef = useRef(false);
 
   const append = (entries: Omit<LogLine, 'id'>[]) => {
@@ -506,8 +513,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       ? RESEARCH_NODES.find((n) => n.id === state.activeResearchId)
       : null;
 
-    const stepsToBill =
-      BILLING_CYCLE_STEPS - (state.stepCount % BILLING_CYCLE_STEPS || BILLING_CYCLE_STEPS);
+    const stepsToBill = getStepsUntilNextBill(state.stepCount);
     const totalListedCoins = Object.keys(state.coins).length;
     const unlockedCoinsCount = (Object.keys(state.coins) as CoinSymbol[]).filter(
       (s) => state.coins[s].unlocked
@@ -606,7 +612,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         )} VAULT: ${padRight(`${(state.backupRigs ?? []).length} retired | "codex"`, 32)} |`;
     const contractDisplay = unlockedSys.contracts
       ? contractText
-      : `Locked (${unlockedSys.unlockNotes.contracts.slice(0, 22)}...)`;
+      : 'Locked · see "guide"';
 
     const box = [
       `+================================================================================+`,
@@ -676,209 +682,168 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
     append([{ kind: 'PRE', text: box }]);
   };
 
-  const getWizardTutorialHint = (
-    step: BuildStep,
-    priceLabel: (cost: number) => string,
-    isAsicRack: boolean
-  ): string | null => {
-    if (!state.tutorialStep || state.tutorialStep < 1 || state.tutorialStep > 4) return null;
-    // Hints quote the actual option 1 the player is about to see, priced with current modifiers.
-    const firstPick = (parts: { name: string; cost: number }[]): string | null =>
-      parts[0] ? `${parts[0].name}, ${priceLabel(parts[0].cost)}` : null;
-    switch (step) {
-      case 'CHASSIS': {
-        const pick = firstPick(getUnlockedChassis());
-        return pick
-          ? `GUIDE [1/8 Chassis]: Chassis sets max GPU slots, rack type & passive cooling. Type "1" (${pick}) for a starter build.`
-          : null;
-      }
-      case 'COMPUTE': {
-        const pick = firstPick(getUnlockedComputeFor(isAsicRack));
-        return pick
-          ? `GUIDE [2/8 Compute]: CPU/ASIC sets base hashing power & watts. Type "1" (${pick}) to stay inside your current power cap.`
-          : null;
-      }
-      case 'GPU': {
-        const pick = firstPick(getUnlockedGpus());
-        return pick
-          ? `GUIDE [3/8 GPUs]: GPUs boost ETHASH/SCRYPT mining. Type "1" (${pick}), or "done" to skip GPUs for a cheap CPU rig.`
-          : 'GUIDE [3/8 GPUs]: No GPUs unlocked yet — type "done" to skip GPUs for a cheap CPU rig.';
-      }
-      case 'STORAGE': {
-        const pick = firstPick(getUnlockedStorage());
-        return pick
-          ? `GUIDE [4/8 Storage/RAM]: Adds +% efficiency to rig revenue. Type "1" (${pick}) for a budget build.`
-          : null;
-      }
-      case 'PSU': {
-        const pick = firstPick(getUnlockedPsus());
-        return pick
-          ? `GUIDE [5/8 PSU]: PSU max watts MUST exceed "Current component load" ([FITS]). Type "1" (${pick}) if it fits.`
-          : null;
-      }
-      case 'COOLING': {
-        const pick = firstPick(getUnlockedCooling());
-        return pick
-          ? `GUIDE [6/8 Cooling]: Drops equilibrium °C so rigs do not throttle above 82°C. Type "1" (${pick}) or "2" for extra cooling.`
-          : null;
-      }
-      case 'OS': {
-        const pick = firstPick(getUnlockedOs());
-        return pick
-          ? `GUIDE [7/8 OS]: OS scales fleet hash & power draw. Type "1" (${pick}) to continue.`
-          : null;
-      }
-      case 'COIN':
-        return 'GUIDE [8/8 Coin]: Mined coin auto-sells every step for USD. Pick an unlocked coin like "1" (BTC).';
-      case 'CONFIRM':
-        return 'GUIDE [Review]: Check Cost & Est Auto-Sell/st above. If there are no warnings, type "deploy" (or click "deploy") to launch the rig!';
-    }
+  const getWizardTutorialHint = (step: BuildStep): string | null => {
+    const workingThroughTutorial = (state.tutorialStep ?? 0) >= 1 && (state.tutorialStep ?? 0) <= 4;
+    if (state.guidedOnboarding?.paused || state.guidedOnboarding?.pace === 'FAST' ||
+        (!rigLessonActiveRef.current && !workingThroughTutorial)) return null;
+    const hints: Record<BuildStep, string> = {
+      CHASSIS: 'Compare price, cooling, and the slots your future upgrades will need.',
+      COMPUTE: 'Compare power draw and supported algorithms with the output you need from this slot.',
+      GPU: 'Add a card if it helps your target coin and fits your power and cooling budget. Type "done" to finish this slot.',
+      STORAGE: 'Buy enough memory and storage for the target coin. Check what the extra capacity will earn.',
+      PSU: 'Pick a supply marked [FITS]. If you plan to add cards, compare headroom with the extra upfront cost.',
+      COOLING: 'Compare cooler cost and fan noise with how much output you could lose to heat.',
+      OS: 'Compare hashrate and power multipliers with the price of the kernel.',
+      COIN: 'Compare estimated payouts for coins this hardware supports, then check the target’s difficulty in "market" later.',
+      CONFIRM: 'Review cash left, estimated earnings after power, and grid load. Type "back" to revise, "cancel" to walk away, or "deploy" to buy.',
+    };
+    return `GUIDE: ${hints[step]}`;
+  };
+
+  const printRigBuildLesson = (title: string) => {
+    rigLessonActiveRef.current = true;
+    const facility = getFacility(state.facilityId);
+    const totals = getFacilityTotals(state);
+    const powerCap = getEffectiveFacilityPowerCapKw(state);
+    const stepsToBill = getStepsUntilNextBill(state.stepCount);
+    const estimatedBill =
+      state.currentCycleStats.electricitySpendUsd + totals.stepPowerCostUsd * stepsToBill +
+      totals.cycleFixedContractFee + totals.cycleRentUsd + totals.cyclePayrollUsd + totals.cycleMaintenanceUsd;
+    const examples = [
+      { label: 'KEEP CASH IN RESERVE', computeId: 'cpu_pentium_g620' },
+      { label: 'EARN MORE PER RIG SLOT', computeId: 'cpu_i7_920' },
+    ];
+    append([
+      { kind: 'HEAD', text: title },
+      { kind: 'TEXT', text: `Your choice: add a rig without draining cash for the next bill or overloading the ${facility.name} grid.` },
+      {
+        kind: 'TEXT',
+        text: 'Type "build rig" to choose parts. Use "back" to compare another setup and "deploy" when you are happy with the quote. Type "usedmarket preview <#>" to compare a used rig.',
+      },
+      {
+        kind: 'PRE',
+        text: [
+          `  Cash ${formatUsd(state.cash)} · Grid ${totals.totalPowerKw.toFixed(2)}/${powerCap.toFixed(2)} kW · Slots ${totals.rigCount}/${totals.maxRigs}`,
+          `  Next bill in ${stepsToBill} steps · estimated ${formatUsd(estimatedBill)} with your current fleet`,
+          '',
+          '  Both examples use the Mid-Tower ATX Case, no GPU, 4 GB DDR3,',
+          '  450 W PSU, stock fans, Desktop OS, and BTC. Only the CPU differs.',
+          ...examples.flatMap(({ label, computeId }) => {
+            const config = { ...RIG_PRESETS[0].config, name: label, computeId };
+            const cost = calculateRigBuildCost(config, state);
+            const preview = previewRigEconomics(config, cost, state);
+            const issues = [...preview.warnings];
+            if (cost > state.cash) issues.push('Insufficient cash');
+            else if (state.cash - cost < estimatedBill + preview.powerCostPerStepUsd * stepsToBill) {
+              issues.push('Cash left falls below the estimated bill with this rig');
+            }
+            if (totals.rigCount >= totals.maxRigs) issues.push('No free rig slot');
+            return [
+              `  ${label} · ${getEffectivePartBundle(config).compute.name}`,
+              `    ${formatUsd(cost)} upfront · ${formatUsd(state.cash - cost)} cash left`,
+              `    ${formatUsd(preview.netPerStepUsd)}/step after power · +${preview.powerKw.toFixed(2)} kW · ${preview.equilibriumTempC}°C`,
+              ...(issues.length ? [`    [!] ${issues.join(' · ')}`] : []),
+            ];
+          }),
+          '',
+          '  Estimates use current prices and exclude rent, payroll, and future repairs.',
+        ].join('\n'),
+      },
+    ]);
+  };
+
+  const printRigBuildDebrief = (config: RigBuildConfig) => {
+    const tutorialStep = state.tutorialStep ?? 0;
+    if (!rigLessonActiveRef.current && (tutorialStep < 1 || tutorialStep > 4)) return;
+    rigLessonActiveRef.current = false;
+    const cost = calculateRigBuildCost(config, state);
+    const preview = previewRigEconomics(config, cost, state);
+    append([
+      {
+        kind: 'TEXT',
+        text: `Build recap: you traded ${formatUsd(cost)} up front and ${preview.powerKw.toFixed(2)} kW of headroom for an estimated ${formatUsd(preview.netPerStepUsd)}/step after power. Cash left: ${formatUsd(state.cash - cost)}.`,
+      },
+      {
+        kind: 'TEXT',
+        text: `Run "step 1", then "inspect ${state.rigs.length + 1}" to check actual revenue and temperature. If cash is tight, wait for the bill before buying again. If heat is tight, compare cooling or a lower clock before adding more load.`,
+      },
+    ]);
   };
 
   const printTutorialStep = (stepNum: number) => {
     if (stepNum === 1) {
       append([
-        { kind: 'HEAD', text: 'TUTORIAL [1/6] — READING YOUR DASHBOARD & OBJECTIVES' },
-        {
-          kind: 'PRE',
-          text: [
-            `  Step & bill in Nst  Advance with "step [n]" or let the auto-timer run (see "speed")`,
-            `                      run. Rent, utility, and payroll bills settle every ${BILLING_CYCLE_STEPS} steps.`,
-            `  Cash & Rev/st       Mined crypto AUTO-SELLS each step into Cash. "RP" is Research`,
-            `                      Points spent in "research" to unlock stronger hardware.`,
-            `  SLOTS/POWER/NOISE   Facility limits. Exceeding Power trips breakers; high Noise`,
-            `                      triggers fines. Watch your early goals with "objectives".`,
-            `  Codex & Guides      Type "codex" anytime for a permanent mechanic encyclopedia.`,
-          ].join('\n'),
-        },
-        {
-          kind: 'OK',
-          text: 'Next -> Type "rigs" or "inspect 1" to check your starter rig (or "tutorial next" / "tutorial skip").',
-        },
+        { kind: 'HEAD', text: 'TUTORIAL [1/6] — READ YOUR CASH AND THE NEXT BILL' },
+        { kind: 'PRE', text: [
+          "  Decision: how much cash can you commit before the next billing cycle?",
+          "  Run \"status\" to read cash, current rig output, and remaining grid capacity.",
+          "  Run \"inspect 1\" to establish a baseline, then use \"step 1\" to see a payout.",
+          "  Rent, electricity, payroll, and upkeep settle every 30 steps. \"ledger\" shows completed cycles.",
+        ].join('\n') },
+        { kind: 'TEXT', text: "Next: inspect your first rig, or type \"tutorial next\" to continue." },
       ]);
       return;
     }
 
     if (stepNum === 2) {
       append([
-        { kind: 'HEAD', text: 'TUTORIAL [2/6] — RIGS, COMPONENT HEALTH & MAINTENANCE' },
-        {
-          kind: 'PRE',
-          text: [
-            `  inspect <#>     Shows every component's individual health % (chassis, compute,`,
-            `                  GPUs, storage, PSU, cooling). Rig Health = average of all parts.`,
-            `  repair          "repair 1" repairs whole rig; "repair 1 psu" or "repair 1 gpu 1"`,
-            `                  fixes just one worn part. If any part hits <=20%, rig halts!`,
-            `  repaste <#>     Applies fresh paste (-6°C cooling for 16 steps).`,
-            `  overclock/tinker "overclock 1 115" tunes speed/heat; "tinker 1" swaps parts (60% trade-in).`,
-          ].join('\n'),
-        },
-        {
-          kind: 'OK',
-          text: 'Next -> Type "tutorial next" for Rig Building, or run "inspect 1" now!',
-        },
+        { kind: 'HEAD', text: 'TUTORIAL [2/6] — DIAGNOSE BEFORE YOU SPEND' },
+        { kind: 'PRE', text: [
+          "  Decision: is the rig losing earnings to heat, worn hardware, or a poor coin match?",
+          "  Use \"rigs\" to spot trouble, then \"inspect <#>\" for the weakest component.",
+          "  Compare \"repaste <#>\", a targeted \"repair <#> <part>\", and a swap in \"tinker <#>\".",
+          "  After a change, advance one step and compare output instead of replacing parts immediately.",
+        ].join('\n') },
+        { kind: 'TEXT', text: "Next: type \"tutorial build\" to compare builds now, or \"tutorial next\"." },
       ]);
       return;
     }
 
     if (stepNum === 3) {
-      append([
-        { kind: 'HEAD', text: 'TUTORIAL [3/6] — HOW TO BUILD A RIG (8 PARTS)' },
-        {
-          kind: 'PRE',
-          text: [
-            `  1. Chassis     Sets max GPU slots (or ASIC rack mode) & passive cooling.`,
-            `  2. Compute     CPU, FPGA, or ASIC unit — provides base hash & core watts.`,
-            `  3. GPUs        Stackable cards for ETHASH / SCRYPT coins (optional).`,
-            `  4. Storage     RAM & NVMe tier — adds a +% rig efficiency multiplier.`,
-            `  5. PSU         Watt cap MUST cover total rig load ([FITS]) to deploy.`,
-            `  6. Cooling     Cuts rig temperature (°C) & sets fan noise (dBA).`,
-            `  7. OS          Firmware kernel tuning hashrate & power multipliers.`,
-            `  8. Coin        Picks target coin from your unlocked tiers (unlock more in "market").`,
-          ].join('\n'),
-        },
-        {
-          kind: 'OK',
-          text: 'Next -> Type "build rig" (or "usedmarket" for surplus deals) to add Rig #2!',
-        },
-      ]);
+      printRigBuildLesson('TUTORIAL [3/6] — CHOOSE YOUR NEXT RIG');
       return;
     }
 
     if (stepNum === 4) {
       append([
-        { kind: 'HEAD', text: 'TUTORIAL [4/6] — DEPLOYING YOUR SECOND RIG' },
-        {
-          kind: 'PRE',
-          text: [
-            `  You have open slots in your ${getFacility(state.facilityId).name} and enough Cash`,
-            `  for a custom rig (~${formatUsd(
-              Math.round(
-                calculateRigBuildCost({
-                  ...RIG_PRESETS[0].config,
-                  name: RIG_PRESETS[0].label,
-                }) * getGlobalHardwarePriceMult(state)
-              )
-            )}+) or a discounted surplus listing in "usedmarket".`,
-            `  Inside "build rig", pick option numbers (e.g. "1") or "preset 1" to load a build.`,
-            `  Review the spec sheet and type "deploy" to bring Rig #2 online.`,
-          ].join('\n'),
-        },
-        {
-          kind: 'OK',
-          text: 'Next -> Type "build rig" now (or "tutorial next" to continue).',
-        },
+        { kind: 'HEAD', text: 'TUTORIAL [4/6] — REVIEW THE PURCHASE' },
+        { kind: 'PRE', text: [
+          "  Decision: will the new rig leave enough cash for the next bill?",
+          "  On the build review, compare cost, earnings after power, grid load, and heat.",
+          "  A PSU can fit the rig while the combined fleet still overloads the grid.",
+          "  Type \"back\" to revise, \"cancel\" to keep your cash, or \"deploy\" to buy.",
+        ].join('\n') },
+        { kind: 'TEXT', text: "Next: try \"build rig\", or type \"tutorial next\" if you already have a plan." },
       ]);
       return;
     }
 
     if (stepNum === 5) {
       append([
-        { kind: 'HEAD', text: 'TUTORIAL [5/6] — POWER, COOLING & R&D RESEARCH' },
-        {
-          kind: 'PRE',
-          text: [
-            `  power        View kW usage vs facility cap and switch power contracts.`,
-            `  cool         Add room fans/AC/liquid coolers to prevent >82°C thermal throttling.`,
-            `  research     Start an R&D project ("research start 1") to spend RP on GPUs/ASICs.`,
-            `  objectives   Claim bonus Cash & RP as you complete early-game milestones.`,
-          ].join('\n'),
-        },
-        {
-          kind: 'OK',
-          text: 'Next -> Type "tutorial next" for final scaling tips, or start "research" now.',
-        },
+        { kind: 'HEAD', text: 'TUTORIAL [5/6] — CHOOSE WHAT TO INVEST IN NEXT' },
+        { kind: 'PRE', text: [
+          "  Decision: will the next dollar earn more in research or in the current fleet?",
+          "  Use \"power\" and \"cool compare\" when heat or electricity limits production.",
+          "  Use \"research\" to compare project cost and what it unlocks. Fund a project you can use.",
+          "  Check output and bill headroom before hiring or moving facilities.",
+        ].join('\n') },
+        { kind: 'TEXT', text: "Next: use \"research\" to price a project, then \"tutorial next\"." },
       ]);
       return;
     }
 
     if (stepNum === 6) {
-      const unlockNotes = getUnlockedSystems(state).unlockNotes;
-      const sysNotes = {
-        contracts: unlockNotes.contracts.replace(/^Unlocks (?:at|alongside)\s*/i, ''),
-        staff: unlockNotes.staff.replace(/^Unlocks (?:at|alongside)\s*/i, ''),
-        rivals: unlockNotes.rivals.replace(/^Unlocks (?:at|alongside)\s*/i, ''),
-        blackmarket: unlockNotes.blackmarket.replace(/^Unlocks (?:at|alongside)\s*/i, ''),
-      };
       append([
-        { kind: 'HEAD', text: 'TUTORIAL [6/6] — GRADUATED SYSTEMS & SPECIALIST GUIDES' },
-        {
-          kind: 'PRE',
-          text: [
-            `  As your operation grows, Guided Mode gradually unlocks advanced systems:`,
-            `    - Contracts ("tutorial contracts")  -> ${sysNotes.contracts}`,
-            `    - Employees ("tutorial employees")  -> ${sysNotes.staff}`,
-            `    - Rivals/PR ("tutorial ops")        -> ${sysNotes.rivals}`,
-            `    - Black Market ("tutorial blackmarket") -> ${sysNotes.blackmarket}`,
-            `  Type "tutorial list" to replay any guide, "codex" for full reference,`,
-            `  or "tutorial veteran" anytime to unlock all commands immediately.`,
-          ].join('\n'),
-        },
-        {
-          kind: 'OK',
-          text: 'Final step -> Type "step 3" to run your fleet and complete general onboarding!',
-        },
+        { kind: 'HEAD', text: 'TUTORIAL [6/6] — BUILD THE COMPANY IN STAGES' },
+        { kind: 'PRE', text: [
+          "  Use \"guide\" to see the next milestone and the systems it opens.",
+          "  Contracts follow a fleet inspection and three earning steps. Further systems require business results such as a completed project, facility moves, and profitable billing cycles.",
+          "  Use \"tutorial list\" for individual decisions, \"help\" for commands, and \"codex\" for mechanics.",
+          "  Underground activity is optional. The foundry path runs through facility expansion and research.",
+        ].join('\n') },
+        { kind: 'TEXT', text: "Finish: type \"step 1\" or \"tutorial done\". Type \"guide\" to see what to work toward next." },
       ]);
+      return;
     }
   };
 
@@ -937,11 +902,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
     const sysBonus = getSysEngineerBonus(state);
     const hwMult = getGlobalHardwarePriceMult(state);
     const priceOf = (cost: number) => Math.round(cost * hwMult);
-    const guideTip = getWizardTutorialHint(
-      step,
-      (cost) => formatUsd(priceOf(cost)),
-      Boolean(chassis.isAsicRack && chassis.maxGpus === 0)
-    );
+    const guideTip = getWizardTutorialHint(step);
 
     if (step === 'CHASSIS') {
       const options = getUnlockedChassis();
@@ -1279,12 +1240,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         kind: 'TEXT',
         text:
           onboardingMode === 'GUIDED'
-            ? 'Guided Mode active: start with "objectives", "rigs", "build rig", and "step". Type "codex" for the encyclopedia, "tutorial list" for guides, or "mode veteran" to unlock all systems.'
-            : 'Veteran Mode active: all systems unlocked. Tune rigs ("rig 1 pool solo"), chase "contracts" & "rivals", or go covert with "ops" & "blackmarket". Type "help" or "codex" anytime.',
+            ? 'Guided Mode. Type "guide" for the next business milestone, "help" for commands, or "tutorial list" for a lesson.'
+            : 'Veteran Mode. Systems use their normal research, facility, and cost requirements. Type "help" or "codex" anytime.',
       },
     ]);
     printStatus();
-    if (state.tutorialStep && state.tutorialStep > 0) {
+    if (state.tutorialStep && state.tutorialStep > 0 && !state.guidedOnboarding?.paused) {
       lastTutorialStepRef.current = state.tutorialStep;
       printTutorialStep(state.tutorialStep);
     } else {
@@ -1298,6 +1259,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
 
   useEffect(() => {
     const stepVal = state.tutorialStep ?? 0;
+    if (state.guidedOnboarding?.paused) {
+      lastTutorialStepRef.current = 0;
+      return;
+    }
     if (lastTutorialStepRef.current === null) {
       lastTutorialStepRef.current = stepVal;
       return;
@@ -1308,7 +1273,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         printTutorialStep(stepVal);
       }
     }
-  }, [state.tutorialStep]);
+  }, [state.tutorialStep, state.guidedOnboarding?.paused]);
 
   useEffect(() => {
     const fresh = state.news.filter((n) => !seenNewsIdsRef.current.has(n.id));
@@ -1329,19 +1294,47 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
     );
   }, [state.news]);
 
+  const printContextualGuide = (guideId: string, alert = false) => {
+    const guide = CONTEXTUAL_GUIDES[guideId];
+    const practice = state.guidedOnboarding?.pace === 'SLOW'
+      ? ` Try "${TUTORIAL_TOPICS[guide.topic].nextCommand}".`
+      : '';
+    append([{
+      kind: alert ? 'WARN' : 'TEXT',
+      text: `[GUIDE: ${guide.title}] ${guide.body}${practice} (More: "tutorial ${guide.topic}".)`,
+    }]);
+  };
+
+  const maybeShowContextualGuide = (guideId: string, alert = false) => {
+    const guide = CONTEXTUAL_GUIDES[guideId];
+    const guided = state.guidedOnboarding;
+    if (!guide || getEffectiveOnboardingMode(state) !== 'GUIDED' || guided?.systemStatuses?.[guideId] === 'DISMISSED') return;
+    if (guide.system) {
+      onMarkTutorialSeen(guideId);
+      return;
+    }
+    if (guided?.paused || (!alert && guided?.pace === 'FAST') || state.seenTutorials?.includes(guideId)) return;
+    onMarkTutorialSeen(guideId);
+    printContextualGuide(guideId, alert);
+  };
+
+  const activeLesson = getActiveGuidedLesson(state);
   useEffect(() => {
-    const seen = state.seenTutorials ?? [];
-    if (!seen.includes('ctx_overheat') && state.rigs.some((r) => r.status === 'OVERHEATED' || r.status === 'THROTTLED')) {
-      const g = CONTEXTUAL_GUIDES.ctx_overheat;
-      onMarkTutorialSeen('ctx_overheat');
-      append([{ kind: 'WARN', text: `[FIRST-TIME GUIDE: ${g.title}] ${g.body} (Run "${g.tipCommand}".)` }]);
+    if (!activeLesson || state.guidedOnboarding?.paused || getEffectiveOnboardingMode(state) !== 'GUIDED') return;
+    const entry = Object.entries(CONTEXTUAL_GUIDES).find(([, guide]) => guide.system === activeLesson);
+    if (!entry) return;
+    printContextualGuide(entry[0]);
+    append([{ kind: 'TEXT', text: 'Try the lesson in the terminal, then enter "guide learned". Use "guide lesson" to see it again.' }]);
+  }, [activeLesson, state.guidedOnboarding?.paused, state.onboardingMode]);
+
+  useEffect(() => {
+    if (state.rigs.some((rig) => rig.status === 'OVERHEATED' || rig.status === 'THROTTLED')) {
+      maybeShowContextualGuide('ctx_overheat', true);
     }
-    if (!seen.includes('ctx_low_health') && state.rigs.some((r) => r.status === 'NEEDS_REPAIR' || r.status === 'FAILED')) {
-      const g = CONTEXTUAL_GUIDES.ctx_low_health;
-      onMarkTutorialSeen('ctx_low_health');
-      append([{ kind: 'WARN', text: `[FIRST-TIME GUIDE: ${g.title}] ${g.body} (Run "${g.tipCommand}".)` }]);
+    if (state.rigs.some((rig) => rig.status === 'NEEDS_REPAIR' || rig.status === 'FAILED')) {
+      maybeShowContextualGuide('ctx_low_health', true);
     }
-  }, [state.rigs]);
+  }, [state.rigs, state.guidedOnboarding, state.onboardingMode]);
 
   useEffect(() => {
     if (state.pendingEvent && state.pendingEvent.id !== seenEventIdRef.current) {
@@ -1739,10 +1732,13 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         return;
       }
       if (low === 'deploy' || low === 'confirm' || low === 'yes' || low === 'y') {
+        const fitIssue = getRigChassisIssue(wiz.config);
+        if (fitIssue) { append([{ kind: 'ERR', text: fitIssue }]); return; }
         const ok = onDeployRig(wiz.config);
         if (ok) {
           setWizard(null);
           append([{ kind: 'OK', text: `Deployed "${wiz.config.name}" to facility.` }]);
+          printRigBuildDebrief(wiz.config);
           if (state.tutorialStep && state.tutorialStep >= 1 && state.tutorialStep <= 4) {
             onSetTutorialStep(5);
           }
@@ -1753,6 +1749,11 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       }
       append([{ kind: 'ERR', text: 'Type "deploy", "oc <80..150>", "pool <...>", "profile <...>", "back", or "cancel".' }]);
     }
+  };
+
+  const getUnlockedFabNodes = (state: GameState, category: PartCategory) => {
+    const nodes = getResearchFabNodes(state, category);
+    return getUnlockedSystems(state).gen7 ? nodes : nodes.filter((node) => node !== 'photonic');
   };
 
   const getDefaultFabBlueprintName = (category: PartCategory): string => {
@@ -2067,6 +2068,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         return;
       }
       const nextBranch: TechBranch = picked === 'photonic' ? 'PHOTONIC' : wiz.branch === 'PHOTONIC' ? 'SILICON' : wiz.branch;
+      if (picked === 'photonic') maybeShowContextualGuide('ctx_gen7');
       const nextWiz: FabDesignWizardState = {
         ...wiz,
         step: 'FOCUS',
@@ -2118,9 +2120,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         }
         const gen7Open = state.devUnlockAll || getUnlockedSystems(state).gen7;
         if (nextBranch !== 'SILICON' && !gen7Open) {
-          append([{ kind: 'ERR', text: 'Quantum & Photonic engineering requires Gen-7 R&D unlock.' }]);
+          append([{ kind: 'ERR', text: `Gen-7 foundry design is locked. ${getUnlockedSystems(state).unlockNotes.gen7}.` }]);
           return;
         }
+        if (nextBranch !== 'SILICON') maybeShowContextualGuide('ctx_gen7');
         const nextWiz: FabDesignWizardState = {
           ...wiz,
           branch: nextBranch,
@@ -3022,6 +3025,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       ]);
       return;
     }
+    const unlocked = getUnlockedSystems(state);
+    if (!unlocked.coinUnlocks) {
+      append([{ kind: 'WARN', text: `Mining coin access is locked. ${unlocked.unlockNotes.coinUnlocks}. See "guide".` }]);
+      return;
+    }
+    maybeShowContextualGuide('ctx_coin_unlocks');
     const ok = onUnlockCoin(sym);
     append([
       ok
@@ -3106,29 +3115,13 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       return;
     }
 
-    const maybeShowContextualGuide = (guideId: string) => {
-      const seen = state.seenTutorials ?? [];
-      if (seen.includes(guideId)) return;
-      const guide = CONTEXTUAL_GUIDES[guideId];
-      if (!guide) return;
-      onMarkTutorialSeen(guideId);
-      append([
-        {
-          kind: 'OK',
-          text: `[FIRST-TIME GUIDE: ${guide.title}] ${guide.body}${
-            guide.tipCommand ? ` (Run "${guide.tipCommand}" for the full guide.)` : ''
-          }`,
-        },
-      ]);
-    };
-
     const unlockedSys = getUnlockedSystems(state);
     const checkSystemUnlocked = (sysId: GuidedSystemId, label = String(sysId)): boolean => {
       if (unlockedSys[sysId]) return true;
       append([
         {
           kind: 'WARN',
-          text: `${label} not yet unlocked in Guided Mode: ${unlockedSys.unlockNotes[sysId]}. (Run "guide" or "objectives" to track progress, or "mode veteran" to unlock all systems now.)`,
+          text: `${label} is locked in Guided Mode. ${unlockedSys.unlockNotes[sysId]}. Run "guide" for the full progression.`,
         },
       ]);
       return false;
@@ -3136,11 +3129,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
 
     if (cmd === 'help' || cmd === '?') {
       const onboardingMode = getEffectiveOnboardingMode(state);
-      const lockedUpcoming: string[] = [];
-      if (!unlockedSys.contracts) lockedUpcoming.push(`contracts (${unlockedSys.unlockNotes.contracts})`);
-      if (!unlockedSys.staff) lockedUpcoming.push(`staff/hire (${unlockedSys.unlockNotes.staff})`);
-      if (!unlockedSys.rivals) lockedUpcoming.push(`rivals/pr (${unlockedSys.unlockNotes.rivals})`);
-      if (!unlockedSys.ops) lockedUpcoming.push(`ops/blackmarket (${unlockedSys.unlockNotes.ops})`);
+      const gatedCommands: Array<[GuidedSystemId, string]> = [
+        ['contracts', 'contracts'], ['staff', 'staff/hire'], ['rivals', 'rivals'], ['pr', 'pr'],
+        ['coinUnlocks', 'unlock'], ['exchange', 'exchange (new positions)'], ['ops', 'ops/blackmarket'],
+        ['coins', 'coin create'], ['fab', 'fab'], ['gen7', 'Gen-7 design'],
+      ];
+      const lockedUpcoming = gatedCommands.filter(([system]) => !unlockedSys[system]);
 
       append([
         { kind: 'HEAD', text: `COMMAND REFERENCE MANUAL (${onboardingMode} MODE)` },
@@ -3155,6 +3149,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
             `    tutorial [list|<topic>|restart]   Interactive & replayable topic tutorials`,
             `    mode <guided|veteran>             Switch between gradual unlocks or full access`,
             `    step [n] | pause | resume | auto  Advance steps or toggle auto-stepping`,
+            `    Career manual steps: up to ${MANUAL_STEP_CAPACITY} available, with 1 restored every ${MANUAL_STEP_REFILL_SECONDS}s.`,
             `    speed [<5..300>|2x|clock <1..24>]   Real seconds per step & in-game hours per step`,
             `    event | decide <1|2|3>            View active event or lock in choice`,
             `    stats | valuation | history | milestones | achievements | challenges | save`,
@@ -3165,41 +3160,34 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
             `    tinker [<#>] [<slot> <part#>]             Swap rig parts (60% trade-in credit)`,
             `    overclock [<#|all>] <80..150>             Adjust clock multiplier (power/heat trade-off)`,
             `    rigs | inspect <#>                        Fleet roster, component health & serial genealogy`,
+            `    benchmark <rig#> [stock] | commission <rig#> <efficiency|output|quiet> [stock]`,
             `    rig <#|all> <on|off|oc N|coin X|pool|profile|payout <hold|sell>> | rig <#> clone [qty]`,
             `    repair [<#>|all] [<part> [slot#]] | repaste [<#>|all]`,
             `    retire <#> | backup [deploy <#>] [sell <#>] | rename <#> <name> | sell <#>`,
             `    fab [line build|design|drafts|proto <#>|revise <#>|compare <a> <b>|produce <#> <qty>|batch|serial|history|deploy|strip|sell]`,
-            `  POWER, COOLING, ROOMS, FACILITIES${unlockedSys.staff ? ' & STAFF' : ''}`,
+            `  POWER, COOLING, ROOMS, FACILITIES & STAFF`,
             `    power [contract <1..4> | upgrade <1..6>]  Manage power contracts & electrical grid`,
             `    cool [compare | add <type> [room <#>] | room <#> <room#> | toggle <#> | sell <#>]`,
             `    rooms | room [<#> | expand] | floorplan   ASCII room blueprint & wing expansion`,
             `    rig <#> room <#> | move <#> <room#>       Move rig into a cooler or baffled room`,
             `    facilities | facility <rent|buy|preview> <1..6> | facility <upgrade|expand>`,
-            ...(unlockedSys.staff
-              ? [`    staff | hire <tech|elec|mgr|eng|res|pr|analyst> | train <#> | fire <#> | shift | priority`]
-              : []),
+            `    staff | hire <tech|elec|mgr|eng|res|pr|analyst> | train <#> | fire <#> | shift | priority`,
             `    research [done | start <#>] | world | blockchain | ledger`,
-            `  MARKET, COINS, EXCHANGE${unlockedSys.contracts || unlockedSys.rivals || unlockedSys.ops ? ', CONTRACTS, RIVALS & OPS' : ''}`,
+            `  MARKET, COINS, EXCHANGE, CONTRACTS, RIVALS & OPS`,
             `    coins | coin <list|create|info <SYM>|unlock <SYM>>   Coins & legitimate custom coin launcher`,
             `    market | forecast [COIN] | unlock <COIN> | chart <COIN|portfolio|cash|profit|hashrate|power>`,
             `    wallet | exchange [buy|sell|limit|cancel|short|close]   Treasury wallet & spot/margin desk`,
-            ...(unlockedSys.contracts
-              ? [`    contracts | contract <accept <1..4>|abandon>   Reputation-gated enterprise contracts`]
-              : []),
-            ...(unlockedSys.rivals
-              ? [
-                  `    rivals [compare | investigate <#>]        Rival syndicates, rank & corporate recon`,
-                  `    pr | pr launch <1..5> <COIN>              Legal PR campaigns`,
-                ]
-              : []),
-            ...(unlockedSys.ops
-              ? [
-                  `    ops [siphon|botnet|wash|pump|coin dev/seed/launch|shill|rug|raid prep/exec|audit|comply|settle|launder|bribe]`,
-                  `    blackmarket                               Smuggled rigs & illicit BIOS/ROM mods`,
-                ]
-              : []),
+            `    contracts | contract <accept <1..4>|abandon>   Reputation-gated enterprise contracts`,
+            `    rivals [markets [COIN] | compare | log <#> | investigate <#> | intel <#>]`,
+            `    pr | pr launch <1..5> <COIN>              Legal PR campaigns`,
+            `    ops [siphon|botnet|wash|pump|coin dev/seed/launch|shill|rug|raid prep/exec|audit|comply|settle|launder|bribe]`,
+            `    blackmarket                               Smuggled rigs & illicit BIOS/ROM mods`,
             ...(lockedUpcoming.length > 0
-              ? [``, `  UPCOMING GUIDED UNLOCKS (or run "mode veteran" to unlock now):`, ...lockedUpcoming.map((l) => `    - ${l}`)]
+              ? [
+                  '',
+                  `  LOCKED IN GUIDED MODE: ${lockedUpcoming.map(([, command]) => command).join(', ')}`,
+                  `  ${unlockedSys.unlockNotes[lockedUpcoming[0][0]]}. See "guide" for later milestones.`,
+                ]
               : []),
           ].join('\n'),
         },
@@ -3249,13 +3237,18 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         ops: 'ops',
         operations: 'ops',
         pr: 'ops',
-        rivals: 'ops',
+        rivals: 'rivals',
         blackmarket: 'blackmarket',
         bm: 'blackmarket',
         underground: 'blackmarket',
-        fab: 'fab',
-        foundry: 'fab',
-        engineering: 'fab',
+        fab: 'engineering',
+        foundry: 'engineering',
+        engineering: 'engineering',
+        manufacturing: 'manufacturing',
+        research: 'research',
+        usedmarket: 'usedmarket',
+        benchmark: 'optimization',
+        exchange: 'exchange',
         gen7: 'gen7',
         quantum: 'gen7',
         photonic: 'gen7',
@@ -3274,6 +3267,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
             kind: 'PRE',
             text: [
               `  tutorial general       -> 6-step interactive starter walkthrough (replayable)`,
+              `  tutorial build         -> Compare two rigs against your current cash and grid limits`,
+              `  tutorial context       -> List and replay first-use tips`,
               ...topicRows,
               `  tutorial veteran       -> Switch immediately to Veteran Mode (unlock all systems)`,
             ].join('\n'),
@@ -3287,6 +3282,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       }
 
       if (arg1 === 'veteran') {
+        rigLessonActiveRef.current = false;
         onSetOnboardingMode('VETERAN');
         lastTutorialStepRef.current = 0;
         onSetTutorialStep(0);
@@ -3300,6 +3296,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       }
 
       if (arg1 === 'skip' || arg1 === 'off' || arg1 === 'done' || arg1 === 'exit') {
+        rigLessonActiveRef.current = false;
         lastTutorialStepRef.current = 0;
         onSetTutorialStep(0);
         append([
@@ -3312,7 +3309,27 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       }
 
       const rawTopic = arg1 === 'replay' ? arg2 : arg1;
-      const mappedTopic = rawTopic ? topicAliases[rawTopic] : undefined;
+      if (arg1 === 'context') {
+        const guideId = arg2.startsWith('ctx_') ? arg2 : `ctx_${arg2}`;
+        if (arg2 && Object.hasOwn(CONTEXTUAL_GUIDES, guideId)) {
+          printContextualGuide(guideId);
+        } else {
+          append([{
+            kind: 'PRE',
+            text: Object.entries(CONTEXTUAL_GUIDES).map(([id, guide]) =>
+              `  tutorial context ${id.slice(4)} — ${guide.title}`
+            ).join('\n'),
+          }]);
+        }
+        return;
+      }
+      if (rawTopic === 'build') {
+        printRigBuildLesson('TUTORIAL // CHOOSE YOUR NEXT RIG');
+        return;
+      }
+      const mappedTopic = Object.hasOwn(TUTORIAL_TOPICS, rawTopic)
+        ? rawTopic
+        : Object.hasOwn(topicAliases, rawTopic) ? topicAliases[rawTopic] : undefined;
       if (mappedTopic && TUTORIAL_TOPICS[mappedTopic]) {
         const t = TUTORIAL_TOPICS[mappedTopic];
         onRevisitGuidedTopic(mappedTopic);
@@ -3464,7 +3481,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       onSetUserPaused(false);
       const blockedBy = state.pendingEvent
         ? 'active event decision'
-        : (state.tutorialStep ?? 0) > 0
+        : (state.tutorialStep ?? 0) > 0 && !state.guidedOnboarding?.paused
         ? 'onboarding tutorial'
         : null;
       append([
@@ -3519,6 +3536,13 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       const steps = Math.max(1, Math.min(200, parseInt(arg1 || '1', 10) || 1));
       const res = onStepSteps(steps);
       if (res) {
+        if (res.manualStepWaitSeconds !== undefined) {
+          append([{
+            kind: 'WARN',
+            text: `Manual step limit reached. Next manual step in ${res.manualStepWaitSeconds}s.`,
+          }]);
+        }
+        if (res.stepsRun === 0) return;
         const billNote =
           res.billsSettledUsd > 0 ? ` | Cycle bills: -${formatUsd(res.billsSettledUsd)}` : '';
         const soloNote = res.soloBlocksHit > 0 ? ` | SOLO JACKPOTS: ${res.soloBlocksHit}!` : '';
@@ -3690,14 +3714,17 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
             : 'BTC',
           name: `${preset.label} #${state.rigs.length + 1}`,
           poolMode: 'PPS',
-          firmwareProfile: 'BALANCED',
+          firmwareProfile: preset.config.firmwareProfile ?? 'BALANCED',
         };
+        const fitIssue = getRigChassisIssue(cfg);
+        if (fitIssue) { append([{ kind: 'ERR', text: fitIssue }]); return; }
         const ok = onDeployRig(cfg);
         append([
           ok
             ? { kind: 'OK', text: `Built & deployed "${cfg.name}" for ${formatUsd(calculateRigBuildCost(cfg, state))}.` }
             : { kind: 'ERR', text: 'Deploy failed: insufficient cash or facility rig cap reached.' },
         ]);
+        if (ok) printRigBuildDebrief(cfg);
         if (ok && state.tutorialStep && state.tutorialStep >= 1 && state.tutorialStep <= 4) {
           onSetTutorialStep(5);
         }
@@ -3705,12 +3732,13 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       }
 
       if (state.tutorialStep && state.tutorialStep >= 1 && state.tutorialStep <= 3) {
+        if (!rigLessonActiveRef.current) printRigBuildLesson('TUTORIAL [3/6] — CHOOSE YOUR NEXT RIG');
         lastTutorialStepRef.current = 4;
         onSetTutorialStep(4);
         append([
           {
             kind: 'HEAD',
-            text: 'TUTORIAL [4/5] — LIVE BUILD GUIDE ACTIVE (Follow the GUIDE tip at each step)',
+            text: 'TUTORIAL [4/6] — LIVE BUILD GUIDE (Check the GUIDE tip at each step)',
           },
         ]);
       }
@@ -3972,6 +4000,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
     }
 
     if (cmd === 'facility') {
+      maybeShowContextualGuide('ctx_facilities');
       if (arg1 === 'expand') {
         const res = onExpandFacilityRooms();
         append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
@@ -4058,8 +4087,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       if (!checkSystemUnlocked('contracts', 'Enterprise Contracts')) return;
       maybeShowContextualGuide('ctx_contracts');
       const progressFmt = (c: NonNullable<GameState['activeContract']>) =>
-        c.type === 'LOW_NOISE_RUN' || c.type === 'MAINTENANCE_SLA'
+        c.type === 'LOW_NOISE_RUN' || c.type === 'MAINTENANCE_SLA' ||
+        c.type === 'UPTIME_STREAK' || c.type === 'EFFICIENCY_CAP' || c.type === 'OPERATIONAL_PERFORMANCE' ||
+        (c.type === 'FACILITY_EXPANSION' && c.targetFleetSize !== undefined)
           ? `${c.progress}/${c.targetAmount} steps`
+          : c.type === 'RESEARCH_PARTNERSHIP'
+          ? `${c.progress.toFixed(1)}/${c.targetAmount} RP`
           : c.type === 'EQUIPMENT_SUPPLY' || c.type === 'FACILITY_EXPANSION'
           ? `${c.progress}/${c.targetAmount}`
           : `${formatUsd(c.progress)} / ${formatUsd(c.targetAmount)}`;
@@ -4138,32 +4171,55 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         ]);
         return;
       }
-      if (arg1 === 'investigate' || arg1 === 'scout' || arg1 === 'intel') {
-        const idx = parseInt(arg2, 10) - 1;
-        if (isNaN(idx) || !state.rivals[idx]) {
-          append([{ kind: 'ERR', text: `Usage: rivals investigate <1..${state.rivals.length}>` }]);
+      if (arg1 === 'markets' || arg1 === 'market') {
+        const coin = arg2?.toUpperCase();
+        if (coin && !Object.hasOwn(state.coins, coin)) {
+          append([{ kind: 'ERR', text: `Unknown market "${coin}". Use "rivals markets" to list coins.` }]);
           return;
         }
-        const res = onInvestigateRival(idx);
-        append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+        append([
+          { kind: 'HEAD', text: 'RIVAL MINING DESKS' },
+          { kind: 'PRE', text: formatRivalMarkets(state, coin) },
+        ]);
         return;
       }
-      const header = `  #  ${padRight('SYNDICATE', 24)} ${padRight('COIN', 5)} ${padRight(
+      if (['investigate', 'scout', 'intel', 'log', 'history'].includes(arg1)) {
+        const idx = Number(arg2) - 1;
+        const rival = state.rivals[idx];
+        if (!rival) {
+          append([{ kind: 'ERR', text: `Usage: rivals ${arg1} <1..${state.rivals.length}>` }]);
+          return;
+        }
+        if (arg1 === 'intel') {
+          append([{ kind: hasRivalIntel(rival, state.stepCount) ? 'PRE' : 'TEXT', text: formatRivalIntel(state, rival) }]);
+        } else if (arg1 === 'log' || arg1 === 'history') {
+          const moves = rival.decisions ?? [];
+          append([
+            { kind: 'HEAD', text: `PUBLIC FILINGS · ${rival.name}` },
+            { kind: 'PRE', text: moves.length ? moves.map((move) => `  Step ${move.step}  ${move.summary}`).join('\n') : `  ${rival.lastActionSummary}` },
+          ]);
+        } else {
+          const res = onInvestigateRival(idx);
+          append([{ kind: res.ok ? 'PRE' : 'ERR', text: res.summary }]);
+        }
+        return;
+      }
+      const header = `  #  ${padRight('SYNDICATE', 24)} ${padRight('DESKS', 12)} ${padRight(
         'STRATEGY',
         21
       )} ${padLeft('HASH IDX', 9)} ${padLeft('SHARE', 7)}  STATUS / MOVE`;
       const rows = state.rivals.map((rv, i) => {
         const reconNote =
-          (rv.intelRevealedUntilStep ?? 0) >= state.stepCount
-            ? ` [Res:${formatUsd(rv.cashReserveUsd, true)} Rigs:${rv.rigCount}]`
+          hasRivalIntel(rv, state.stepCount)
+            ? ` [INTEL${rv.project ? ` · project due in ${Math.max(1, rv.project.completesAt - state.stepCount)}st` : ''}]`
             : '';
         const st =
           rv.disruptedSteps > 0
             ? `[DISRUPTED ${rv.disruptedSteps}st]`
             : `${rv.lastActionSummary}${reconNote}`;
         return `  ${padRight(String(i + 1), 2)} ${padRight(rv.name, 24)} ${padRight(
-          rv.specialtyCoin,
-          5
+          rv.secondaryCoin && rv.secondaryCoin !== rv.specialtyCoin ? `${rv.specialtyCoin}/${rv.secondaryCoin}` : rv.specialtyCoin,
+          12
         )} ${padRight(getRivalStrategyLabel(rv.strategy), 21)} ${padLeft(
           rv.hashPowerIndex.toLocaleString('en-US'),
           9
@@ -4175,7 +4231,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         { kind: 'PRE', text: [header, '-'.repeat(header.length + 14), ...rows].join('\n') },
         {
           kind: 'TEXT',
-          text: `Commands: "rivals compare", "rivals investigate <1..${state.rivals.length}>" (from ${sampleRecon}, +4 RP & reserve intel), or "ops sabotage <#>".`,
+          text: `Use "rivals markets [COIN]" to see where they compete, "rivals log <#>" for recent moves, and "rivals investigate <#>" (from ${sampleRecon}) for 12 steps of project intel. "rivals compare" shows overall rank.`,
         },
       ]);
       return;
@@ -4342,6 +4398,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
     }
 
     if (cmd === 'train') {
+      if (!checkSystemUnlocked('staff', 'Employee training')) return;
       const idx = parseInt(arg1, 10) - 1;
       if (isNaN(idx) || !state.employees[idx]) {
         append([{ kind: 'ERR', text: 'Usage: train <staff#>' }]);
@@ -4365,6 +4422,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
     }
 
     if (cmd === 'shift' || cmd === 'priority') {
+      if (!checkSystemUnlocked('staff', 'Employee management')) return;
       const idx = parseInt(arg1, 10) - 1;
       const emp = state.employees[idx];
       if (!emp) {
@@ -4586,6 +4644,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
     }
 
     if (cmd === 'save') {
+      if (state.isDevSession) {
+        append([{ kind: 'TEXT', text: 'This Dev session is temporary. Manage saved games from the title menu.' }]);
+        return;
+      }
       if (arg1 === 'backup') {
         const ok = onBackupSave();
         append([{ kind: ok ? 'OK' : 'ERR', text: ok ? 'Local save backup updated.' : 'Failed to create backup.' }]);
@@ -4642,7 +4704,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       const header = `  ${padRight('CYCLE', 16)} ${padLeft('AUTO-SELL', 11)} ${padLeft(
         'POWER',
         9
-      )} ${padLeft('RENT', 9)} ${padLeft('PAYROLL', 9)} ${padLeft('NET CASH', 11)}`;
+      )} ${padLeft('RENT', 9)} ${padLeft('PAYROLL', 9)} ${padLeft('OPERATING', 11)} ${padLeft('NET CASH', 11)}`;
       const rows = state.ledger.slice(0, 12).map((l) => {
         return `  ${padRight(l.label, 16)} ${padLeft(formatUsd(l.miningRevenueUsd), 11)} ${padLeft(
           '-' + formatUsd(l.electricityCostUsd),
@@ -4650,12 +4712,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         )} ${padLeft('-' + formatUsd(l.rentCostUsd), 9)} ${padLeft(
           '-' + formatUsd(l.payrollCostUsd),
           9
-        )} ${padLeft(formatUsd(l.netCashflowUsd), 11)}`;
+        )} ${padLeft(formatUsd(getCycleOperatingProfit(l)), 11)} ${padLeft(formatUsd(l.netCashflowUsd), 11)}`;
       });
       append([
         { kind: 'HEAD', text: '30-STEP CYCLE FINANCIAL LEDGER' },
         { kind: 'PRE', text: [header, '-'.repeat(header.length), ...rows].join('\n') },
-        { kind: 'TEXT', text: 'Tip: Run "ledger chart" or "chart cash" for historical trends.' },
+        { kind: 'TEXT', text: 'OPERATING deducts power, rent, payroll, and maintenance from mining sales. Cycles with positive OPERATING count toward Guided milestones. NET CASH also reflects other spending. Run "ledger chart" for trends.' },
       ]);
       return;
     }
@@ -4741,6 +4803,22 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         append([{ kind: 'OK', text: 'Dev Mode disabled.' }]);
         return;
       }
+      if (!state.isDevSession || !state.devMode) {
+        append([{ kind: 'WARN', text: 'Run "dev on" to open a temporary copy before using developer commands.' }]);
+        return;
+      }
+      if (arg1 === 'proto' || arg1 === 'qa') {
+        const outcomes = { pass: 'PASSED', marginal: 'MARGINAL', fail: 'FAILED_FLAW' } as const;
+        const forced = Object.hasOwn(outcomes, arg3) ? outcomes[arg3 as keyof typeof outcomes] : undefined;
+        const blueprint = Number(arg2) - 1;
+        const result = arg1 === 'proto' && forced && Number.isSafeInteger(blueprint) && blueprint >= 0
+          ? allProps.onRunPrototypeTest(blueprint, forced)
+          : arg1 === 'qa' && (arg2 === 'pass' || arg2 === 'scrap')
+            ? onDevFinishFabBatch(arg2 === 'pass' ? 'PASS' : 'SCRAP')
+            : { ok: false, summary: 'Usage: dev proto <blueprint#> <pass|marginal|fail> or dev qa <pass|scrap>.' };
+        append([{ kind: result.ok ? 'OK' : 'ERR', text: result.summary }]);
+        return;
+      }
       if (arg1 === 'unlock') {
         onToggleDevUnlockAll();
         append([{ kind: 'OK', text: 'Toggled Dev Unlock All.' }]);
@@ -4760,8 +4838,10 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       }
       if (arg1 === 'step') {
         const n = Math.max(1, Math.min(200, parseInt(arg2 || '10', 10) || 10));
-        onStepSteps(n);
-        append([{ kind: 'OK', text: `Advanced up to +${n} steps.` }]);
+        const result = onStepSteps(n);
+        if (result?.stepsRun) {
+          append([{ kind: 'OK', text: `Advanced +${result.stepsRun} steps.` }]);
+        }
         return;
       }
       if (arg1 === 'research') {

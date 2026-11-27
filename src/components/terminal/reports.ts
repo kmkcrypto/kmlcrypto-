@@ -12,6 +12,7 @@ import {
   computeCompanyValuation,
   computeFacilityCoolingSummary,
   computeValuationBreakdown,
+  estimateFleetHashIndex,
   getEffectiveElectricityRate,
   getEffectiveFacilityMaxRigs,
   getEffectiveFacilityPowerCapKw,
@@ -228,11 +229,7 @@ export function formatCoolingCompare(state: GameState): string {
 }
 
 export function formatRivalsComparison(state: GameState): string {
-  const playerHashScore = Math.max(
-    1,
-    Math.round(state.rigs.filter((r) => r.enabled).length * 24 + state.unlockedResearch.length * 10)
-  );
-  const rows = getPlayerRivalComparison(state, playerHashScore);
+  const rows = getPlayerRivalComparison(state, estimateFleetHashIndex(state));
   const header = `  RK ${padR('COMPANY', 25)} ${padR('FACILITY', 22)} ${padL(
     'HASH',
     8

@@ -260,6 +260,18 @@ export function getEffectivePartBundle(
   return { chassis, compute, gpus, storage, psu, cooling, os };
 }
 
+export function getRigChassisIssue(
+  rig: Parameters<typeof getEffectivePartBundle>[0],
+  bundle = getEffectivePartBundle(rig)
+): string | undefined {
+  const { chassis, compute } = bundle;
+  const asic = compute.kind === 'ASIC' || Boolean(rig.customAsicSpec && !rig.customParts?.compute);
+  if (rig.gpuIds.length > chassis.maxGpus) return `${chassis.name} has ${chassis.maxGpus} GPU slots. The rig has ${rig.gpuIds.length} GPUs.`;
+  if (asic && chassis.maxAsics < 1) return `${chassis.name} cannot seat an ASIC blade. Use an ASIC or hybrid chassis.`;
+  if (!asic && chassis.isAsicRack && chassis.maxGpus === 0) return `${chassis.name} accepts ASIC blades only.`;
+  if (asic && rig.gpuIds.length > 0 && !chassis.supportsHybridAsicGpu) return `${chassis.name} cannot combine ASIC and GPU hardware.`;
+}
+
 export function getRigGeneration(
   config: RigBuildConfig & {
     customAsicSpec?: MiningRig['customAsicSpec'];

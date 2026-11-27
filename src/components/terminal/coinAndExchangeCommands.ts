@@ -98,7 +98,7 @@ export const handleCoinAndExchangeCommand: TerminalCommandHandler = (ctx) => {
         ? '[PLAYER]'
         : c.unlocked
         ? '[UNLOCKED]'
-        : unlocked.coins
+        : unlocked.coinUnlocks
         ? `[LOCK ${formatUsd(c.unlockCostUsd)}]`
         : '[LOCKED]';
       return `  ${padRight(`T${c.tier}`, 5)} ${padRight(sym, 6)} ${padRight(
@@ -126,9 +126,11 @@ export const handleCoinAndExchangeCommand: TerminalCommandHandler = (ctx) => {
       { kind: 'PRE', text: [header, '-'.repeat(header.length + 6), ...rows].join('\n') },
       {
         kind: 'TEXT',
-        text: unlocked.coins
-          ? 'Commands: "coins", "coin create", "coin info <SYM>", "market forecast [COIN]", "unlock <COIN>", "chart <COIN>".'
-          : 'Commands: "coins", "market forecast [COIN]", "chart <COIN>", "usedmarket".',
+        text: [
+          'Commands: "coins", "coin info <SYM>", "market forecast [COIN]", "chart <COIN>".',
+          unlocked.coinUnlocks ? '"unlock <COIN>"' : '',
+          unlocked.coins ? '"coin create"' : '',
+        ].filter(Boolean).join(' '),
       },
     ]);
     return true;
@@ -300,21 +302,27 @@ export const handleCoinAndExchangeCommand: TerminalCommandHandler = (ctx) => {
   }
 
   if (cmd === 'wallet' || cmd === 'exchange' || cmd === 'trade') {
+    const tradingOpen = getUnlockedSystems(state).exchange;
+    if (tradingOpen) maybeShowContextualGuide('ctx_exchange');
     if (!arg1 || arg1 === 'status' || arg1 === 'book') {
       append([
         { kind: 'HEAD', text: 'TREASURY WALLET & CRYPTO EXCHANGE DESK' },
         { kind: 'PRE', text: formatWalletAndExchangeReport(state) },
         {
           kind: 'TEXT',
-          text: 'Spot: "exchange buy <COIN> <usd>" · "exchange sell <COIN> <qty|all>" | Payouts: "rig <#|all> payout <hold|sell>"',
+          text: tradingOpen
+            ? 'Spot: "exchange buy <COIN> <usd>" · "exchange sell <COIN> <qty|all>" | Payouts: "rig <#|all> payout <hold|sell>"'
+            : 'New positions and holding mining payouts unlock after the Stage 3 milestones. Existing holdings and positions can be sold or closed.',
         },
-        {
-          kind: 'TEXT',
+        ...(tradingOpen ? [{
+          kind: 'TEXT' as const,
           text: 'Orders: "exchange limit <buy|sell> <COIN> <price> <coinQty>" · "exchange cancel <#>" | Shorts: "exchange short <COIN> <usd>" · "exchange close <#>"',
-        },
+        }] : []),
       ]);
       return true;
     }
+    if (!['sell', 'cancel', 'close'].includes(arg1) &&
+        !checkSystemUnlocked('exchange', 'Opening an exchange position')) return true;
     if (arg1 === 'buy') {
       const coin = arg2.toUpperCase() as CoinSymbol;
       const usd = parseFloat(arg3);

@@ -9,6 +9,7 @@ import {
   SandboxConfig,
 } from '../types/game';
 import { createPlayerCoin } from './coins';
+import { forkDevSession } from './saveSystem';
 import { createInitialComponentHealth } from './usedMarket';
 import { createNewGameState, getFacility } from './simulation';
 import { buildDefaultFab } from './fab';
@@ -18,10 +19,8 @@ import { buildDefaultWorld, stepSharedWorld } from './world';
 /**
  * Developer test scenarios.
  *
- * Each scenario launches an isolated sandbox save positioned at a known point in
- * the progression, so a late-game system can be exercised without replaying the
- * whole run. Sandbox saves live in their own storage slot, so a scenario can
- * never touch a normal career save.
+ * Each scenario opens a temporary session at a known progression stage for
+ * testing without replaying a career or writing to a save slot.
  */
 
 export interface ScenarioSpec {
@@ -32,6 +31,12 @@ export interface ScenarioSpec {
 }
 
 export const SCENARIOS: ScenarioSpec[] = [
+  {
+    id: 'GUIDED_ONBOARDING',
+    name: 'Guided Onboarding',
+    tagline: 'Bedroom · fresh lessons',
+    description: 'Start a temporary Guided career with normal milestones and lesson controls.',
+  },
   {
     id: 'MIDGAME',
     name: 'Midgame Company',
@@ -112,6 +117,7 @@ export const SCENARIOS: ScenarioSpec[] = [
 ];
 
 const SCENARIO_SEED: Record<DevScenarioId, string> = {
+  GUIDED_ONBOARDING: 'DEV-GUIDED',
   MIDGAME: 'DEV-MIDGAME',
   INDUSTRIAL: 'DEV-INDUSTRIAL',
   GEN5: 'DEV-GEN5',
@@ -216,6 +222,9 @@ function sandboxConfig(startingFacilityId: string, startingCash: number, marketR
 
 export function createScenarioState(id: DevScenarioId): GameState {
   const seed = SCENARIO_SEED[id];
+  if (id === 'GUIDED_ONBOARDING') {
+    return { ...forkDevSession(createNewGameState('STANDARD', false, seed)), scenarioId: id };
+  }
   const baseFacility = id === 'MIDGAME' || id === 'CUSTOM' ? 'fac_garage' : 'fac_warehouse';
   const base = createNewGameState('SANDBOX', true, seed, sandboxConfig(baseFacility, 500_000, 'ACCUMULATION'));
 

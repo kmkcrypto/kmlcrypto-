@@ -1,4 +1,4 @@
-import { FACILITY_TIERS, RESEARCH_NODES } from '../data/catalog';
+import { FACILITY_TIERS, MARKET_REGIME_SPECS, RESEARCH_NODES } from '../data/catalog';
 import {
   CareerPreset,
   CoinSymbol,
@@ -8,8 +8,10 @@ import {
 } from '../types/game';
 import { generateRandomSeed } from '../utils/rng';
 import { buildDefaultFab } from './fab';
-import { createNewGameState, getFacility } from './simulation';
-import { createInitialComponentHealth } from './usedMarket';
+import { generateContractBoard } from './contracts';
+import { researchClosure } from './scenarios';
+import { computeRigTelemetry, createNewGameState, getFacility, getEffectiveFacilityPowerCapKw, getFacilityRooms } from './simulation';
+import { createInitialComponentHealth, generateUsedMarketListings, getRigChassisIssue } from './usedMarket';
 
 export const CAREER_PRESETS_STORAGE_KEY = 'hashrate_career_presets_v1';
 
@@ -57,6 +59,7 @@ export const BUILT_IN_PRESETS: CareerPreset[] = [
     onboardingMode: 'VETERAN',
     includeFacility: true,
     startingFacilityId: 'fac_garage',
+    startingFacilityOwned: false,
     powerContractId: 'contract_standard',
     includeMarketRules: true,
     marketRegime: 'BULL_RUN',
@@ -72,8 +75,9 @@ export const BUILT_IN_PRESETS: CareerPreset[] = [
       psuId: 'psu_850w',
       coolingId: 'cool_noctua_array',
       osId: 'os_ubuntu_lts',
-      targetCoin: 'ETH',
-      overclockPct: 105,
+      targetCoin: 'BTC',
+      overclockPct: 100,
+      firmwareProfile: 'ECO',
     },
   },
   {
@@ -88,6 +92,7 @@ export const BUILT_IN_PRESETS: CareerPreset[] = [
     onboardingMode: 'VETERAN',
     includeFacility: true,
     startingFacilityId: 'fac_warehouse',
+    startingResearchIds: ['res_wafer_lithography', 'res_mineros', 'res_smart_pdu'],
     powerContractId: 'contract_highcap',
     includeMarketRules: true,
     marketRegime: 'ACCUMULATION',
@@ -163,16 +168,16 @@ export function saveCareerPreset(
       ? presetInput.id
       : `preset_user_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
+  const idx = existingCustom.findIndex((p) => p.id === targetId);
   const nextPreset: CareerPreset = {
     ...presetInput,
     id: targetId,
     name: cleanName,
     startingFacilityId: validFacility,
-    createdAt: new Date().toISOString(),
+    createdAt: existingCustom[idx]?.createdAt ?? new Date().toISOString(),
     isBuiltIn: false,
   };
 
-  const idx = existingCustom.findIndex((p) => p.id === targetId);
   const updated =
     idx >= 0
       ? existingCustom.map((p, i) => (i === idx ? nextPreset : p))
@@ -246,7 +251,7 @@ export function createNewGameStateFromPreset(
   let nextFab = base.fab;
   if (preset.includeFacility) {
     nextFacilityId = getFacility(preset.startingFacilityId).id;
-    nextOwned = Array.from(new Set(['fac_bedroom', nextFacilityId]));
+    nextOwned = preset.startingFacilityOwned === false ? ['fac_bedroom'] : Array.from(new Set(['fac_bedroom', nextFacilityId]));
     nextPowerContract = preset.powerContractId;
     if (nextFacilityId === 'fac_warehouse' || nextFacilityId === 'fac_industrial' || nextFacilityId === 'fac_megafarm') {
       nextFab = { ...buildDefaultFab(), linesCount: 1 };
@@ -255,7 +260,7 @@ export function createNewGameStateFromPreset(
 
   let nextCoins = { ...base.coins };
   let nextRegime = base.marketRegime;
-  let nextUnlockedResearch = base.unlockedResearch;
+  let nextUnlockedResearch = researchClosure((preset.startingResearchIds ?? []).filter((id) => RESEARCH_NODES.some((node) => node.id === id)));
   let nextSandboxConfig = base.sandboxConfig;
   if (preset.includeMarketRules) {
     nextRegime = preset.marketRegime;
@@ -280,9 +285,10 @@ export function createNewGameStateFromPreset(
     }
   }
 
-  let nextRigs: MiningRig[] = base.rigs;
+  const fac = getFacility(nextFacilityId);
+  const roomId = getFacilityRooms({ ...base, facilityId: fac.id })[0]?.id;
+  let nextRigs: MiningRig[] = base.rigs.map((rig) => ({ ...rig, roomId, temperatureC: fac.ambientTempC + 24 }));
   if (preset.includeStarterRig) {
-    const fac = getFacility(nextFacilityId);
     const cfg = preset.starterRigConfig;
     const starter: MiningRig = {
       ...base.rigs[0],
@@ -297,6 +303,10 @@ export function createNewGameStateFromPreset(
       osId: cfg.osId,
       targetCoin: cfg.targetCoin,
       overclockPct: cfg.overclockPct ?? 100,
+      firmwareProfile: cfg.firmwareProfile ?? 'BALANCED',
+      poolMode: cfg.poolMode ?? 'PPS',
+      payoutMode: cfg.payoutMode ?? 'AUTOSELL',
+      roomId,
       temperatureC: fac.ambientTempC + 24,
       componentHealth: createInitialComponentHealth(cfg.gpuIds?.length ?? 0, 100),
       healthPct: 100,
@@ -304,7 +314,7 @@ export function createNewGameStateFromPreset(
     nextRigs = [starter];
   }
 
-  return {
+  const state: GameState = {
     ...base,
     cash: nextCash,
     facilityId: nextFacilityId,
@@ -312,10 +322,31 @@ export function createNewGameStateFromPreset(
     powerContractId: nextPowerContract,
     coins: nextCoins,
     marketRegime: nextRegime,
+    regimeStepsRemaining: nextRegime === base.marketRegime
+      ? base.regimeStepsRemaining : MARKET_REGIME_SPECS[nextRegime].minSteps,
     unlockedResearch: nextUnlockedResearch,
     sandboxConfig: nextSandboxConfig,
     fab: nextFab,
     rigs: nextRigs,
     activePresetId: preset.id,
   };
+  state.availableContracts = generateContractBoard(state, 4, { earlyCareer: true, includeStarter: effectiveOnboarding === 'GUIDED' });
+  state.usedMarketListings = generateUsedMarketListings(state);
+  return state;
+}
+
+export function getCareerPresetIssue(preset: CareerPreset): string | undefined {
+  if (preset.name.trim().length < 2) return 'Use a preset name of at least two characters.';
+  if (!preset.includeStarterRig) return;
+  const state = createNewGameStateFromPreset(preset, 'PRESET-VALIDATION');
+  const rig = state.rigs[0];
+  const fitIssue = getRigChassisIssue(rig);
+  if (fitIssue) return fitIssue;
+  if (!state.coins[rig.targetCoin]?.unlocked) return 'Unlock coins in Market Rules or select an unlocked starter coin.';
+  const facility = getFacility(state.facilityId);
+  const telemetry = computeRigTelemetry(rig, facility, state.unlockedResearch, 0, [], 1, {}, 0, 0, state.coins);
+  if (telemetry.isUnderpowered) return 'The starter rig needs a larger power supply.';
+  if (telemetry.wallWatts / 1000 > getEffectiveFacilityPowerCapKw(state)) return 'The starter rig exceeds the starting facility’s power cap.';
+  if (telemetry.equilibriumTempC >= 96) return 'The starter rig needs cooling to avoid a thermal shutdown.';
+  if (telemetry.effectiveHashrate === 0) return 'The starter rig cannot mine the selected coin.';
 }

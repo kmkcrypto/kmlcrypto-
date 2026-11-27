@@ -1,16 +1,19 @@
 import { createInitialCoins } from '../data/history';
 import { FACILITY_TIERS, RESEARCH_NODES } from '../data/catalog';
+import { buildDefaultGuidedState, GUIDED_STAGES, recordGuidedProgress } from '../data/onboarding';
 import {
   CoinSymbol,
   EmpireStats,
   GameState,
   HiredEmployee,
   MiningRig,
+  RivalSyndicate,
   SaveFileEnvelope,
 } from '../types/game';
 import { generateRandomSeed } from '../utils/rng';
 import { buildDefaultWallet } from './exchange';
 import { buildDefaultFab } from './fab';
+import { MANUAL_STEP_CAPACITY } from './manualSteps';
 import { createInitialRivals } from './rivals';
 import { buildDefaultWorld } from './world';
 import {
@@ -24,11 +27,21 @@ export const CAREER_BACKUP_KEY = 'blockworks_tycoon_backup_v2';
 export const SANDBOX_STORAGE_KEY = 'blockworks_tycoon_sandbox_v2';
 export const SANDBOX_BACKUP_KEY = 'blockworks_tycoon_sandbox_backup_v2';
 
+export function getGameSaveKey(state: Pick<GameState, 'isSandbox' | 'isDevSession' | 'devMode'>): string | null {
+  if (state.isDevSession || state.devMode) return null;
+  return state.isSandbox ? SANDBOX_STORAGE_KEY : CAREER_STORAGE_KEY;
+}
+
+export function forkDevSession(state: GameState): GameState {
+  return { ...structuredClone(state), isSandbox: true, isDevSession: true, devMode: true };
+}
+
 export function buildDefaultStats(prev?: Partial<EmpireStats>): EmpireStats {
   return {
     soloBlocksHit: prev?.soloBlocksHit ?? 0,
     contractsCompleted: prev?.contractsCompleted ?? 0,
     contractsFailed: prev?.contractsFailed ?? 0,
+    highestCommissionedFacilityIndex: prev?.highestCommissionedFacilityIndex ?? 0,
     covertOpsCount: prev?.covertOpsCount ?? 0,
     raidsSurvived: prev?.raidsSurvived ?? 0,
     totalFinesAndBribesUsd: prev?.totalFinesAndBribesUsd ?? 0,
@@ -50,6 +63,28 @@ export function buildDefaultStats(prev?: Partial<EmpireStats>): EmpireStats {
     maxPowerKwObserved: prev?.maxPowerKwObserved ?? 0,
     pristineHealthStreak: prev?.pristineHealthStreak ?? 0,
     usedOnlyEligible: prev?.usedOnlyEligible ?? true,
+  };
+}
+
+function migrateRival(rival: RivalSyndicate, fallback: RivalSyndicate, coins: GameState['coins']): RivalSyndicate {
+  const facilityTierIndex = FACILITY_TIERS[rival.facilityTierIndex] ? rival.facilityTierIndex : fallback.facilityTierIndex;
+  const specialtyCoin = Object.hasOwn(coins, rival.specialtyCoin) ? rival.specialtyCoin : fallback.specialtyCoin;
+  const secondary = rival.secondaryCoin ?? fallback.secondaryCoin;
+  const project = rival.project;
+  const validProject = project && ['EXPAND', 'ADD_RACKS', 'REFIT', 'SWITCH_COIN', 'LOCK_POWER'].includes(project.kind) &&
+    Number.isSafeInteger(project.completesAt) && project.completesAt >= 0 && Number.isFinite(project.costUsd) && project.costUsd >= 0 &&
+    (project.kind !== 'SWITCH_COIN' || (project.targetCoin && Object.hasOwn(coins, project.targetCoin)));
+
+  return {
+    ...fallback,
+    ...rival,
+    facilityTierIndex,
+    specialtyCoin,
+    secondaryCoin: secondary && secondary !== specialtyCoin && Object.hasOwn(coins, secondary) ? secondary : undefined,
+    project: validProject ? project : undefined,
+    decisions: Array.isArray(rival.decisions) ? rival.decisions.filter((entry) =>
+      entry && Number.isSafeInteger(entry.step) && entry.step >= 0 && typeof entry.summary === 'string'
+    ).slice(0, 8) : [],
   };
 }
 
@@ -117,6 +152,8 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
           migratedCoins[sym] = {
             ...defaultCoins[sym],
             ...savedCoin,
+            unlockCostUsd: defaultCoins[sym].unlockCostUsd,
+            payoutNote: defaultCoins[sym].payoutNote,
           };
         } else if (savedCoin.isPlayerCreated) {
           migratedCoins[sym] = {
@@ -136,19 +173,52 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
     const validFacility = FACILITY_TIERS.some((f) => f.id === candidate.facilityId)
       ? (candidate.facilityId as string)
       : 'fac_bedroom';
+    const defaultRivals = createInitialRivals(runSeed);
 
     const validResearchIds = new Set(RESEARCH_NODES.map((n) => n.id));
     const unlockedResearch = Array.isArray(candidate.unlockedResearch)
       ? candidate.unlockedResearch.filter((id): id is string => typeof id === 'string' && validResearchIds.has(id))
       : [];
 
+    const budget = candidate.manualStepBudget;
     const hydrated: GameState = {
       mode: candidate.mode === 'PLAYING' ? 'PLAYING' : 'TITLE_MENU',
       difficulty: candidate.difficulty ?? 'STANDARD',
-      isSandbox: Boolean(candidate.isSandbox) || candidate.difficulty === 'SANDBOX',
+      isSandbox: Boolean(candidate.isSandbox || candidate.isDevSession || candidate.devMode) || candidate.difficulty === 'SANDBOX',
+      isDevSession: Boolean(candidate.isDevSession || candidate.devMode),
       sandboxConfig: candidate.sandboxConfig,
       runSeed,
       stepCount,
+      rigQualifications: Array.isArray(candidate.rigQualifications)
+        ? candidate.rigQualifications.filter((result) => result && typeof result.rigId === 'string' &&
+          ['efficiency', 'output', 'quiet'].includes(result.goal) &&
+          (result.reference === 'balanced' || result.reference === 'stock') &&
+          Number.isInteger(result.step) && result.step >= 0 && result.step <= stepCount
+        ).slice(-6)
+        : [],
+      stepSeconds:
+        typeof candidate.stepSeconds === 'number' &&
+        Number.isInteger(candidate.stepSeconds) &&
+        candidate.stepSeconds >= 5 &&
+        candidate.stepSeconds <= 300
+          ? candidate.stepSeconds
+          : undefined,
+      stepHours:
+        typeof candidate.stepHours === 'number' &&
+        Number.isInteger(candidate.stepHours) &&
+        candidate.stepHours >= 1 &&
+        candidate.stepHours <= 24
+          ? candidate.stepHours
+          : undefined,
+      manualStepBudget:
+        budget &&
+        Number.isInteger(budget.available) &&
+        budget.available >= 0 &&
+        budget.available <= MANUAL_STEP_CAPACITY &&
+        Number.isSafeInteger(budget.refillStartedAt) &&
+        budget.refillStartedAt >= 0
+          ? { available: budget.available, refillStartedAt: budget.refillStartedAt }
+          : undefined,
       soundEnabled: candidate.soundEnabled !== false,
       cash: candidate.cash,
       researchPoints: typeof candidate.researchPoints === 'number' ? candidate.researchPoints : 0,
@@ -203,11 +273,11 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
       campaignCooldowns: candidate.campaignCooldowns ?? {},
       rivals:
         Array.isArray(candidate.rivals) && candidate.rivals.length > 0
-          ? candidate.rivals.map((rv, idx) => ({
-              ...createInitialRivals(runSeed)[idx % 4],
-              ...rv,
-            }))
-          : createInitialRivals(runSeed),
+          ? candidate.rivals.map((rv, idx) => {
+              const fallback = defaultRivals.find((r) => r.id === rv?.id) ?? defaultRivals[idx % defaultRivals.length];
+              return rv && typeof rv === 'object' ? migrateRival(rv, fallback, migratedCoins) : fallback;
+            })
+          : defaultRivals,
       availableContracts: Array.isArray(candidate.availableContracts)
         ? candidate.availableContracts
         : [],
@@ -278,7 +348,14 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
           : stepCount > 5
           ? 'VETERAN'
           : 'GUIDED',
-      guidedOnboarding: candidate.guidedOnboarding,
+      guidedOnboarding: candidate.guidedOnboarding ? {
+        ...buildDefaultGuidedState(),
+        ...candidate.guidedOnboarding,
+        earnedChecklistIds: GUIDED_STAGES.flatMap((stage) => stage.tasks)
+          .filter((task) => Array.isArray(candidate.guidedOnboarding?.earnedChecklistIds) &&
+            candidate.guidedOnboarding.earnedChecklistIds.includes(task.id))
+          .map((task) => task.id),
+      } : undefined,
       seenTutorials: Array.isArray(candidate.seenTutorials)
         ? candidate.seenTutorials.filter((id): id is string => typeof id === 'string')
         : [],
@@ -305,7 +382,7 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
       hydrated.usedMarketListings = generateUsedMarketListings(hydrated);
     }
 
-    return hydrated;
+    return recordGuidedProgress(hydrated, !candidate.guidedOnboarding?.systemOpensAt);
   } catch {
     return null;
   }
@@ -360,6 +437,7 @@ export function validateAndParseImportedSave(jsonText: string): {
 }
 
 export function createLocalBackup(state: GameState): boolean {
+  if (!getGameSaveKey(state)) return false;
   try {
     const key = state.isSandbox ? SANDBOX_BACKUP_KEY : CAREER_BACKUP_KEY;
     localStorage.setItem(key, serializeSaveEnvelope(state));

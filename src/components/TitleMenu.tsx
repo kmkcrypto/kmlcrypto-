@@ -22,7 +22,6 @@ import {
   duplicateCareerPreset,
   listCareerPresets,
   renameCareerPreset,
-  saveCareerPreset,
 } from '../engine/presets';
 import {
   CareerPreset,
@@ -35,6 +34,7 @@ import {
 import { formatUsd } from '../utils/format';
 import { generateRandomSeed } from '../utils/rng';
 import { MatrixRainCanvas } from './MatrixRainCanvas';
+import { CareerPresetEditor } from './CareerPresetEditor';
 
 interface TitleMenuProps {
   hasSavedGame: boolean;
@@ -51,8 +51,7 @@ interface TitleMenuProps {
   ) => void;
   onStartFromPreset: (
     preset: CareerPreset,
-    runSeed?: string,
-    onboardingOverride?: OnboardingMode
+    runSeed?: string
   ) => void;
   onResume: () => void;
   onResumeSandbox: () => void;
@@ -90,19 +89,8 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
   const [presets, setPresets] = useState<CareerPreset[]>(() => listCareerPresets());
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState<string>('');
-  const [showNewPresetForm, setShowNewPresetForm] = useState<boolean>(false);
+  const [presetEditor, setPresetEditor] = useState<CareerPreset | 'NEW' | null>(null);
   const [presetFeedback, setPresetFeedback] = useState<string | null>(null);
-  const [cpName, setCpName] = useState<string>('Custom Industrial');
-  const [cpIncludeCash, setCpIncludeCash] = useState<boolean>(true);
-  const [cpCash, setCpCash] = useState<number>(25000);
-  const [cpIncludeFacility, setCpIncludeFacility] = useState<boolean>(true);
-  const [cpFacilityId, setCpFacilityId] = useState<string>('fac_garage');
-  const [cpContractId, setCpContractId] = useState<CareerPreset['powerContractId']>('contract_standard');
-  const [cpIncludeMarket, setCpIncludeMarket] = useState<boolean>(true);
-  const [cpRegime, setCpRegime] = useState<MarketRegime>('ACCUMULATION');
-  const [cpUnlockCoins, setCpUnlockCoins] = useState<boolean>(false);
-  const [cpUnlockResearch, setCpUnlockResearch] = useState<boolean>(false);
-  const [cpIncludeRig, setCpIncludeRig] = useState<boolean>(true);
 
   // Sandbox Configurator State
   const [sbCash, setSbCash] = useState<number>(150000);
@@ -333,145 +321,25 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
               <span className="font-semibold text-cyan-300">Career &amp; Custom Presets</span>
               <button
                 type="button"
-                onClick={() => setShowNewPresetForm((v) => !v)}
+                onClick={() => setPresetEditor((current) => current === 'NEW' ? null : 'NEW')}
                 className="px-2 py-1 rounded bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/40 text-cyan-200 text-[11px] font-mono inline-flex items-center gap-1"
               >
                 <Plus className="w-3 h-3" />
-                <span>{showNewPresetForm ? 'Hide Form' : 'New Preset'}</span>
+                <span>{presetEditor === 'NEW' ? 'Hide Form' : 'New Preset'}</span>
               </button>
             </div>
 
-            {showNewPresetForm && (
-              <div className="p-3 rounded bg-[#030D06] border border-cyan-500/25 space-y-2.5">
-                <input
-                  type="text"
-                  value={cpName}
-                  onChange={(e) => setCpName(e.target.value)}
-                  placeholder="Preset name..."
-                  className="w-full px-2.5 py-1.5 rounded bg-[#020704] border border-green-500/30 font-mono text-xs text-green-100"
-                />
-                <div className="flex flex-wrap gap-3 text-[11px] text-green-200/85">
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input type="checkbox" checked={cpIncludeCash} onChange={(e) => setCpIncludeCash(e.target.checked)} className="accent-cyan-400" />
-                    <span>Cash</span>
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input type="checkbox" checked={cpIncludeFacility} onChange={(e) => setCpIncludeFacility(e.target.checked)} className="accent-cyan-400" />
-                    <span>Facility</span>
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input type="checkbox" checked={cpIncludeMarket} onChange={(e) => setCpIncludeMarket(e.target.checked)} className="accent-cyan-400" />
-                    <span>Market</span>
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input type="checkbox" checked={cpIncludeRig} onChange={(e) => setCpIncludeRig(e.target.checked)} className="accent-cyan-400" />
-                    <span>Starter Rig</span>
-                  </label>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="space-y-1">
-                    <span className="text-[10px] text-green-300/75 block">Cash ($)</span>
-                    <input
-                      type="number"
-                      min={0}
-                      value={cpCash}
-                      onChange={(e) => setCpCash(Math.max(0, Number(e.target.value) || 0))}
-                      className="w-full px-2 py-1 rounded bg-[#020704] border border-green-500/30 font-mono text-green-100"
-                    />
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-[10px] text-green-300/75 block">Facility</span>
-                    <select
-                      value={cpFacilityId}
-                      onChange={(e) => setCpFacilityId(e.target.value)}
-                      className="w-full px-2 py-1 rounded bg-[#020704] border border-green-500/30 font-mono text-green-100"
-                    >
-                      {FACILITY_TIERS.map((f) => (
-                        <option key={f.id} value={f.id}>
-                          {f.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-[10px] text-green-300/75 block">Power Contract</span>
-                    <select
-                      value={cpContractId}
-                      onChange={(e) => setCpContractId(e.target.value as CareerPreset['powerContractId'])}
-                      className="w-full px-2 py-1 rounded bg-[#020704] border border-green-500/30 font-mono text-green-100"
-                    >
-                      {POWER_CONTRACTS.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-[10px] text-green-300/75 block">Regime</span>
-                    <select
-                      value={cpRegime}
-                      onChange={(e) => setCpRegime(e.target.value as MarketRegime)}
-                      className="w-full px-2 py-1 rounded bg-[#020704] border border-green-500/30 font-mono text-green-100"
-                    >
-                      {(Object.keys(MARKET_REGIME_SPECS) as MarketRegime[]).map((r) => (
-                        <option key={r} value={r}>
-                          {MARKET_REGIME_SPECS[r].label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="flex flex-wrap gap-3 text-[11px] text-green-200/85">
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input type="checkbox" checked={cpUnlockCoins} onChange={(e) => setCpUnlockCoins(e.target.checked)} className="accent-cyan-400" />
-                    <span>Unlock Coins</span>
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input type="checkbox" checked={cpUnlockResearch} onChange={(e) => setCpUnlockResearch(e.target.checked)} className="accent-cyan-400" />
-                    <span>Unlock R&amp;D</span>
-                  </label>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const saved = saveCareerPreset({
-                      name: cpName,
-                      description: `Custom ${FACILITY_TIERS.find((f) => f.id === cpFacilityId)?.name ?? cpFacilityId} preset`,
-                      includeCash: cpIncludeCash,
-                      startingCash: cpCash,
-                      difficulty,
-                      onboardingMode,
-                      includeFacility: cpIncludeFacility,
-                      startingFacilityId: cpFacilityId,
-                      powerContractId: cpContractId,
-                      includeMarketRules: cpIncludeMarket,
-                      marketRegime: cpRegime,
-                      operatingCostMult: 1.0,
-                      unlockAllCoins: cpUnlockCoins,
-                      unlockAllResearch: cpUnlockResearch,
-                      includeStarterRig: cpIncludeRig,
-                      starterRigConfig: {
-                        chassisId: 'chassis_bedroom_tower',
-                        computeId: 'cpu_core2_duo',
-                        gpuIds: [],
-                        storageId: 'stor_ddr3_4gb',
-                        psuId: 'psu_450w',
-                        coolingId: 'cool_stock_air',
-                        osId: 'os_windows7',
-                        targetCoin: 'BTC',
-                        overclockPct: 100,
-                      },
-                    });
-                    refreshPresets();
-                    setShowNewPresetForm(false);
-                    setPresetFeedback(`Saved custom preset "${saved.name}".`);
-                  }}
-                  className="w-full px-3 py-1.5 rounded bg-cyan-500 hover:bg-cyan-400 text-[#020804] font-semibold text-xs"
-                >
-                  Save Preset
-                </button>
-              </div>
+            {presetEditor && (
+              <CareerPresetEditor key={presetEditor === 'NEW' ? 'new' : presetEditor.id}
+                preset={presetEditor === 'NEW' ? null : presetEditor}
+                difficulty={difficulty} onboardingMode={onboardingMode}
+                onCancel={() => setPresetEditor(null)}
+                onSaved={(saved) => {
+                  refreshPresets();
+                  setPresetEditor(null);
+                  setPresetFeedback(`Saved custom preset "${saved.name}".`);
+                }}
+              />
             )}
 
             <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
@@ -521,7 +389,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
                   <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                     <button
                       type="button"
-                      onClick={() => onStartFromPreset(p, runSeed, onboardingMode)}
+                      onClick={() => onStartFromPreset(p, runSeed)}
                       className="px-2.5 py-1 rounded bg-green-500 hover:bg-green-400 text-[#020804] font-semibold text-[11px] inline-flex items-center gap-1"
                     >
                       <Play className="w-3 h-3 fill-current" />
@@ -541,6 +409,10 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
                     </button>
                     {!p.isBuiltIn && (
                       <>
+                        <button type="button" onClick={() => setPresetEditor(p)}
+                          className="px-2 py-1 rounded bg-[#051409] border border-green-500/30 text-green-200 text-[11px]">
+                          Edit Settings
+                        </button>
                         <button
                           type="button"
                           onClick={() => {
@@ -889,7 +761,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
               >
                 <div className="text-xs font-semibold leading-tight">Guided Mode</div>
                 <div className="text-[10px] font-mono text-green-400/90 mt-0.5">
-                  Gradual unlocks + objectives
+                  Earn systems through business milestones
                 </div>
               </button>
               <button

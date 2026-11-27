@@ -12,6 +12,7 @@ import {
   STORAGE_PARTS,
 } from '../../data/catalog';
 import { checkRigCoinCompatibility } from '../../engine/coins';
+import { benchmarkRig, RIG_QUALIFICATION_GOALS } from '../../engine/optimization';
 import {
   calculateRigResaleValue,
   computeRigTelemetry,
@@ -35,6 +36,7 @@ import {
   FirmwareProfile,
   PoolMode,
   RepairComponentSlot,
+  RigQualificationGoal,
 } from '../../types/game';
 import {
   formatCoinAmount,
@@ -54,6 +56,7 @@ export const handleRigCommand: TerminalCommandHandler = (ctx) => {
     arg2,
     arg3,
     append,
+    checkSystemUnlocked,
     maybeShowContextualGuide,
     openTinkerWizard,
   } = ctx;
@@ -73,6 +76,30 @@ export const handleRigCommand: TerminalCommandHandler = (ctx) => {
     COMPUTE_PARTS.filter(
       (c) => (isHybrid ? true : isAsicOnly ? c.kind === 'ASIC' : c.kind !== 'ASIC') && isPartUnlocked(c.researchRequired)
     );
+
+  if (cmd === 'benchmark' || cmd === 'commission') {
+    const rigIndex = Number(arg1) - 1;
+    const rig = state.rigs[rigIndex];
+    const validGoal = Object.hasOwn(RIG_QUALIFICATION_GOALS, arg2);
+    const referenceArg = cmd === 'benchmark' ? arg2 : arg3;
+    const reference = referenceArg === 'stock' ? 'stock' : 'balanced';
+    if (!rig || (referenceArg && referenceArg !== 'stock') || (cmd === 'commission' && !validGoal)) {
+      append([{ kind: 'TEXT', text: 'Use "benchmark <rig#> [stock]" to compare, then "commission <rig#> <efficiency|output|quiet> [stock]" to record a qualification.' }]);
+      return true;
+    }
+    if (cmd === 'benchmark') {
+      maybeShowContextualGuide('ctx_benchmark');
+      append([
+        { kind: 'HEAD', text: `COMMISSIONING BENCH · ${rig.name}` },
+        { kind: 'PRE', text: benchmarkRig(state, rig, reference).report },
+        { kind: 'TEXT', text: 'Tune with "rig <#> profile <eco|balanced|turbo>", "overclock <#> <80..150>", or "tinker <#>". Then use "commission <rig#> <efficiency|output|quiet> [stock]".' },
+      ]);
+    } else {
+      const result = props.onQualifyRig(rigIndex, arg2 as RigQualificationGoal, reference);
+      append([{ kind: result.ok ? 'OK' : 'WARN', text: result.summary }]);
+    }
+    return true;
+  }
 
   if (cmd === 'rigs' || cmd === 'ls') {
     const maxRigs = getEffectiveFacilityMaxRigs(state);
@@ -150,6 +177,8 @@ export const handleRigCommand: TerminalCommandHandler = (ctx) => {
       append([{ kind: 'ERR', text: 'Usage: inspect <rig#>' }]);
       return true;
     }
+    props.onMarkTutorialSeen('inspected_rig');
+    if (state.tutorialStep === 1) props.onSetTutorialStep(2);
     maybeShowContextualGuide('ctx_inspect');
     const sysBonus = getSysEngineerBonus(state);
     const enabledCount = state.rigs.filter((r) => r.enabled).length;
@@ -516,6 +545,7 @@ export const handleRigCommand: TerminalCommandHandler = (ctx) => {
         append([{ kind: 'ERR', text: 'Usage: rig <#|all> payout <hold|sell>' }]);
         return true;
       }
+      if (mode === 'HOLD' && !checkSystemUnlocked('exchange', 'Holding mining payouts')) return true;
       const res = props.onSetRigPayout(isAll ? 'ALL' : idx, mode);
       append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
       return true;

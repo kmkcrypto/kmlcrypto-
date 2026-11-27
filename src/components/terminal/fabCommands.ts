@@ -1,4 +1,3 @@
-import { getUnlockedSystems } from '../../data/onboarding';
 import {
   compareBlueprints,
   formatFabStatusReport,
@@ -24,14 +23,16 @@ export const handleFabCommand: TerminalCommandHandler = (ctx) => {
     arg3,
     arg4,
     append,
+    checkSystemUnlocked,
     maybeShowContextualGuide,
     openFabWizard,
   } = ctx;
 
   if (cmd !== 'fab' && cmd !== 'foundry') return false;
+  if (!checkSystemUnlocked('fab', 'Foundry')) return true;
+  maybeShowContextualGuide('ctx_fab');
 
   if (!arg1 || arg1 === 'status' || arg1 === 'list') {
-    maybeShowContextualGuide('ctx_fab');
     append([
       { kind: 'HEAD', text: 'SEMICONDUCTOR & HARDWARE MANUFACTURING FOUNDRY' },
       { kind: 'PRE', text: formatFabStatusReport(state) },
@@ -80,6 +81,9 @@ export const handleFabCommand: TerminalCommandHandler = (ctx) => {
         append([{ kind: 'ERR', text: 'Usage: fab draft tapeout <draft#>' }]);
         return true;
       }
+      const draft = state.fab?.draftBlueprints?.[idx];
+      if (draft && (draft.processNode === 'photonic' || draft.branch === 'QUANTUM' || draft.branch === 'PHOTONIC') &&
+          !checkSystemUnlocked('gen7', 'Gen-7 foundry design')) return true;
       const res = props.onTapeoutDraftBlueprint(idx);
       append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
       return true;
@@ -110,6 +114,10 @@ export const handleFabCommand: TerminalCommandHandler = (ctx) => {
       photonic: 'PHOTONIC',
     };
     const branch = branchMap[arg4] ?? branchMap[arg3] ?? undefined;
+    const base = state.fab?.blueprints[bpIdx];
+    const targetBranch = branch ?? base?.branch;
+    if ((base?.processNode === 'photonic' || targetBranch === 'QUANTUM' || targetBranch === 'PHOTONIC') &&
+        !checkSystemUnlocked('gen7', 'Gen-7 foundry design')) return true;
     const res = props.onReviseBlueprint(bpIdx, {
       ...(profile ? { profile } : {}),
       ...(branch ? { branch } : {}),
@@ -134,7 +142,6 @@ export const handleFabCommand: TerminalCommandHandler = (ctx) => {
   }
 
   if (arg1 === 'proto' || arg1 === 'prototype' || arg1 === 'test') {
-    maybeShowContextualGuide('ctx_proto');
     const bpIdx = parseInt(arg2, 10) - 1;
     if (isNaN(bpIdx)) {
       append([{ kind: 'ERR', text: 'Usage: fab proto <blueprint#>' }]);
@@ -142,6 +149,10 @@ export const handleFabCommand: TerminalCommandHandler = (ctx) => {
     }
     const res = props.onRunPrototypeTest(bpIdx);
     append([{ kind: res.ok ? 'OK' : 'ERR', text: res.summary }]);
+    const lessonStatus = state.guidedOnboarding?.systemStatuses.fab;
+    if (res.ok && (lessonStatus === 'LEARNED' || lessonStatus === 'DISMISSED')) {
+      maybeShowContextualGuide('ctx_proto');
+    }
     return true;
   }
 
@@ -174,7 +185,6 @@ export const handleFabCommand: TerminalCommandHandler = (ctx) => {
   }
 
   if (arg1 === 'design') {
-    maybeShowContextualGuide('ctx_fab');
     if (!arg2 || arg2 === 'wizard' || arg2 === 'new') {
       const gate = isFabUnlocked(state);
       if (!gate.ok) {
@@ -214,11 +224,8 @@ export const handleFabCommand: TerminalCommandHandler = (ctx) => {
       ]);
       return true;
     }
-    if (nodeRaw === 'photonic' && !state.devUnlockAll && !getUnlockedSystems(state).gen7) {
-      append([{ kind: 'ERR', text: 'Gen-7 Quantum & Photonic manufacturing is still locked in R&D / progression.' }]);
-      return true;
-    }
-    if (nodeRaw === 'photonic' || nodeRaw === '1nm') {
+    if (nodeRaw === 'photonic' && !checkSystemUnlocked('gen7', 'Gen-7 foundry design')) return true;
+    if (nodeRaw === 'photonic') {
       maybeShowContextualGuide('ctx_gen7');
     }
     const res = props.onDesignCustomChip(bpName, algoRaw, nodeRaw, profile);

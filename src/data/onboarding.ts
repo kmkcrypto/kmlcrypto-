@@ -1,6 +1,7 @@
 import { FACILITY_TIERS } from './catalog';
 import {
   GameState,
+  CycleLedgerEntry,
   GuidedOnboardingState,
   GuidedPaceMode,
   GuidedSystemStatus,
@@ -35,6 +36,8 @@ export type GuidedSystemId =
   | 'blackmarket'
   | 'fab'
   | 'coins'
+  | 'coinUnlocks'
+  | 'exchange'
   | 'gen7';
 
 export interface SystemUnlockStatus {
@@ -46,6 +49,8 @@ export interface SystemUnlockStatus {
   blackmarket: boolean;
   fab: boolean;
   coins: boolean;
+  coinUnlocks: boolean;
+  exchange: boolean;
   gen7: boolean;
   unlockNotes: Record<GuidedSystemId, string>;
 }
@@ -58,140 +63,249 @@ export interface GuidedStageTask {
 }
 
 export interface GuidedStageSpec {
-  id: string;
-  stageNumber: number;
   title: string;
   unlocksLabel: string;
   unlockSystems: GuidedSystemId[];
   tasks: GuidedStageTask[];
 }
 
+const facilityTier = (state: GameState) => FACILITY_TIERS.findIndex((facility) => facility.id === state.facilityId);
+
+export function getCycleOperatingProfit(cycle: CycleLedgerEntry): number {
+  return cycle.miningRevenueUsd - cycle.electricityCostUsd - cycle.rentCostUsd -
+    cycle.payrollCostUsd - cycle.maintenanceCostUsd;
+}
+
+const profitableCycles = (state: GameState, minimumSite: number) =>
+  state.ledger.filter((cycle) =>
+    FACILITY_TIERS.findIndex((facility) => facility.id === (cycle.facilityId ?? state.facilityId)) >= minimumSite &&
+    getCycleOperatingProfit(cycle) > 0
+  ).length;
+
 export const GUIDED_STAGES: GuidedStageSpec[] = [
   {
-    id: 'stage_1_boot',
-    stageNumber: 1,
-    title: 'Stage 1: Boot Rig & Telemetry Basics',
-    unlocksLabel: 'Core terminal mining, inspection, and R&D loop',
-    unlockSystems: [],
-    tasks: [
-      {
-        id: 'task_inspect_starter',
-        label: 'Inspect your starter rig & component health bars',
-        hintCommand: 'inspect 1',
-        autoCheck: (s) => (s.seenTutorials ?? []).includes('ctx_inspect') || (s.seenTutorials ?? []).includes('ctx_rigs') || s.stepCount >= 2,
-      },
-      {
-        id: 'task_first_steps',
-        label: 'Mine 3 steps of live crypto revenue',
-        hintCommand: 'step 3',
-        autoCheck: (s) => s.stepCount >= 3,
-      },
-    ],
-  },
-  {
-    id: 'stage_2_contracts',
-    stageNumber: 2,
-    title: 'Stage 2: Contracts & First R&D',
-    unlocksLabel: 'Unlocks Enterprise Contracts ("contracts")',
+    title: 'Stage 1 — Get your operation online',
+    unlocksLabel: 'Enterprise contracts',
     unlockSystems: ['contracts'],
     tasks: [
       {
-        id: 'task_start_or_finish_rd',
-        label: 'Queue or complete an R&D technology node',
-        hintCommand: 'research start 1',
-        autoCheck: (s) => Boolean(s.activeResearchId) || s.unlockedResearch.length >= 1,
-      },
-      {
-        id: 'task_expand_or_repair',
-        label: 'Add a 2nd rig or service existing hardware',
-        hintCommand: 'build preset 1  (or "repair 1" / "repaste 1")',
+        id: 'inspect_operating_rig',
+        label: 'Inspect a mining rig',
+        hintCommand: 'inspect 1',
         autoCheck: (s) =>
-          s.rigs.length >= 2 ||
-          (s.stats?.rigPurchasesCount ?? 0) >= 1 ||
-          (s.stats?.repairsCompleted ?? 0) >= 1 ||
-          (s.seenTutorials ?? []).includes('ctx_repaste'),
-      },
-    ],
-  },
-  {
-    id: 'stage_3_staff',
-    stageNumber: 3,
-    title: 'Stage 3: Facilities & Crew Management',
-    unlocksLabel: 'Unlocks Staff Hiring ("staff") & Rivals/PR ("rivals" / "pr")',
-    unlockSystems: ['staff', 'rivals', 'pr'],
-    tasks: [
-      {
-        id: 'task_facility_or_cash',
-        label: `Rent ${GARAGE_FACILITY_NAME} or reach $1,800 cash`,
-        hintCommand: 'facilities',
-        autoCheck: (s) => s.facilityId !== 'fac_bedroom' || s.cash >= 1800 || s.stepCount >= 8,
+          (s.seenTutorials ?? []).some((id) => id === 'inspected_rig' || id === 'ctx_inspect') ||
+          s.stats.contractsCompleted > 0,
       },
       {
-        id: 'task_hire_staff_or_contract',
-        label: 'Complete a contract or hire your first specialist',
-        hintCommand: 'staff  (or "contracts")',
-        autoCheck: (s) => s.employees.length >= 1 || (s.stats?.contractsCompleted ?? 0) >= 1 || s.stepCount >= 10,
-      },
-    ],
-  },
-  {
-    id: 'stage_4_underground',
-    stageNumber: 4,
-    title: 'Stage 4: Underground Ops & Risk Control',
-    unlocksLabel: 'Unlocks Covert Ops & Black Market ("ops" / "blackmarket")',
-    unlockSystems: ['ops', 'blackmarket'],
-    tasks: [
-      {
-        id: 'task_check_rivals',
-        label: 'Review rival market share & spot prices',
-        hintCommand: 'rivals',
+        id: 'mine_three_steps',
+        label: 'Earn mining revenue on three steps',
+        hintCommand: 'step 1',
         autoCheck: (s) =>
-          s.facilityId !== 'fac_bedroom' || s.stepCount >= 14 || s.regulatoryScrutiny >= 18 || (s.stats?.covertOpsCount ?? 0) >= 1,
+          (s.performanceHistory ?? []).filter((step) => step.revenuePerStepUsd > 0).length >= 3 ||
+          s.stats.contractsCompleted > 0,
       },
     ],
   },
   {
-    id: 'stage_5_fab_coins',
-    stageNumber: 5,
-    title: 'Stage 5: Custom Foundry & Coin Economics',
-    unlocksLabel: 'Unlocks Custom Fab Engineering ("fab") & Coin Creation ("coin create")',
-    unlockSystems: ['fab', 'coins'],
+    title: 'Stage 2 — Expand beyond the bedroom',
+    unlocksLabel: 'Staff and rival reports',
+    unlockSystems: ['staff', 'rivals'],
     tasks: [
       {
-        id: 'task_wafer_rd',
-        label: 'Unlock Semiconductor Wafer Lithography or reach Warehouse tier',
+        id: 'finish_first_research',
+        label: 'Complete one research project',
         hintCommand: 'research',
-        autoCheck: (s) =>
-          s.unlockedResearch.includes('res_wafer_lithography') ||
-          FACILITY_TIERS.findIndex((f) => f.id === s.facilityId) >= 3 ||
-          (s.fab?.linesCount ?? 0) > 0,
+        autoCheck: (s) => s.unlockedResearch.length > 0,
       },
       {
-        id: 'task_prototype_or_coin',
-        label: 'Build a Fab Line, test a prototype, or launch a legitimate custom coin',
-        hintCommand: 'fab  (or "coin create")',
-        autoCheck: (s) =>
-          (s.fab?.blueprints.length ?? 0) >= 1 ||
-          Object.values(s.coins).some((c) => Boolean(c.isPlayerCreated)),
+        id: 'improve_fleet',
+        label: 'Add a second rig or repair worn hardware',
+        hintCommand: 'tutorial build',
+        autoCheck: (s) => s.rigs.length >= 2 || s.stats.rigPurchasesCount > 0 || s.stats.repairsCompleted > 0,
+      },
+      {
+        id: 'reach_garage',
+        label: 'Move to the Garage or a larger facility',
+        hintCommand: 'facility preview 2',
+        autoCheck: (s) => facilityTier(s) >= 1,
+      },
+      {
+        id: 'deliver_first_contract',
+        label: 'Complete one client contract',
+        hintCommand: 'contracts',
+        autoCheck: (s) => s.stats.contractsCompleted > 0,
       },
     ],
   },
   {
-    id: 'stage_6_gen7',
-    stageNumber: 6,
-    title: 'Stage 6: Gen-7 Quantum & Photonic Frontier',
-    unlocksLabel: 'Unlocks Gen-7 Quantum Cryo & Optical Matrix Engineering',
+    title: 'Stage 3 — Tune a sustainable operation',
+    unlocksLabel: 'PR campaigns, additional mining coins, and exchange trading',
+    unlockSystems: ['coinUnlocks', 'exchange', 'pr'],
+    tasks: [
+      {
+        id: 'qualify_rig_tuning',
+        label: 'Qualify an efficient, high-output, or quiet rig in the Garage or above',
+        hintCommand: 'benchmark 1',
+        autoCheck: (s) => (s.rigQualifications ?? []).some((result) => result.reference === 'balanced'),
+      },
+      {
+        id: 'first_profitable_cycle',
+        label: 'Cover operating costs with mining revenue for one billing cycle at the Garage or above',
+        hintCommand: 'ledger',
+        autoCheck: (s) => profitableCycles(s, 1) >= 1,
+      },
+    ],
+  },
+  {
+    title: 'Stage 4 — Scale to commercial operations',
+    unlocksLabel: 'Custom coin launches and the optional underground market',
+    unlockSystems: ['coins', 'ops', 'blackmarket'],
+    tasks: [
+      {
+        id: 'reach_commercial',
+        label: 'Move to Small Commercial or a larger facility',
+        hintCommand: 'facility preview 3',
+        autoCheck: (s) => facilityTier(s) >= 2,
+      },
+      {
+        id: 'two_profitable_cycles',
+        label: 'Finish two profitable billing cycles at Commercial or above',
+        hintCommand: 'ledger',
+        autoCheck: (s) => profitableCycles(s, 2) >= 2,
+      },
+    ],
+  },
+  {
+    title: 'Stage 5 — Prepare the foundry',
+    unlocksLabel: 'Foundry engineering and production',
+    unlockSystems: ['fab'],
+    tasks: [
+      {
+        id: 'reach_warehouse',
+        label: 'Move to the Warehouse or a larger facility',
+        hintCommand: 'facility preview 4',
+        autoCheck: (s) => facilityTier(s) >= 3,
+      },
+      {
+        id: 'finish_wafer_lithography',
+        label: 'Complete Semiconductor Wafer Lithography',
+        hintCommand: 'research',
+        autoCheck: (s) => s.unlockedResearch.includes('res_wafer_lithography'),
+      },
+    ],
+  },
+  {
+    title: 'Stage 6 — Qualify for Gen-7 design',
+    unlocksLabel: 'Gen-7 foundry design',
     unlockSystems: ['gen7'],
     tasks: [
       {
-        id: 'task_gen7_rd',
-        label: 'Research Quantum-Photonic Hybrid Architecture',
-        hintCommand: 'tutorial gen7',
+        id: 'produce_first_part',
+        label: 'Produce a custom part that passes QA',
+        hintCommand: 'tutorial manufacturing',
+        autoCheck: (s) => (s.fab?.totalUnitsManufactured ?? 0) > 0,
+      },
+      {
+        id: 'finish_gen7_research',
+        label: 'Complete Gen-7 Quantum & Photonic Silicon',
+        hintCommand: 'tutorial research',
         autoCheck: (s) => s.unlockedResearch.includes('res_gen7_quantum_photonic'),
       },
     ],
   },
+  {
+    title: 'Stage 7 — Build a part worth replacing stock',
+    unlocksLabel: 'Foundry campaign completion',
+    unlockSystems: [],
+    tasks: [
+      {
+        id: 'prove_custom_part',
+        label: 'Qualify a custom-equipped rig against its stock configuration',
+        hintCommand: 'benchmark 1 stock',
+        autoCheck: (s) => (s.rigQualifications ?? []).some((result) => result.reference === 'stock'),
+      },
+    ],
+  },
 ];
+
+const guidedTasks = GUIDED_STAGES.flatMap((stage) => stage.tasks);
+const SYSTEM_UNLOCK_SPACING = 2;
+export const GUIDED_LESSON_SPACING: Record<GuidedPaceMode, number> = { SLOW: 4, NORMAL: 2, FAST: 0 };
+const SYSTEM_LABELS: Record<GuidedSystemId, string> = {
+  contracts: 'Contracts', staff: 'Staff', rivals: 'Rivals', coinUnlocks: 'Mining coin access',
+  exchange: 'Exchange', pr: 'PR campaigns', coins: 'Custom coins', ops: 'Underground operations',
+  blackmarket: 'Black market', fab: 'Foundry', gen7: 'Gen-7 foundry design',
+};
+
+function getEarnedGuidedTasks(state: GameState): Set<string> {
+  const earned = new Set(state.guidedOnboarding?.earnedChecklistIds ?? []);
+  for (const task of guidedTasks) {
+    if (!earned.has(task.id) && task.autoCheck(state)) earned.add(task.id);
+  }
+  return earned;
+}
+
+function getSystemOpenTimes(state: GameState, earned: Set<string>, preserveEarned = false): Record<string, number> {
+  let opens = state.guidedOnboarding?.systemOpensAt ?? {};
+  let nextOpening = state.stepCount;
+  for (const stage of GUIDED_STAGES) {
+    if (!stage.tasks.every((task) => earned.has(task.id))) break;
+    for (const system of stage.unlockSystems) {
+      const existing = opens[system];
+      if (!Number.isFinite(existing)) opens = { ...opens, [system]: preserveEarned ? state.stepCount : nextOpening };
+      nextOpening = Math.max(nextOpening, opens[system] + SYSTEM_UNLOCK_SPACING);
+    }
+  }
+  return opens;
+}
+
+export function announceGuidedUnlocks(previous: GameState, next: GameState): GameState {
+  if (getEffectiveOnboardingMode(previous) !== 'GUIDED' ||
+      getEffectiveOnboardingMode(next) !== 'GUIDED' || next.devUnlockAll) return next;
+  const before = getUnlockedSystems(previous);
+  const after = getUnlockedSystems(next);
+  const unlocked = (Object.keys(SYSTEM_LABELS) as GuidedSystemId[]).filter((system) => !before[system] && after[system]);
+  if (!unlocked.length) return next;
+  return {
+    ...next,
+    news: [
+      {
+        id: `guided_unlock_${next.stepCount}_${unlocked[0]}`,
+        step: next.stepCount,
+        stepLabel: `Step ${next.stepCount}`,
+        title: `Guided unlock: ${unlocked.map((system) => SYSTEM_LABELS[system]).join(' · ')}`,
+        detail: 'Run "guide" for your next milestone or "tutorial list" for practical lessons.',
+        category: 'MILESTONE' as const,
+      },
+      ...next.news,
+    ].slice(0, 60),
+  };
+}
+
+/** Keep milestones earned from gameplay even after selling equipment or moving to a smaller site. */
+export function recordGuidedProgress(state: GameState, preserveEarned = false): GameState {
+  if (getEffectiveOnboardingMode(state) !== 'GUIDED' || state.devUnlockAll) return state;
+  const earned = getEarnedGuidedTasks(state);
+  const guided = state.guidedOnboarding ?? buildDefaultGuidedState();
+  const systemOpensAt = getSystemOpenTimes(state, earned, preserveEarned);
+  const currentStageIdx = GUIDED_STAGES.findIndex((stage) => stage.tasks.some((task) => !earned.has(task.id)));
+  const stage = currentStageIdx < 0 ? GUIDED_STAGES.length - 1 : currentStageIdx;
+  const lesson = (guided.lessonQueue ?? []).find((id) => guided.systemStatuses[id] === 'ENCOUNTERED');
+  const activate = lesson && !guided.paused && !getActiveGuidedLesson(state) &&
+    state.stepCount >= (guided.lastLessonAt ?? -Infinity) + GUIDED_LESSON_SPACING[guided.pace];
+  if (!activate && earned.size === (guided.earnedChecklistIds?.length ?? 0) &&
+      systemOpensAt === guided.systemOpensAt && stage === guided.currentStageIdx) return state;
+  return {
+    ...state,
+    guidedOnboarding: {
+      ...guided,
+      earnedChecklistIds: [...earned],
+      systemOpensAt,
+      currentStageIdx: stage,
+      ...(activate ? { systemStatuses: { ...guided.systemStatuses, [lesson]: 'TASK_ACTIVE' as const } } : {}),
+    },
+  };
+}
 
 export function buildDefaultGuidedState(): GuidedOnboardingState {
   return {
@@ -207,17 +321,21 @@ export function buildDefaultGuidedState(): GuidedOnboardingState {
       blackmarket: 'LOCKED',
       fab: 'LOCKED',
       coins: 'LOCKED',
+      coinUnlocks: 'LOCKED',
+      exchange: 'LOCKED',
       gen7: 'LOCKED',
     },
     completedChecklistIds: [],
     revisitedTopics: [],
+    systemOpensAt: {},
+    lessonQueue: [],
   };
 }
 
 export function getEffectiveOnboardingMode(
-  state: Pick<GameState, 'onboardingMode' | 'devMode' | 'isSandbox'>
+  state: Pick<GameState, 'onboardingMode' | 'isSandbox' | 'isDevSession'>
 ): OnboardingMode {
-  if (state.devMode || state.isSandbox) return 'VETERAN';
+  if (state.isSandbox && !state.isDevSession) return 'VETERAN';
   return state.onboardingMode ?? 'GUIDED';
 }
 
@@ -238,7 +356,7 @@ export function evaluateGuidedChecklist(state: GameState): {
 } {
   const mode = getEffectiveOnboardingMode(state);
   const guided = state.guidedOnboarding ?? buildDefaultGuidedState();
-  const manualDone = new Set(guided.completedChecklistIds ?? []);
+  const earned = getEarnedGuidedTasks(state);
 
   let allPriorDone = true;
   let activeIdx = GUIDED_STAGES.length - 1;
@@ -247,7 +365,7 @@ export function evaluateGuidedChecklist(state: GameState): {
   const stages = GUIDED_STAGES.map((spec, idx) => {
     const tasks = spec.tasks.map((t) => ({
       ...t,
-      done: manualDone.has(t.id) || t.autoCheck(state),
+      done: earned.has(t.id),
     }));
     const completed = allPriorDone && tasks.every((t) => t.done);
     const active = !completed && allPriorDone && !foundActive;
@@ -281,33 +399,24 @@ export function evaluateGuidedChecklist(state: GameState): {
 }
 
 export function completeGuidedTask(state: GameState, taskIdOrNum: string): { ok: boolean; nextState: GameState; summary: string } {
-  const guided = state.guidedOnboarding ?? buildDefaultGuidedState();
   const checklist = evaluateGuidedChecklist(state);
   const flatTasks = checklist.stages.flatMap((st) => st.tasks);
 
   let target = flatTasks.find((t) => t.id === taskIdOrNum);
-  const numIdx = Number.parseInt(taskIdOrNum, 10);
-  if (!target && Number.isFinite(numIdx) && numIdx >= 1 && numIdx <= flatTasks.length) {
+  const numIdx = Number(taskIdOrNum);
+  if (!target && Number.isInteger(numIdx) && numIdx >= 1 && numIdx <= flatTasks.length) {
     target = flatTasks[numIdx - 1];
   }
   if (!target) {
     return { ok: false, nextState: state, summary: `Checklist task "${taskIdOrNum}" not found.` };
   }
-  const doneSet = new Set(guided.completedChecklistIds ?? []);
-  doneSet.add(target.id);
-  const nextGuided: GuidedOnboardingState = {
-    ...guided,
-    completedChecklistIds: Array.from(doneSet),
-  };
-  const nextState = { ...state, guidedOnboarding: nextGuided };
-  const after = evaluateGuidedChecklist(nextState);
+  if (!target.done) {
+    return { ok: false, nextState: state, summary: `Still to do: ${target.label}. Try "${target.hintCommand}".` };
+  }
   return {
     ok: true,
-    nextState: {
-      ...nextState,
-      guidedOnboarding: { ...nextGuided, currentStageIdx: after.currentStageIdx },
-    },
-    summary: `Checked off guided task: "${target.label}". Progress: ${after.completedTaskCount}/${after.totalTaskCount}.`,
+    nextState: recordGuidedProgress(state),
+    summary: `Milestone earned: ${target.label}. Progress: ${checklist.completedTaskCount}/${checklist.totalTaskCount}.`,
   };
 }
 
@@ -333,12 +442,41 @@ export function dismissGuidedSystem(state: GameState, sysId: string): GameState 
     ...state,
     guidedOnboarding: {
       ...guided,
+      ...(guided.systemStatuses[sysId] === 'TASK_ACTIVE' ? { lastLessonAt: state.stepCount } : {}),
       systemStatuses: {
         ...guided.systemStatuses,
         [sysId]: 'DISMISSED' as GuidedSystemStatus,
       },
     },
   };
+}
+
+export function getActiveGuidedLesson(state: GameState): GuidedSystemId | undefined {
+  return (state.guidedOnboarding?.lessonQueue ?? []).find((system) =>
+    state.guidedOnboarding?.systemStatuses[system] === 'TASK_ACTIVE'
+  ) as GuidedSystemId | undefined;
+}
+
+export function encounterGuidedLesson(state: GameState, system: GuidedSystemId): GameState {
+  if (getEffectiveOnboardingMode(state) !== 'GUIDED' || !getUnlockedSystems(state)[system]) return state;
+  const guided = state.guidedOnboarding ?? buildDefaultGuidedState();
+  if (guided.systemStatuses[system] && guided.systemStatuses[system] !== 'LOCKED') return state;
+  return recordGuidedProgress({ ...state, guidedOnboarding: {
+    ...guided,
+    lessonQueue: [...(guided.lessonQueue ?? []), system],
+    systemStatuses: { ...guided.systemStatuses, [system]: 'ENCOUNTERED' },
+  } });
+}
+
+export function finishGuidedLesson(state: GameState): GameState {
+  const lesson = getActiveGuidedLesson(state);
+  const guided = state.guidedOnboarding;
+  if (!lesson || !guided) return state;
+  return recordGuidedProgress({ ...state, guidedOnboarding: {
+    ...guided,
+    lastLessonAt: state.stepCount,
+    systemStatuses: { ...guided.systemStatuses, [lesson]: 'LEARNED' },
+  } });
 }
 
 export function revisitGuidedTopic(state: GameState, topicId: string): GameState {
@@ -353,107 +491,23 @@ export function revisitGuidedTopic(state: GameState, topicId: string): GameState
   };
 }
 
-export function getUnlockedSystems(
-  state: Pick<
-    GameState,
-    | 'onboardingMode'
-    | 'guidedOnboarding'
-    | 'devMode'
-    | 'devUnlockAll'
-    | 'isSandbox'
-    | 'stepCount'
-    | 'rigs'
-    | 'unlockedResearch'
-    | 'facilityId'
-    | 'cash'
-    | 'regulatoryScrutiny'
-    | 'employees'
-    | 'stats'
-    | 'fab'
-    | 'coins'
-  >
-): SystemUnlockStatus {
-  const mode = getEffectiveOnboardingMode(state);
-  const allOpen = mode === 'VETERAN' || state.devUnlockAll;
-  const facIdx = Math.max(0, FACILITY_TIERS.findIndex((f) => f.id === state.facilityId));
-  const doneIds = new Set(state.guidedOnboarding?.completedChecklistIds ?? []);
-
-  const contracts =
-    allOpen ||
-    state.stepCount >= 3 ||
-    state.rigs.length >= 2 ||
-    state.unlockedResearch.length >= 1 ||
-    (state.stats?.contractsCompleted ?? 0) > 0 ||
-    doneIds.has('task_first_steps');
-
-  const staff =
-    allOpen ||
-    facIdx >= 1 ||
-    state.cash >= 1800 ||
-    state.stepCount >= 8 ||
-    state.employees.length > 0 ||
-    doneIds.has('task_facility_or_cash');
-
-  const rivals =
-    allOpen ||
-    facIdx >= 1 ||
-    state.rigs.length >= 2 ||
-    state.stepCount >= 10 ||
-    doneIds.has('task_hire_staff_or_contract');
-
-  const pr = rivals;
-
-  const ops =
-    allOpen ||
-    facIdx >= 1 ||
-    state.stepCount >= 14 ||
-    state.regulatoryScrutiny >= 18 ||
-    (state.stats?.covertOpsCount ?? 0) > 0 ||
-    doneIds.has('task_check_rivals');
-
-  const blackmarket = ops;
-
-  const fab =
-    allOpen ||
-    facIdx >= 3 ||
-    state.unlockedResearch.includes('res_wafer_lithography') ||
-    (state.fab?.linesCount ?? 0) > 0 ||
-    doneIds.has('task_wafer_rd');
-
-  const coins =
-    allOpen ||
-    facIdx >= 2 ||
-    state.cash >= 5000 ||
-    Object.values(state.coins ?? {}).some((c) => Boolean(c.isPlayerCreated)) ||
-    doneIds.has('task_prototype_or_coin');
-
-  const gen7 =
-    allOpen ||
-    state.unlockedResearch.includes('res_gen7_quantum_photonic') ||
-    doneIds.has('task_gen7_rd');
-
-  return {
-    contracts,
-    staff,
-    rivals,
-    pr,
-    ops,
-    blackmarket,
-    fab,
-    coins,
-    gen7,
-    unlockNotes: {
-      contracts: 'Unlocks at Step 3, 2nd rig, or 1st completed R&D node',
-      staff: `Unlocks at ${GARAGE_FACILITY_NAME}, $1,800 Cash, or Step 8`,
-      rivals: `Unlocks at ${GARAGE_FACILITY_NAME}, 2nd rig, or Step 10`,
-      pr: `Unlocks at ${GARAGE_FACILITY_NAME}, 2nd rig, or Step 10`,
-      ops: `Unlocks at ${GARAGE_FACILITY_NAME}, Step 14, or Heat >= 18`,
-      blackmarket: `Unlocks alongside Underground Ops at ${GARAGE_FACILITY_NAME} or Step 14`,
-      fab: 'Unlocks at Warehouse tier or "Semiconductor Wafer Lithography" R&D',
-      coins: `Unlocks at Commercial tier, $5,000 Cash, or Checklist Stage 5`,
-      gen7: 'Unlocks with "Quantum-Photonic Hybrid Architecture" R&D',
-    },
-  };
+export function getUnlockedSystems(state: GameState): SystemUnlockStatus {
+  const allOpen = getEffectiveOnboardingMode(state) === 'VETERAN' || Boolean(state.devUnlockAll);
+  const earned = allOpen ? new Set<string>() : getEarnedGuidedTasks(state);
+  const opens = allOpen ? {} : getSystemOpenTimes(state, earned);
+  const status = { unlockNotes: {} } as SystemUnlockStatus;
+  let nextTask: GuidedStageTask | undefined;
+  for (const stage of GUIDED_STAGES) {
+    if (!allOpen) nextTask ??= stage.tasks.find((task) => !earned.has(task.id));
+    for (const system of stage.unlockSystems) {
+      const remaining = opens[system] - state.stepCount;
+      status[system] = allOpen || (!nextTask && remaining <= 0);
+      status.unlockNotes[system] = nextTask
+        ? `Next milestone: ${nextTask.label} (try "${nextTask.hintCommand}")`
+        : remaining > 0 ? `Opens in ${remaining} steps` : 'Guided milestones complete';
+    }
+  }
+  return status;
 }
 
 export interface EarlyObjective {
@@ -493,8 +547,8 @@ export function evaluateEarlyObjectives(state: GameState): EarlyObjective[] {
     {
       id: 'obj_second_rig',
       title: 'Expand your fleet to 2 mining rigs',
-      hint: 'Run "build rig", "presets" -> "build preset 1", or buy from "usedmarket".',
-      rewardCash: 150,
+      hint: 'Run "tutorial build" to compare options, then "build rig" or "usedmarket".',
+      rewardCash: 75,
       rewardRp: 6,
       completed:
         claimed.has('obj_second_rig') ||
@@ -548,322 +602,342 @@ export interface TutorialTopicGuide {
 }
 
 export const TUTORIAL_TOPICS: Record<string, TutorialTopicGuide> = {
+  optimization: {
+    id: 'optimization',
+    title: 'COMMISSION A RIG FOR A PARTICULAR JOB',
+    summary: 'Compare efficiency, output, and noise under the same operating conditions.',
+    lines: [
+      '  Decision: which constraint limits this rig’s value at your facility?',
+      '  1. Run "benchmark <#>" to compare with balanced firmware at 100% clock.',
+      '  2. Try Eco for efficiency, Turbo for output, or a cooler and quieter build. Compare their trade-offs before committing.',
+      '  3. At the Garage or above, record the result with "commission <#> <efficiency|output|quiet>".',
+      '  4. At the foundry, install a custom part and add "stock" to compare against the same rig with its catalog parts.',
+    ],
+    nextCommand: 'benchmark 1',
+  },
   hardware: {
     id: 'hardware',
-    title: 'HARDWARE, RIG BUILDING & INDIVIDUAL COMPONENT HEALTH',
-    summary: 'How rig parts, hybrid ASIC+GPU chassis, individual wear, and single-part repairs work.',
+    title: 'KEEP A RIG EARNING',
+    summary: "Diagnose whether to repair, cool, or replace a part.",
     lines: [
-      '  8-PART RIG ARCHITECTURE:',
-      '    Chassis   -> Sets GPU slot limit (or ASIC rack / Hybrid ASIC+GPU mode) & passive cooling.',
-      '    Compute   -> CPU/FPGA/ASIC/QPU core hashing engine & algorithm family.',
-      '    GPUs      -> Stackable ETHASH/KAWPOW/EQUIHASH/SCRYPT/QHASH accelerators.',
-      '    Storage   -> RAM/NVMe efficiency bonus (+% revenue) & POST storage plots.',
-      '    PSU       -> Watt ceiling MUST cover raw component draw or rig halts.',
-      '    Cooling   -> Drops equilibrium temperature; Cryo-rated units stabilize Quantum QPUs.',
-      '    OS Kernel -> Multiplies hashrate & power draw; improves crash stability.',
-      '',
-      '  INDIVIDUAL COMPONENT HEALTH & TARGETED REPAIRS:',
-      '    - Every rig tracks separate health % for chassis, compute, each GPU, storage, PSU, and cooling.',
-      '    - Overall rig health shown in "rigs" is the AVERAGE of all installed components.',
-      '    - If ANY single component falls to <= 20%, the entire rig halts (NEEDS_REPAIR).',
-      '    - Run "inspect <#>" to see component bars, serial numbers, and single-part repair prices.',
-      '    - Repair commands: "repair 1 gpu", "repair 1 gpu 2", "repair 1 psu", or "repair 1".',
-      '    - Run "tinker <#>" to swap individual parts with 60% trade-in credit.',
+      "  Decision: is this rig losing output because it is hot, worn, or mismatched to its coin?",
+      "  1. Run \"rigs\", then \"inspect <#>\". Read temperature, current output, and each component’s health.",
+      "  2. Compare \"repair <#> <part>\" with a full \"repair <#>\". A single failing part can stop an otherwise healthy rig.",
+      "  3. Use \"repaste <#>\" for temporary cooling or \"tinker <#>\" to price a component swap. Keep the cheaper fix if output recovers.",
+      "  Check: advance one step and inspect the same rig. Compare output and temperature before buying replacement hardware.",
     ],
     nextCommand: 'inspect 1',
   },
   power: {
     id: 'power',
-    title: 'ELECTRICITY CONTRACTS & THERMAL COOLING',
-    summary: 'Managing kW breaker limits, billing cycles, thermal throttling, and spatial cooling.',
+    title: 'BUY HEADROOM WHERE IT PAYS',
+    summary: "Compare power rates, cooling costs, and safe output.",
     lines: [
-      '  ELECTRICITY & POWER CONTRACTS ("power"):',
-      '    - Power costs accrue continuously every step based on active wall kW x $/kWh.',
-      '    - Utility bills, facility rent, and payroll settle every 30 steps.',
-      '    - Exceeding your facility kW cap trips breakers and halts rigs (UNDERPOWERED).',
-      '    - Use "power contract <1..4>" to trade $/kWh rate vs. kW capacity headroom:',
-      '        Spot Budget (-rate, lower cap) | Standard | High-Cap (+cap) | Dispatch Flex.',
-      '    - Upgrade circuits via "facility upgrade 1" or hire a Master Electrician.',
-      '',
-      '  THERMAL & COOLING MANAGEMENT ("cool" / "repaste"):',
-      '    - Below 82C: 100% hash output.  82C-95C: THROTTLED.  >= 96C: THERMAL SHUTDOWN.',
-      '    - Thermal paste wears down over steps; run "repaste <#>" for -6C relief.',
-      '    - Place room cooling ("cool add <fan|indfan|ac|liquid|chiller|hvac>") to cool nearby rigs.',
-      '    - Overclocking ("overclock") and TURBO firmware spike watts & heat nonlinearly.',
+      "  Decision: do you need more power, lower draw, or more cooling?",
+      "  1. Run \"power\" and \"rigs\". Separate a full facility circuit from an overloaded PSU or a hot rig.",
+      "  2. Compare rates, caps, and fees in \"power\" before switching with \"power contract <#>\".",
+      "  3. Run \"cool compare\". A lower clock or a cooler room can recover throttled output without adding a powered cooler.",
+      "  Check: leave headroom below the breaker limit and compare mining revenue after power costs. Heat starts reducing output at 82°C.",
     ],
     nextCommand: 'power',
   },
   facilities: {
     id: 'facilities',
-    title: 'FACILITY PROGRESSION & INFRASTRUCTURE UPGRADES',
-    summary: `Scaling from ${FIRST_FACILITY.name} to ${LAST_FACILITY.name}, rent vs ownership, and noise limits.`,
+    title: 'MOVE ONLY WHEN THE NEW SPACE EARNS ITS RENT',
+    summary: "Evaluate rent, purchase price, noise, and spare capacity.",
     lines: [
-      `  ${FACILITY_TIERS.length} FACILITY TIERS ("facilities"):`,
-      ...FACILITY_TIER_LINES,
-      '',
-      '  RENT vs BUY, ROOMS & UPGRADES:',
-      '    - Renting costs low upfront cash + recurring 30-step rent; Buying eliminates rent.',
-      '    - Run "rooms" (or "floorplan") to view your ASCII room floor-plan blueprint.',
-      '    - Move rigs into cooler bays ("rig <#> room <#>") and add room coolers ("cool room <#> <room#>").',
-      '    - Construct extra expansion wings anytime via "room expand".',
-      '    - Run "facility upgrade <1..6>" for extra circuits, ducts, bays, and cooling loops.',
-      '    - Exceeding facility dBA noise limit triggers city noise ordinance fines every 5 steps.',
+      "  Decision: is the company short on rig slots, grid capacity, or noise allowance?",
+      "  1. Run \"facilities\", then \"facility preview <#>\" for a lease or \"facility preview <#> buy\" for a purchase.",
+      "  2. Compare the move cost, recurring rent, and revenue from the extra rigs you can actually fund.",
+      "  3. Type \"facility rent 2\" to lease the Garage when ready. \"facility upgrade <#>\" buys an improvement at the current site.",
+      "  Check: use \"rooms\" for placement and \"ledger\" after billing. Extra empty slots only pay off once there is a use for them.",
     ],
-    nextCommand: 'rooms',
+    nextCommand: 'facility preview 2',
   },
   employees: {
     id: 'employees',
-    title: 'EMPLOYEE ROLES, SKILLS, SHIFTS & MORALE',
-    summary: 'Hiring specialists, managing shifts/priorities, and avoiding workload burnout.',
+    title: 'HIRE FOR A BOTTLENECK',
+    summary: "Compare a specialist’s benefit against the next payroll.",
     lines: [
-      '  7 SPECIALIST ROLES ("staff" / "hire <role>"):',
-      '    tech     Hardware Technician -> Slows wear, discounts repairs, caps >84C heat.',
-      '    elec     Master Electrician  -> Expands kW capacity, cuts electrical waste.',
-      '    eng      Systems Engineer    -> Boosts fleet hashrate via kernel tuning.',
-      '    res      Research Scientist  -> Generates RP/step & speeds active R&D.',
-      '    mgr      Operations Manager  -> Cuts rent/maint overhead & lifts efficiency.',
-      '    pr       PR Strategist       -> Amplifies PR campaigns & cuts cooldowns.',
-      '    analyst  Market Analyst      -> Improves automatic coin liquidation payouts.',
-      '',
-      '  SHIFTS, TRAINING & MORALE:',
-      '    - Staff gain XP every step (Skill Lv 1..5); use "train <#>" to boost immediately.',
-      '    - "shift <#> <day|night|24/7>": 24/7 boosts Engineer/Researcher output at +35% pay.',
-      '    - "priority <#> <thermal|care|hash|research>": focuses specialist bonuses.',
-      '    - Keep payroll covered & workload balanced: mass low morale can trigger a strike!',
+      "  Decision: which problem costs more than a specialist’s wages?",
+      "  1. Run \"staff\" and compare hire fees, wages, and facility requirements. A technician addresses wear; a researcher speeds R&D.",
+      "  2. Check current workload and morale. Try one role with \"hire <role>\", then adjust \"shift <#> <day|night|24/7>\" or \"priority <#> <task>\".",
+      "  3. Compare repair bills or research progress after a cycle. Train when the extra output has a purpose.",
+      "  Check: use \"ledger\" to see whether mining can still cover payroll, rent, power, and upkeep.",
     ],
     nextCommand: 'staff',
   },
   contracts: {
     id: 'contracts',
-    title: 'ENTERPRISE CONTRACTS & REPUTATION',
-    summary: 'Accepting timed hash/coin delivery SLAs and building media credibility.',
+    title: 'CHECK THE DEADLINE BEFORE YOU SIGN',
+    summary: "Compare a contract’s target with the fleet’s reliable capacity.",
     lines: [
-      '  HOW CONTRACTS WORK ("contracts"):',
-      '    - Enterprise clients post 3-4 contracts gated by your Reputation (Media Credibility).',
-      '    - Starter 0-Rep contracts are always available so you can earn early bonuses.',
-      '    - Higher Reputation tiers unlock multi-thousand-dollar institutional deals.',
-      '',
-      '  FULFILLING & MANAGING RISK:',
-      '    - Only 1 contract can be active at a time ("contract accept <1..4>").',
-      '    - Progress fills automatically each step as your rigs mine the target coin.',
-      '    - Completing before the deadline pays bonus Cash, RP, and Reputation.',
-      '    - Missing the deadline or running "contract abandon" incurs a fine & rep penalty.',
+      "  Decision: which offer fits your fleet today?",
+      "  1. Run \"contracts\". The starter trial covers five fault-free mining steps. Quiet Hours pays for mining under its dBA cap. Try Eco firmware if the rig is too loud.",
+      "  2. For Delivery Sprint, compare the requested payout per step with what the fleet earns on that coin. Commissioning pays only after two working rigs run at the new site for three consecutive steps.",
+      "  3. Check the penalty and deadline, then use \"contract accept <#>\" to sign. Use \"contracts\" to track progress and reinvest the payment in the next job.",
+      "  Check: if the contract falls behind, estimate what is required per remaining step before investing more cash.",
     ],
     nextCommand: 'contracts',
   },
   ops: {
     id: 'ops',
-    title: 'PR CAMPAIGNS, RIVALS & REPUTATION OPERATIONS',
-    summary: 'Tracking rival syndicates, running legal PR hype/FUD, and balancing Heat.',
+    title: 'USE RIVAL DATA BEFORE PAYING FOR PR',
+    summary: "Evaluate market share, credibility, and campaign costs.",
     lines: [
-      '  RIVAL SYNDICATES ("rivals" / "rivals compare"):',
-      '    - AI mining syndicates grow each step, lifting global network difficulty.',
-      '    - Compare your Cash, Net Worth, Reputation, and Hash Share against them.',
-      '',
-      '  LEGAL PR OPERATIONS ("pr"):',
-      '    - Launch Hype campaigns on coins you mine to boost spot prices & sentiment.',
-      '    - Launch FUD campaigns on rival coins (costs some media credibility + small Heat).',
-      '    - Watch Regulatory Scrutiny ("Heat" 0-100): high Heat escalates investigations.',
+      "  Decision: will a campaign earn more than it costs, or should you invest in your fleet?",
+      "  1. Run \"rivals compare\" and \"forecast <COIN>\". Look at difficulty and your own production before choosing a market.",
+      "  2. When PR opens, run \"pr\" and compare spending, duration, credibility, and scrutiny. A coin you mine regularly gives you a clearer way to measure the effect.",
+      "  Check: compare revenue during and after the campaign with the campaign cost. Market changes can happen with or without it.",
     ],
-    nextCommand: 'rivals',
+    nextCommand: 'rivals compare',
+  },
+  rivals: {
+    id: 'rivals',
+    title: 'COMPETE WHERE YOUR FLEET HAS AN EDGE',
+    summary: 'Read which markets are getting crowded and what your competitors are building.',
+    lines: [
+      '  Decision: hold your market, or move some rigs before the pressure rises?',
+      '  1. Run "rivals markets" to see who is adding difficulty on each coin. Compare the projected pressure and your earnings before committing to a new mining desk.',
+      '  2. Read "rivals log <#>" for completed moves. Use "rivals investigate <#>" for the funded project, due date, and cash buffer. "rivals intel <#>" reopens the report while it is active.',
+      '  3. If a competitor is building capacity, compare "forecast <COIN>" and "inspect <#>". Move a single compatible rig with "rig <#> coin <COIN>" and check its actual margin before moving the fleet.',
+      '  Check: a strong hydro operator can ride out tariff shocks. A flexible pool can follow a profitable desk. Price the response that fits your setup.',
+    ],
+    nextCommand: 'rivals markets',
   },
   blackmarket: {
     id: 'blackmarket',
-    title: 'UNDERGROUND OPS, SHELL LIFECYCLE, RAIDS & AUDITS',
-    summary:
-      'Staged shell coins, 2-phase vault raids, cumulative investigations, compliance recovery & illicit ROMs.',
+    title: 'PRICE THE RISK OF A DISCOUNT',
+    summary: "Compare legal purchases with the game’s optional underground operations.",
     lines: [
-      '  STAGED SHELL TOKENS ("ops coin ...") — ILLEGAL SCAM TOKENS:',
-      '    - "ops coin dev <TICKER> <Name>": Draft token in CONCEPT stage.',
-      '    - "ops coin seed <TICKER> <usd> [spoof]": Seed pool & optionally spoof an audit badge.',
-      '    - "ops coin <TICKER> <Name>" / "ops shill" / "ops rug": Launch, pump hype, pull pool.',
-      '    - Traced rugs leave permanent Scandal Marks and drag market confidence.',
-      '',
-      '  2-PHASE VAULT RAIDS & CUMULATIVE INVESTIGATIONS:',
-      '    - "ops raid prep <rival#>": Recon defenses & loot range before striking.',
-      '    - "ops raid exec <stealth|zeroday|bribe>": Strike with tailored risk/loot/heat.',
-      '    - Heat & Suspicion climb through: NONE -> WATCHLIST -> FORMAL_AUDIT -> SANCTIONED -> PROBATION.',
-      '    - Sanctions penalize mining payout (-15%); recover via "ops comply" or "ops settle".',
-      '    - "ops log" shows persistent underground ledger records.',
+      "  Decision: can the company absorb the downside if a discounted deal goes wrong?",
+      "  1. Compare \"blackmarket\" with \"usedmarket\". Consider condition, possible seizure, and how much you can afford to lose.",
+      "  2. Use \"ops\" to read in-game scrutiny, sanctions, and open decisions. Underground activity is optional.",
+      "  Check: review the fictional operation ledger with \"ops log\". If scrutiny rises, read the in-game compliance options before committing more cash.",
     ],
-    nextCommand: 'ops',
+    nextCommand: 'blackmarket',
   },
   engineering: {
     id: 'engineering',
-    title: 'ADVANCED HARDWARE ENGINEERING & BLUEPRINT REVISIONS',
-    summary: 'Architecting custom parts across 7 slots, live manufacturability, drafts & revisions.',
+    title: 'DESIGN A PART FOR A RIG OR A BUYER',
+    summary: "Plan tooling, compatible hardware, and manufacturability.",
     lines: [
-      '  MULTI-COMPONENT DESIGN WIZARD ("fab design"):',
-      '    - Design custom Chassis, Compute (ASIC/CPU/QPU), GPUs, Storage, PSU, Cooling, or OS.',
-      '    - Tune topology (MONOLITHIC / CHIPLET_QUAD / MESH_TENSOR), bus width, SRAM,',
-      '      voltage/clock bias, GPU HBM3/Optical memory, and Cryo vs Photonic Gen-7 parameters.',
-      '    - Balance the engineering point budget across Density, Efficiency, Thermals, Reliability.',
-      '    - Watch live Manufacturability % — extreme clocks/tiny nodes cut yield unless tuned!',
-      '',
-      '  DRAFTS, REVISIONS & COMPARISON:',
-      '    - Save work-in-progress inside the wizard as a Draft blueprint, or Tape Out immediately.',
-      '    - "fab revise <bp#> [profile]": Spin Rev 2+ from an existing blueprint for an incremental fee.',
-      '    - "fab compare <bp1#> <bp2#>": Side-by-side telemetry, watts, mfg %, and cost breakdown.',
+      "  Decision: will this part solve a fleet bottleneck or earn export revenue?",
+      "  1. Use \"guide\" for the Warehouse and Wafer Lithography milestones. At the foundry, check \"fab\" for line cost, upkeep, and tooling budget.",
+      "  2. Commission a line with \"fab line build\". In \"fab design\", pick a category, architecture, node, and specialization for a specific use.",
+      "  3. Compare Performance for throughput, Efficiency for power limits, Compact for heat and noise, and Balanced for unit cost. Type \"draft\" at review to save a design before paying for tooling.",
+      "  Check: confirm the intended rig can seat the part. Compare taped-out designs with \"fab compare <a#> <b#>\" before committing to production.",
     ],
     nextCommand: 'fab',
   },
   manufacturing: {
     id: 'manufacturing',
-    title: 'PROTOTYPE QA, PRODUCTION BATCHES & SERIAL REGISTRY',
-    summary: 'Bench validation, serial numbers, inspection reports, and wafer yield tracking.',
+    title: 'PROVE THE DESIGN WITH ONE UNIT',
+    summary: "Validate a prototype, inspect a batch, and choose whether to deploy or sell.",
     lines: [
-      '  PROTOTYPE BENCH TESTING ("fab proto <bp#>"):',
-      '    - Validate designs BEFORE mass production to discover flaws and earn Yield & Wear bonuses.',
-      '    - Unvalidated risky blueprints suffer higher scrap rates on the fab line.',
-      '',
-      '  BATCHES, SERIALS & QUALITY CONTROL:',
-      '    - Every queued batch ("fab produce <bp#> <qty>") earns a unique Batch ID & Serial Numbers.',
-      '    - "fab batch [batch#]" inspects QC grade (A/B/C), defect scrap count, and serial roster.',
-      '    - "fab serial <SERIAL>" traces measured hash/watt calibration, wear resistance & installed rig.',
-      '    - "fab history" prints the chronological manufacturing & deployment log.',
+      "  Decision: is the design ready for a large batch?",
+      "  1. Run \"fab proto <bp#>\" to validate the blueprint. If the results are marginal, weigh the cost of a revision against the risk of scrap.",
+      "  2. Start with \"fab produce <bp#> 1\" and advance the quoted number of steps. Read \"fab batch <#>\" for units passed, scrap, and serials.",
+      "  3. Use \"fab serial <ID>\" for the individual part, then choose \"fab deploy <inv#> <rig#>\" or \"fab sell <inv#> 1\".",
+      "  Check: after deployment, run \"benchmark <#> stock\". Record a passing objective with \"commission <#> <efficiency|output|quiet> stock\" before you scale production.",
     ],
     nextCommand: 'fab',
   },
   gen7: {
     id: 'gen7',
-    title: 'GEN-7 QUANTUM CRYO vs PHOTONIC OPTICAL BRANCHES',
-    summary: 'Distinct late-game hardware paradigms: mK Dilution Quantum QPUs vs Optical Mesh Photonics.',
+    title: 'CHOOSE A GEN-7 PLATFORM',
+    summary: "Compare Quantum Cryo and Photonic Optical against facility constraints.",
     lines: [
-      '  TWO DISTINCT GEN-7 TECHNOLOGY BRANCHES:',
-      '    QUANTUM Branch ("res_gen7_dilution_cryo"):',
-      '      - Superconducting Qubit Cores tuned with logical qubits, coherence (us) & mK target.',
-      '      - Excels on QHASH (QBC) and extreme density, but REQUIRES Cryo cooling or Cryo bay.',
-      '      - Without Cryo-rated cooling/chassis, thermal decoherence drops output to 0.70x!',
-      '',
-      '    PHOTONIC Branch ("res_gen7_photonic_waveguides"):',
-      '      - Laser-Matrix waveguided compute & Optical QGPUs tuned by lanes, wavelength (1310/1550nm), WDM.',
-      '      - Runs vastly cooler with ultra-low watt-per-hash, thriving in Optical Backplane chassis.',
-      '      - Check "rig <#> inspect" or "fab design" to verify Cryo / Optical compatibility.',
+      "  Decision: is your limiting factor cooling, electrical load, or the target algorithm?",
+      "  1. Run \"research\" and \"guide\". Gen-7 foundry design follows a completed production batch and Gen-7 Quantum & Photonic Silicon research.",
+      "  2. Price a complete Quantum rig with Cryo hardware or a Photonic rig with an Optical backplane. Check the proposed coin, power cap, and cooling before buying.",
+      "  3. Compare both designs in the foundry quote before tape-out. Run a small batch first.",
+      "  Check: inspect output, noise, and temperatures on the commissioned rig before multiplying the design.",
     ],
     nextCommand: 'research',
   },
   coins: {
     id: 'coins',
-    title: 'LEGITIMATE MINEABLE COINS & HARDWARE CONSTRAINTS',
-    summary: 'Multi-algorithm mining, VRAM/RAM/branch requirements, and launching your own coin.',
+    title: 'MATCH THE COIN TO THE HARDWARE',
+    summary: "Compare mining alternatives and budget for a legitimate coin launch.",
     lines: [
-      '  9 STARTER COINS ACROSS 8 ALGORITHMS ("coins"):',
-      '    BTC (SHA256) · LTC/DOGE (SCRYPT) · RVN (KAWPOW >=4GB VRAM) · XMR (RANDOMX)',
-      '    ETH (ETHASH >=6GB VRAM) · ZEC (EQUIHASH >=4GB VRAM) · XCH (POST) · QBC (QHASH Quantum/Photonic)',
-      '',
-      '  LAUNCHING YOUR OWN LEGITIMATE COIN ("coin create"):',
-      '    - Completely separate from illegal underground shell coins ("ops coin").',
-      '    - Seed a real liquidity pool ($500+), choose algorithm, halving interval, and dev fee (0-5%).',
-      '    - Any rig can mine it ("rig <#> coin <SYM>"), earning spot payouts, wallet holdings, and dev fees!',
-      '    - Market adoption & price evolve organically with mining activity and PR sentiment.',
+      "  Decision: should the fleet keep its current coin, switch algorithms, or fund a new network?",
+      "  1. Use \"coin info <SYM>\" for algorithm, memory, difficulty, and halving. Compare with \"inspect <#>\" before paying \"unlock <SYM>\".",
+      "  2. Try the new target on one compatible rig with \"rig <#> coin <SYM>\". Check actual output after a step before switching the fleet.",
+      "  3. When \"coin create\" opens, budget the liquidity pool separately from bills. Choose an algorithm available in your fleet and review issuance and fees.",
+      "  Check: monitor adoption and actual mining payouts before spending more on the new network.",
     ],
     nextCommand: 'coins',
+  },
+  research: {
+    id: 'research',
+    title: 'FUND THE PROJECT YOU CAN USE',
+    summary: "Choose an R&D node that supports the next operating upgrade.",
+    lines: [
+      "  Decision: what should the next project let the company do?",
+      "  1. Run \"research\". Compare the cash fee, research points, and effect with the bottleneck you see in \"rigs\" or \"power\".",
+      "  2. Choose \"research start <#>\" and advance steps. Progress spends available research points over time.",
+      "  3. For late projects, use \"staff\" to price research scientists. They generate points and speed up active projects. Add payroll after the fleet can cover it.",
+      "  Check: after completion, price the unlocked part and reserve enough cash for the next bill.",
+    ],
+    nextCommand: 'research',
+  },
+  usedmarket: {
+    id: 'usedmarket',
+    title: 'COMPARE PRICE WITH CONDITION',
+    summary: "Estimate the true cost of a secondhand rig.",
+    lines: [
+      "  Decision: is the discount large enough to cover repair and downtime?",
+      "  1. Run \"usedmarket\" and \"usedmarket preview <#>\". Compare condition, target coin, power, and payback with a new build.",
+      "  2. If the deal works at your facility, use \"usedmarket buy <#>\". Inspect the rig and budget any work before running it at full speed.",
+      "  Check: advance one step and compare actual earnings and wear with the listing estimate.",
+    ],
+    nextCommand: 'usedmarket',
+  },
+  exchange: {
+    id: 'exchange',
+    title: 'KEEP THE NEXT BILL IN CASH',
+    summary: "Separate working cash from holdings and trading risk.",
+    lines: [
+      "  Decision: how much cash can the company afford to put at risk?",
+      "  1. Run \"wallet\" and \"market\". Keep a reserve for operating costs before taking a position.",
+      "  2. Compare automatic sales for predictable bill money with holding a portion on one rig. Check the order size, fees, and what a price drop would cost.",
+      "  3. Use \"exchange\" for commands. Review open positions and orders regularly so they do not consume money needed for operations.",
+      "  Check: compare realized cash with the next bill and your hardware budget.",
+    ],
+    nextCommand: 'wallet',
   },
 };
 
 export const CONTEXTUAL_GUIDES: Record<
   string,
-  { title: string; body: string; tipCommand?: string }
+  { title: string; body: string; topic: string; system?: GuidedSystemId }
 > = {
+  ctx_benchmark: {
+    title: 'TUNE FOR A JOB',
+    body: 'A higher hashrate can cost more power or heat. Pick the benchmark that fits the business, then compare it against the reference.',
+    topic: 'optimization',
+  },
   ctx_inspect: {
-    title: 'COMPONENT HEALTH DIAGNOSTICS',
-    body: 'Rig health is the average of every installed component. If any single part drops to <=20%, the rig stops mining. Repair individual worn parts with "repair <rig#> <part>" (e.g. "repair 1 psu") or "repair 1 gpu <slot#>".',
-    tipCommand: 'tutorial hardware',
+    title: 'READ THE WEAKEST PART',
+    body: "Compare output, heat, and the weakest component. One worn part can stop a rig whose average health still looks good.",
+    topic: 'hardware',
   },
   ctx_repair: {
-    title: 'PREVENTIVE MAINTENANCE',
-    body: 'Fixing individual worn parts before a full breakdown avoids the 1.35x FAILED surcharge. Overclocking and temps >82C accelerate wear on GPUs, compute, PSU, and cooling.',
-    tipCommand: 'tutorial hardware',
+    title: 'PRICE THE SMALLEST FIX',
+    body: "Inspect the rig first. If one component is failing, compare its repair quote with a full service before spending.",
+    topic: 'hardware',
   },
   ctx_repaste: {
-    title: 'THERMAL PASTE SERVICE',
-    body: 'Fresh thermal paste gives -6C equilibrium cooling for 16 steps. Reapply whenever a rig runs warm before spending cash on bigger cooling units.',
-    tipCommand: 'tutorial power',
+    title: 'TRY A SHORT-TERM COOLING FIX',
+    body: "Fresh paste helps for a limited time. If temperatures climb again, compare a lower clock, a better room, or permanent cooling.",
+    topic: 'power',
   },
   ctx_power: {
-    title: 'POWER CONTRACTS & GRID CAPACITY',
-    body: 'Your facility kW limit caps how much wattage can run simultaneously. Switch power contracts ("power contract <1..4>") or add circuit upgrades ("facility upgrade 1") before adding heavy GPUs/ASICs.',
-    tipCommand: 'tutorial power',
+    title: 'CHECK WHAT IS LIMITING YOUR GRID',
+    body: "Compare the load and breaker cap before changing the rate. A cheap contract can cost more if it forces you to turn off a profitable rig.",
+    topic: 'power',
   },
   ctx_cool: {
-    title: 'ROOM COOLING INFRASTRUCTURE',
-    body: 'Room cooling units lower equilibrium temperatures for nearby rigs, cutting throttling and wear. Remember cooling units also draw watts and carry 30-step upkeep!',
-    tipCommand: 'tutorial power',
+    title: 'CHECK WHAT THE COOLER SAVES',
+    body: "Compare the recovery in mining output with the cooler’s power and upkeep. A layout change or lower clock may cost less.",
+    topic: 'power',
   },
   ctx_facilities: {
-    title: 'SCALING FACILITIES',
-    body: 'Renting expands rig slots and kW caps quickly; buying eliminates recurring 30-step rent. Watch each tier noise limit (dBA) to avoid city noise fines.',
-    tipCommand: 'tutorial facilities',
+    title: 'QUOTE THE MOVE FIRST',
+    body: "Use \"facility preview <#>\" to price the move and the recurring rent. \"facility rent <#>\" moves sites; \"facility upgrade <#>\" changes this site.",
+    topic: 'facilities',
   },
   ctx_usedmarket: {
-    title: 'USED & SURPLUS HARDWARE MARKET',
-    body: 'Listings refresh automatically every 8 steps (or immediately via "usedmarket refresh"). Inspect condition % carefully—DAMAGED rigs are cheap upfront but carry higher wear and immediate repair needs.',
-    tipCommand: 'tutorial hardware',
+    title: 'COMPARE THE WHOLE COST',
+    body: "Use \"usedmarket preview <#>\". A low price helps only if the rig fits your grid and the discount covers condition and likely repairs.",
+    topic: 'usedmarket',
   },
   ctx_research: {
-    title: 'R&D TECH TREE',
-    body: 'Research unlocks higher-generation chassis, GPUs, ASICs, power distribution, and automation. Pick an active node ("research start <#>") and advance steps to spend RP automatically.',
-    tipCommand: 'codex research',
+    title: 'BUY A CAPABILITY YOU CAN USE',
+    body: "Compare what each project enables with the bottleneck you have now. Budget the project fee and the cost of the upgrade it unlocks.",
+    topic: 'research',
   },
   ctx_contracts: {
-    title: 'ENTERPRISE CONTRACTS UNLOCKED',
-    body: 'Contracts pay guaranteed Cash, RP, and Reputation upon hitting hash/coin delivery targets before the deadline. Start with slot 1 (0-Rep starter deals) to grow your Reputation!',
-    tipCommand: 'tutorial contracts',
+    title: 'COMPARE THE TARGET WITH YOUR FLEET',
+    body: 'Pick a job your fleet can deliver. Quiet Hours measures live noise, Delivery Sprint measures the chosen coin, and the move-in job requires two earning rigs at the new site.',
+    topic: 'contracts',
+    system: 'contracts',
   },
   ctx_staff: {
-    title: 'CREW & PAYROLL MANAGEMENT',
-    body: 'Specialists automate maintenance, expand kW headroom, boost hashrate, and generate RP. Salaries bill every 30 steps—train high-value staff ("train <#>") and balance shifts to protect morale.',
-    tipCommand: 'tutorial employees',
+    title: 'CHECK PAYROLL BEFORE HIRING',
+    body: "Pick a specialist for a specific bottleneck. Compare the recurring salary with what the role could save or earn each billing cycle.",
+    topic: 'employees',
+    system: 'staff',
   },
   ctx_rivals: {
-    title: 'RIVAL SYNDICATES & MARKET SHARE',
-    body: 'Rival firms expand alongside you and drive up global network difficulty. Track their net worth with "rivals compare" and target less-crowded coins when difficulty climbs.',
-    tipCommand: 'tutorial ops',
+    title: 'WATCH THE MARKET YOU MINE',
+    body: 'Use "rivals markets" to see which competitors are driving difficulty. Scout a rival to see its next funded move and decide whether to respond.',
+    topic: 'rivals',
+    system: 'rivals',
   },
   ctx_pr: {
-    title: 'PR CAMPAIGNS & CREDIBILITY',
-    body: 'Hype campaigns lift coin spot prices and grow Media Credibility (unlocking lucrative contracts). FUD campaigns suppress rival coins at a small cost to credibility and Regulatory Heat.',
-    tipCommand: 'tutorial ops',
+    title: 'MEASURE THE RETURN ON A CAMPAIGN',
+    body: "Compare campaign spend and scrutiny with the revenue it could add. Choose an outcome you can check when the campaign ends.",
+    topic: 'ops',
+    system: 'pr',
   },
   ctx_ops: {
-    title: 'COVERT OPERATIONS & REGULATORY HEAT',
-    body: 'Covert shortcuts escalate Suspicion through WATCHLIST -> FORMAL_AUDIT -> SANCTIONED. Use "ops raid prep <#>" before striking, and recover via "ops comply" / "ops settle".',
-    tipCommand: 'tutorial blackmarket',
+    title: 'CHECK WHAT THE COMPANY CAN LOSE',
+    body: "This is an optional fictional risk system. Inspect scrutiny and possible sanctions before spending operating cash.",
+    topic: 'blackmarket',
+    system: 'ops',
   },
   ctx_blackmarket: {
-    title: 'BLACK MARKET SURPLUS & ILLICIT BIOS',
-    body: 'Black market drops bypass normal R&D prerequisites with discounted rigs and overclocked BIOS flashes—but raise Heat significantly and risk audit seizures.',
-    tipCommand: 'tutorial blackmarket',
+    title: 'PRICE THE DOWNSIDE',
+    body: "Compare the listing with a legal used rig and check the impact an audit or seizure could have on the company.",
+    topic: 'blackmarket',
+    system: 'blackmarket',
   },
   ctx_overheat: {
-    title: 'THERMAL ALERT: HIGH RIG TEMPERATURE',
-    body: 'A rig just ran hot (>=82C throttles hashrate; >=96C forces thermal shutdown). Run "repaste 1", switch firmware ("rig 1 profile eco"), lower overclock, or add cooling ("cool").',
-    tipCommand: 'tutorial power',
+    title: 'RECOVER OUTPUT BEFORE ADDING HARDWARE',
+    body: "Use \"rigs\" to find the hot rig. Try a lower clock, a cooler room, or fresh paste, then inspect it after a step to see what worked.",
+    topic: 'power',
   },
   ctx_low_health: {
-    title: 'HARDWARE WEAR ALERT',
-    body: 'A component dropped to critical condition! Run "inspect <#>" to pinpoint which component is degraded, then run "repair <rig#> <part>" to fix just that part or "repair <#>" for the full rig.',
-    tipCommand: 'tutorial hardware',
+    title: 'FIND THE PART STOPPING THE RIG',
+    body: "Use \"inspect <#>\" to identify the worn part. Compare a targeted repair with full service and check output after the repair.",
+    topic: 'hardware',
   },
   ctx_fab: {
-    title: 'CUSTOM FOUNDRY WORKSPACE',
-    body: 'Design all 7 hardware categories via "fab design", validate prototypes with "fab proto <#>", inspect batches ("fab batch") and serial numbers ("fab serial <ID>").',
-    tipCommand: 'tutorial engineering',
+    title: 'CHECK THE FIRST-PART BUDGET',
+    body: "Budget line upkeep, tooling, prototype, and production. Pick an existing rig or a buyer for the first part before you pay for the design.",
+    topic: 'engineering',
+    system: 'fab',
   },
   ctx_proto: {
-    title: 'PROTOTYPE BENCH TESTING',
-    body: 'Testing a blueprint with "fab proto <#>" catches layout flaws early, raises production yield, and improves wear resistance on deployed parts.',
-    tipCommand: 'tutorial manufacturing',
+    title: 'TEST BEFORE ORDERING A BATCH',
+    body: "Compare a prototype’s score and thermal margin with your target. A one-unit order limits the cost of learning whether a design passes QA.",
+    topic: 'manufacturing',
   },
   ctx_coins: {
-    title: 'PLAYER-CREATED MINEABLE COINS',
-    body: 'Launch your own legitimate mineable cryptocurrency with "coin create" to earn dev fees and trade on the spot market.',
-    tipCommand: 'tutorial coins',
+    title: 'RING-FENCE THE LIQUIDITY BUDGET',
+    body: "A new network ties up cash. Check what your fleet can mine and set aside bill money before committing liquidity.",
+    topic: 'coins',
+    system: 'coins',
+  },
+  ctx_coin_unlocks: {
+    title: 'PRICE THE NEXT MINING DESK',
+    body: 'Check "coin info <COIN>" and "inspect <#>" before paying to open a desk. Compare the new coin on one compatible rig before moving the fleet.',
+    topic: 'coins',
+    system: 'coinUnlocks',
   },
   ctx_gen7: {
-    title: 'GEN-7 QUANTUM & PHOTONIC ARCHITECTURE',
-    body: 'Pair Quantum QPUs with Cryo-rated cooling/chassis and Photonic cores with Optical backplanes to avoid coherence & coupling penalties.',
-    tipCommand: 'tutorial gen7',
+    title: 'PRICE THE COMPLETE PLATFORM',
+    body: "Compare a Quantum chip plus Cryo gear with a Photonic chip plus its Optical backplane. Check coin compatibility and total load.",
+    topic: 'gen7',
+    system: 'gen7',
+  },
+  ctx_exchange: {
+    title: 'PROTECT WORKING CASH',
+    body: "Review holdings and orders in \"wallet\". Reserve money for bills before adding exposure to coin prices.",
+    topic: 'exchange',
+    system: 'exchange',
   },
 };
 
@@ -981,7 +1055,9 @@ export const CODEX_ENTRIES: CodexEntry[] = [
     relatedKeys: ['investigation', 'market'],
     body: [
       '  - Enterprise Contracts ("contracts") award Cash, RP & Reputation on completion.',
-      '  - Rivals ("rivals") grow continuously and raise network difficulty across shared coins.',
+      '  - The early board offers quiet mining, coin delivery, and one commissioning job for each of the first two moves.',
+      '  - Rivals fund rack, silicon, facility, and power projects. Their active mining desks raise difficulty on those coins.',
+      '  - "rivals markets" shows local competition. "rivals log <#>" lists completed moves. Paid recon reveals funded projects for 12 steps.',
       '  - PR Campaigns ("pr") legally shift coin prices/sentiment.',
       '  - Underground shell coins ("ops coin dev|seed|launch|shill|rug") & 2-phase Vault Raids',
       '    ("ops raid prep" -> "ops raid exec") generate quick cash at major Heat/Scandal risk.',
@@ -1071,7 +1147,7 @@ export const CODEX_ENTRIES: CodexEntry[] = [
     body: [
       '  - Create, duplicate, rename, and launch custom reusable Career Presets from the Title Menu.',
       '  - Presets toggle Starting Cash, Facility/Contract, Market Rules, and Starter Rig config.',
-      '  - Guided Mode enforces a strict stage checklist ("guide checklist", "guide pause", "guide pace").',
+      '  - "guide" lists business milestones that earn access. "guide pause" and "guide pace" control tips.',
     ],
   },
 ];

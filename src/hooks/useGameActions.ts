@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react';
 import {
   CHALLENGES,
   CHASSIS_PARTS,
@@ -19,12 +19,19 @@ import {
   STORAGE_PARTS,
 } from '../data/catalog';
 import {
+  announceGuidedUnlocks,
   completeGuidedTask,
+  CONTEXTUAL_GUIDES,
   dismissGuidedSystem,
+  encounterGuidedLesson,
+  finishGuidedLesson,
   pauseGuidedOnboarding,
+  recordGuidedProgress,
   revisitGuidedTopic,
   setGuidedPace,
 } from '../data/onboarding';
+import { getManualStepBudget, getManualStepWaitSeconds } from '../engine/manualSteps';
+import { qualifyRig } from '../engine/optimization';
 import {
   CreatePlayerCoinInput,
   createPlayerCoin,
@@ -37,6 +44,7 @@ import {
   deployCustomInventoryToRig,
   designCustomChipBlueprint,
   designCustomComponentBlueprint,
+  finishDevFabBatch,
   queueFabProduction,
   reviseBlueprint,
   runPrototypeTest,
@@ -50,6 +58,8 @@ import {
   CAREER_STORAGE_KEY,
   clearSavedState,
   createLocalBackup,
+  forkDevSession,
+  getGameSaveKey,
   loadLocalBackup,
   loadSavedState,
   SANDBOX_STORAGE_KEY,
@@ -104,7 +114,7 @@ import {
   seedShellCoinLiquidity,
   shillShellCoin,
 } from '../engine/underground';
-import { calculateBaseRigPartsCost, getGlobalHardwarePriceMult } from '../engine/usedMarket';
+import { calculateBaseRigPartsCost, getGlobalHardwarePriceMult, getRigChassisIssue } from '../engine/usedMarket';
 import {
   CareerPreset,
   ChallengeId,
@@ -181,13 +191,24 @@ export function useGameActions() {
   const [sandboxSnapshot, setSandboxSnapshot] = useState<GameState | null>(() =>
     loadSavedState(SANDBOX_STORAGE_KEY)
   );
-  const [state, setState] = useState<GameState | null>(() => {
+  const [state, setGameState] = useState<GameState | null>(() => {
     const saved = loadSavedState(CAREER_STORAGE_KEY);
     if (saved) {
       return { ...saved, mode: 'TITLE_MENU' };
     }
     return null;
   });
+  const setState = useCallback((action: SetStateAction<GameState | null>) => {
+    setGameState((previous) => {
+      const next = typeof action === 'function' ? action(previous) : action;
+      if (!next) return null;
+      const recorded = recordGuidedProgress(next);
+      return previous && recorded !== previous && previous.runSeed === recorded.runSeed &&
+        previous.mode === 'PLAYING' && recorded.mode === 'PLAYING' && previous.stepCount === recorded.stepCount
+        ? announceGuidedUnlocks(previous, recorded)
+        : recorded;
+    });
+  }, []);
 
   const autoStepSeconds = state?.stepSeconds ?? DEFAULT_STEP_SECONDS;
 
@@ -228,8 +249,9 @@ export function useGameActions() {
 
   useEffect(() => {
     if (!state) return;
+    const key = getGameSaveKey(state);
+    if (!key) return;
     try {
-      const key = state.isSandbox ? SANDBOX_STORAGE_KEY : CAREER_STORAGE_KEY;
       localStorage.setItem(key, JSON.stringify(state));
       if (state.isSandbox) {
         setSandboxSnapshot(state);
@@ -262,13 +284,11 @@ export function useGameActions() {
     setDevPanelOpen(false);
     setActiveTerminalModal(null);
     setUserPaused(false);
-    setAutoCountdown(autoStepSeconds);
-    if (sandboxConfig || difficulty === 'SANDBOX') {
+    setAutoCountdown(fresh.stepSeconds ?? DEFAULT_STEP_SECONDS);
+    if (devMode) {
+      showBanner(`Temporary Dev session active (${fresh.runSeed}). Career and Sandbox saves are protected.`);
+    } else if (sandboxConfig || difficulty === 'SANDBOX') {
       showBanner(`Sandbox launched (${fresh.runSeed}): isolated save slot active.`);
-    } else if (devMode) {
-      showBanner(
-        `Dev Mode active (${fresh.runSeed}): $2.50M, 1,000 RP, all coins & dev event tools ready.`
-      );
     } else if (challengeId) {
       const ch = CHALLENGES.find((c) => c.id === challengeId);
       showBanner(`Challenge run "${ch?.title ?? challengeId}" started on seed ${fresh.runSeed}.`);
@@ -298,7 +318,7 @@ export function useGameActions() {
     if (snap) {
       setState({ ...snap, mode: 'PLAYING' });
       setActiveTerminalModal(null);
-      setAutoCountdown(autoStepSeconds);
+      setAutoCountdown(snap.stepSeconds ?? DEFAULT_STEP_SECONDS);
     }
   };
 
@@ -322,24 +342,25 @@ export function useGameActions() {
     }
     soundFx.playMilestone();
     const playing: GameState = { ...backed, mode: 'PLAYING' };
-    try {
-      localStorage.setItem(
-        playing.isSandbox ? SANDBOX_STORAGE_KEY : CAREER_STORAGE_KEY,
-        JSON.stringify(playing)
-      );
-    } catch {
-      // Ignore storage errors
+    const key = getGameSaveKey(playing);
+    if (key) {
+      try {
+        localStorage.setItem(key, JSON.stringify(playing));
+      } catch {
+        // Ignore storage errors
+      }
+      if (playing.isSandbox) setSandboxSnapshot(playing);
+      else setCareerSnapshot(playing);
     }
-    if (playing.isSandbox) setSandboxSnapshot(playing);
-    else setCareerSnapshot(playing);
     setState(playing);
+    setAutoCountdown(playing.stepSeconds ?? DEFAULT_STEP_SECONDS);
     showBanner(`Restored ${sandbox ? 'Sandbox' : 'Career'} backup (Step ${playing.stepCount}).`);
     return true;
   };
 
   const handleExportSave = (sandbox = false): string | null => {
     const target =
-      state && Boolean(state.isSandbox) === sandbox
+      state && getGameSaveKey(state) && Boolean(state.isSandbox) === sandbox
         ? state
         : sandbox
         ? sandboxSnapshot
@@ -357,24 +378,25 @@ export function useGameActions() {
       return { ok: false, error: res.error ?? 'Invalid save file.' };
     }
     const imported = res.state;
-    try {
-      localStorage.setItem(
-        imported.isSandbox ? SANDBOX_STORAGE_KEY : CAREER_STORAGE_KEY,
-        JSON.stringify(imported)
-      );
-    } catch {
-      // Ignore storage errors
+    const key = getGameSaveKey(imported);
+    if (key) {
+      try {
+        localStorage.setItem(key, JSON.stringify(imported));
+      } catch {
+        // Ignore storage errors
+      }
+      if (imported.isSandbox) setSandboxSnapshot(imported);
+      else setCareerSnapshot(imported);
     }
-    if (imported.isSandbox) setSandboxSnapshot(imported);
-    else setCareerSnapshot(imported);
     setState(imported);
+    setAutoCountdown(imported.stepSeconds ?? DEFAULT_STEP_SECONDS);
     soundFx.playMilestone();
     showBanner(
-      `Imported ${imported.isSandbox ? 'Sandbox' : 'Career'} save (Step ${imported.stepCount}).`
+      `Imported ${imported.isDevSession ? 'temporary Dev session' : imported.isSandbox ? 'Sandbox save' : 'Career save'} (Step ${imported.stepCount}).`
     );
     return {
       ok: true,
-      summary: `Loaded ${imported.isSandbox ? 'Sandbox' : 'Career'} Step ${imported.stepCount} (${formatUsd(
+      summary: `Loaded ${imported.isDevSession ? 'Dev' : imported.isSandbox ? 'Sandbox' : 'Career'} Step ${imported.stepCount} (${formatUsd(
         imported.cash
       )}).`,
     };
@@ -393,17 +415,20 @@ export function useGameActions() {
     showBanner(`Cleared ${sandbox ? 'Sandbox' : 'Career'} saved progress.`);
   };
 
-  const handleStepSteps = (steps: number, silent = false) => {
+  const handleStepSteps = (steps: number, automatic = false) => {
     if (!state) return null;
     if (state.pendingEvent) {
-      if (!silent) {
+      if (!automatic) {
         soundFx.playAlert();
         showBanner(`Resolve "${state.pendingEvent.title}" in the terminal before stepping.`);
       }
       return null;
     }
-    if (!silent) soundFx.playClick();
-    const count = Math.max(1, Math.min(200, Math.round(steps)));
+    const requested = Math.max(1, Math.min(200, Math.round(steps)));
+    const now = Date.now();
+    const budget = automatic || state.isSandbox ? null : getManualStepBudget(state.manualStepBudget, now);
+    const count = budget ? Math.min(requested, budget.available) : requested;
+    if (!automatic && count > 0) soundFx.playClick();
 
     let current = state;
     let stepsRun = 0;
@@ -433,10 +458,25 @@ export function useGameActions() {
 
     if (anyAlert) soundFx.playAlert();
     else if (anyMilestone) soundFx.playMilestone();
-    else if (!silent && totalMiningCash > 0) soundFx.playCash();
+    else if (!automatic && totalMiningCash > 0) soundFx.playCash();
 
-    setState(current);
-    setAutoCountdown(autoStepSeconds);
+    if (budget && (stepsRun > 0 || budget.refillStartedAt !== state.manualStepBudget?.refillStartedAt)) {
+      current = {
+        ...current,
+        manualStepBudget: { ...budget, available: budget.available - stepsRun },
+      };
+    }
+    if (current !== state) setState(current);
+    if (stepsRun > 0) setAutoCountdown(autoStepSeconds);
+
+    const manualStepWaitSeconds =
+      budget && stepsRun === count && count < requested
+        ? getManualStepWaitSeconds(budget.refillStartedAt, now)
+        : undefined;
+    if (manualStepWaitSeconds !== undefined) {
+      showBanner(`Next manual step available in ${manualStepWaitSeconds}s.`);
+    }
+
     return {
       stepsRun,
       newStepCount: current.stepCount,
@@ -445,6 +485,7 @@ export function useGameActions() {
       billsSettledUsd: totalBills,
       soloBlocksHit: totalSoloHits,
       haltedByEvent,
+      manualStepWaitSeconds,
     };
   };
 
@@ -458,7 +499,7 @@ export function useGameActions() {
     ? 'Builder'
     : activeTerminalModal === 'TINKER'
     ? 'Tinker'
-    : (state.tutorialStep ?? 0) > 0
+    : (state.tutorialStep ?? 0) > 0 && !state.guidedOnboarding?.paused
     ? 'Tutorial'
     : devPanelOpen
     ? 'Dev Panel'
@@ -622,9 +663,28 @@ export function useGameActions() {
     setState((prev) => (prev ? { ...prev, tutorialStep } : prev));
   };
 
+  const handleQualifyRig = (
+    rigIndex: number,
+    goal: Parameters<typeof qualifyRig>[2],
+    reference: Parameters<typeof qualifyRig>[3]
+  ) => {
+    const rig = state?.rigs[rigIndex];
+    if (!state || !rig) return { ok: false, summary: 'Choose a rig from "rigs".' };
+    const result = qualifyRig(state, rig, goal, reference);
+    if (result.ok) {
+      setState((previous) => {
+        const current = previous?.rigs.find((candidate) => candidate.id === rig.id);
+        return previous && current ? qualifyRig(previous, current, goal, reference).nextState : previous;
+      });
+    }
+    return { ok: result.ok, summary: result.summary };
+  };
+
   const handleMarkTutorialSeen = (guideId: string) => {
     setState((prev) => {
       if (!prev) return prev;
+      const system = CONTEXTUAL_GUIDES[guideId]?.system;
+      if (system) return encounterGuidedLesson(prev, system);
       const existing = prev.seenTutorials ?? [];
       if (existing.includes(guideId)) return prev;
       return {
@@ -634,8 +694,12 @@ export function useGameActions() {
     });
   };
 
+  const handleFinishGuidedLesson = () => setState((prev) => prev ? finishGuidedLesson(prev) : prev);
+
   const handleSetOnboardingMode = (onboardingMode: OnboardingMode) => {
-    setState((prev) => (prev ? { ...prev, onboardingMode } : prev));
+    setState((prev) => prev
+      ? { ...prev, onboardingMode, tutorialStep: onboardingMode === 'VETERAN' ? 0 : prev.tutorialStep }
+      : prev);
   };
 
   const handleCompleteGuidedTask = (taskIdOrNum: string): { ok: boolean; summary: string } => {
@@ -905,6 +969,17 @@ export function useGameActions() {
       detailNote = `Flashed OS -> ${newPart.name}`;
     }
 
+    const computeSwapped = slot === 'compute' || (nextRigPatch.computeId !== undefined && nextRigPatch.computeId !== rig.computeId);
+    const fitIssue = getRigChassisIssue({
+      ...rig, ...nextRigPatch,
+      customAsicSpec: computeSwapped ? undefined : rig.customAsicSpec,
+      customParts: rig.customParts ? {
+        ...rig.customParts,
+        chassis: slot === 'chassis' ? undefined : rig.customParts.chassis,
+        compute: computeSwapped ? undefined : rig.customParts.compute,
+      } : undefined,
+    });
+    if (fitIssue) return { ok: false, summary: fitIssue };
     soundFx.playCash();
     setState((prev) =>
       prev
@@ -1146,6 +1221,8 @@ export function useGameActions() {
       };
     }
     const toAdd = Math.min(slotsLeft, Math.max(1, qty));
+    const fitIssue = getRigChassisIssue({ ...rig, gpuIds: [...rig.gpuIds, ...Array(toAdd).fill(gpuSpec.id)] });
+    if (fitIssue) return { ok: false, summary: fitIssue };
     const totalCost = Math.round(gpuSpec.cost * hwMult) * toAdd;
     if (state.cash < totalCost) {
       return { ok: false, summary: `Insufficient cash (need ${formatUsd(totalCost)}).` };
@@ -1435,13 +1512,20 @@ export function useGameActions() {
     return { ok: true, summary: check.summary };
   };
 
-  const handleRunPrototypeTest = (bpIdx: number): { ok: boolean; summary: string } => {
+  const handleRunPrototypeTest = (bpIdx: number, forcedStatus?: Parameters<typeof runPrototypeTest>[2]): { ok: boolean; summary: string } => {
     if (!state) return { ok: false, summary: 'No active game.' };
-    const check = runPrototypeTest(state, bpIdx);
+    const check = runPrototypeTest(state, bpIdx, forcedStatus);
     if (!check.ok) return { ok: false, summary: check.summary };
     soundFx.playMilestone();
-    setState((prev) => (prev ? runPrototypeTest(prev, bpIdx).nextState : prev));
+    setState((prev) => (prev ? runPrototypeTest(prev, bpIdx, forcedStatus).nextState : prev));
     return { ok: true, summary: check.summary };
+  };
+
+  const handleDevFinishFabBatch = (outcome: 'PASS' | 'SCRAP') => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const result = finishDevFabBatch(state, outcome);
+    if (result.ok) setState((prev) => prev ? finishDevFabBatch(prev, outcome).nextState : prev);
+    return result;
   };
 
   const handleDesignCustomChip = (
@@ -1793,6 +1877,8 @@ export function useGameActions() {
     if (!state) return { ok: false, summary: 'No active game.' };
     const target = (state.backupRigs ?? [])[backupIdx];
     if (!target) return { ok: false, summary: `Backup rig #${backupIdx + 1} not found.` };
+    const fitIssue = getRigChassisIssue(target);
+    if (fitIssue) return { ok: false, summary: fitIssue };
     const maxRigs = getEffectiveFacilityMaxRigs(state);
     if (state.rigs.length >= maxRigs) {
       return { ok: false, summary: `Facility full (${maxRigs} max rigs).` };
@@ -1869,7 +1955,7 @@ export function useGameActions() {
   };
 
   const handleDeployRig = (config: RigBuildConfig): boolean => {
-    if (!state) return false;
+    if (!state || getRigChassisIssue(config)) return false;
     const newCost = calculateRigBuildCost(config, state);
     const maxRigs = getEffectiveFacilityMaxRigs(state);
     if (state.cash < newCost || state.rigs.length >= maxRigs) {
@@ -1904,7 +1990,7 @@ export function useGameActions() {
       if (!prev) return prev;
       const cost = calculateRigBuildCost(config, prev);
       const fac = getFacility(prev.facilityId);
-      if (prev.cash < cost || prev.rigs.length >= getEffectiveFacilityMaxRigs(prev)) return prev;
+      if (prev.cash < cost || prev.rigs.length >= getEffectiveFacilityMaxRigs(prev) || getRigChassisIssue(config)) return prev;
 
       const prevFab = buildDefaultFab(prev.fab);
       const nextFabInv = prevFab.inventory.map((i) => ({
@@ -2105,6 +2191,8 @@ export function useGameActions() {
     if (!state) return { ok: false, summary: 'No active game.' };
     const src = state.rigs[rigIdx];
     if (!src) return { ok: false, summary: `Rig #${rigIdx + 1} not found.` };
+    const fitIssue = getRigChassisIssue({ ...src, customParts: undefined, customAsicSpec: undefined });
+    if (fitIssue) return { ok: false, summary: `The catalog parts left in this clone would not fit. ${fitIssue}` };
     const count = Math.max(1, Math.min(12, qty));
     const maxRigs = getEffectiveFacilityMaxRigs(state);
     if (state.rigs.length + count > maxRigs) {
@@ -3196,24 +3284,20 @@ export function useGameActions() {
   const handleInvestigateRival = (rivalIdx: number): { ok: boolean; summary: string } => {
     if (!state) return { ok: false, summary: 'No active game.' };
     const res = investigateRivalSyndicate(state, rivalIdx);
-    if (res.ok) {
+    if (res.ok && res.cost > 0) {
       soundFx.playMilestone();
-      setState((prev) =>
-        prev
-          ? {
-              ...investigateRivalSyndicate(prev, rivalIdx).nextState,
-              transactions: [
-                makeTx(
-                  prev.stepCount,
-                  'EVENT',
-                  -res.cost,
-                  `Corporate recon vs ${state.rivals[rivalIdx]?.name ?? 'Rival'}`
-                ),
-                ...(prev.transactions ?? []),
-              ].slice(0, 200),
-            }
-          : prev
-      );
+      setState((prev) => {
+        if (!prev) return prev;
+        const recon = investigateRivalSyndicate(prev, rivalIdx);
+        if (!recon.ok || recon.cost === 0) return prev;
+        return {
+          ...recon.nextState,
+          transactions: [
+            makeTx(prev.stepCount, 'EVENT', -recon.cost, `Corporate recon vs ${prev.rivals[rivalIdx].name}`),
+            ...(prev.transactions ?? []),
+          ].slice(0, 200),
+        };
+      });
     }
     return { ok: res.ok, summary: res.summary };
   };
@@ -3845,18 +3929,14 @@ export function useGameActions() {
   // Dev Overrides
   const handleToggleDevMode = (enabled: boolean) => {
     soundFx.playClick();
-    setState((prev) =>
-      prev
-        ? {
-            ...prev,
-            devMode: enabled,
-            devUnlockAll: enabled ? prev.devUnlockAll : false,
-          }
-        : prev
-    );
+    setState((prev) => {
+      if (!prev) return prev;
+      if (enabled && !prev.isDevSession) return forkDevSession(prev);
+      return { ...prev, devMode: enabled, devUnlockAll: enabled ? prev.devUnlockAll : false };
+    });
     if (enabled) {
       setDevPanelOpen(true);
-      showBanner('Developer Mode enabled. Open Dev Tools anytime from the toolbar.');
+      showBanner('Dev Mode is running in a temporary copy. Resume your saved game from the title menu.');
     } else {
       showBanner('Developer Mode disabled.');
     }
@@ -3871,12 +3951,11 @@ export function useGameActions() {
     soundFx.playMilestone();
     const scenario = createScenarioState(id);
     setState(scenario);
-    setSandboxSnapshot(scenario);
     setActiveTerminalModal(null);
     setUserPaused(false);
-    setAutoCountdown(autoStepSeconds);
+    setAutoCountdown(scenario.stepSeconds ?? DEFAULT_STEP_SECONDS);
     showBanner(
-      `Dev scenario loaded into the sandbox slot (${scenario.runSeed}). Career save untouched.`
+      `Temporary Dev scenario loaded (${scenario.runSeed}).`
     );
   };
 
@@ -4257,6 +4336,7 @@ export function useGameActions() {
     handleImportSaveJson,
     handleResetSave,
     handleStepSteps,
+    handleQualifyRig,
     handleResolveEvent,
     handleUnlockCoin,
     handleCreatePlayerCoin,
@@ -4266,6 +4346,7 @@ export function useGameActions() {
     handleOverclockRigs,
     handleSetTutorialStep,
     handleMarkTutorialSeen,
+    handleFinishGuidedLesson,
     handleSetOnboardingMode,
     handleCompleteGuidedTask,
     handlePauseGuidedOnboarding,
@@ -4292,6 +4373,7 @@ export function useGameActions() {
     handleTapeoutDraftBlueprint,
     handleReviseBlueprint,
     handleRunPrototypeTest,
+    handleDevFinishFabBatch,
     handleDesignCustomChip,
     handleStripCustomAsic,
     handleQueueFabProduction,
