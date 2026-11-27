@@ -2,6 +2,7 @@ import { GuidedSystemId } from '../../data/onboarding';
 import { CreatePlayerCoinInput } from '../../engine/coins';
 import { CustomBlueprintDesignInput } from '../../engine/simulation';
 import {
+  BusinessId,
   ChallengeId,
   ChipProcessNode,
   CoinSymbol,
@@ -206,6 +207,31 @@ export interface TextGameTerminalProps {
   onRenameCorporateHQ: (companyName: string) => { ok: boolean; summary: string };
   onToggleSynergyPolicy: (policyQuery: string) => { ok: boolean; summary: string };
   onUpgradeBusinessDivision: (businessQuery: string) => { ok: boolean; summary: string };
+  onRunMarketForecastModel: () => { ok: boolean; summary: string };
+  onUpgradePredictionModel: () => { ok: boolean; summary: string };
+  onExpandIntelSubscriptions: (count?: number) => { ok: boolean; summary: string };
+  onSellPredictionSoftwareLicenses: (packs?: number) => { ok: boolean; summary: string };
+  onToggleIntelAdvisory: () => { ok: boolean; summary: string };
+  onToggleCommercialPool: () => { ok: boolean; summary: string };
+  onSetCommercialPoolFee: (feePct: number) => { ok: boolean; summary: string };
+  onExpandHostingInfrastructure: (addKw?: number) => { ok: boolean; summary: string };
+  onOnboardHostingClient: (count?: number) => { ok: boolean; summary: string };
+  onDropHostingClient: (count?: number) => { ok: boolean; summary: string };
+  onLeaseComputeCapacity: (units?: number) => { ok: boolean; summary: string };
+  onPerformServicesSlaAudit: () => { ok: boolean; summary: string };
+  onLicenseBlueprintExternally: (blueprintIdx: number) => { ok: boolean; summary: string };
+  onCompleteExternalDesignContract: (specialty?: string) => { ok: boolean; summary: string };
+  onRunCoolingPowerEngineeringTune: () => { ok: boolean; summary: string };
+  onUpgradeHardwareEngLab: () => { ok: boolean; summary: string };
+  onStartOemContract: (category?: string, qty?: number) => { ok: boolean; summary: string };
+  onFulfillOemFromInventory: (invIdx: number) => { ok: boolean; summary: string };
+  onFulfillInternalSupplyOrder: (target?: string) => { ok: boolean; summary: string };
+  onRunManufacturingQcAudit: () => { ok: boolean; summary: string };
+  onHardenShellSubsidiary: () => { ok: boolean; summary: string };
+  onStartUndergroundContract: (kind?: string) => { ok: boolean; summary: string };
+  onRunAuditFirewallSweep: () => { ok: boolean; summary: string };
+  onContainParentSpillover: () => { ok: boolean; summary: string };
+  onMarkBusinessTutorialSeen: (businessId: BusinessId) => void;
   onBackupSave: () => boolean;
   onRestoreBackup: () => boolean;
   onExportSave: () => string | null;
@@ -231,6 +257,8 @@ export interface TextGameTerminalProps {
     algorithm?: MiningAlgorithm
   ) => { ok: boolean; summary: string };
   onDevRefreshBlackMarket: () => void;
+  onDevGrantAllBusinesses: () => void;
+  onDevStabilizeAllDivisions: () => void;
   onSetTutorialStep: (step: number) => void;
   onMarkTutorialSeen: (guideId: string) => void;
   onFinishGuidedLesson: () => void;

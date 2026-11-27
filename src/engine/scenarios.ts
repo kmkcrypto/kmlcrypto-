@@ -15,6 +15,7 @@ import { createNewGameState, getFacility } from './simulation';
 import { buildDefaultFab } from './fab';
 import { launchShellCoin, prepareVaultRaid } from './underground';
 import { buildDefaultConglomerate, grantAllSixBusinessesForScenario } from './conglomerate';
+import { generateAcquisitionBoard } from './acquisitions';
 import { evaluateGenerationMilestones } from './generations';
 import { buildDefaultWorld, stepSharedWorld } from './world';
 
@@ -66,6 +67,13 @@ export const SCENARIOS: ScenarioSpec[] = [
     tagline: 'Megafarm · AI-ASIC',
     description:
       'Gen-6 AI-ASIC blades and Neural Tensor GPUs on 16kW HVDC with AI thermal fabric cooling.',
+  },
+  {
+    id: 'CONGLOMERATE_GEN6',
+    name: 'Corporate Conglomerate',
+    tagline: 'Gen 6 · 4/6 Divisions + HQ',
+    description:
+      'Holding Corp HQ Lv 3 operating Mining, Market Intel, Hardware Eng & Manufacturing with final M&A buyouts ready to unlock Gen-7.',
   },
   {
     id: 'GEN7',
@@ -128,6 +136,7 @@ const SCENARIO_SEED: Record<DevScenarioId, string> = {
   MANUFACTURING: 'DEV-FAB',
   MULTIPLAYER: 'DEV-WORLD',
   QUANTUM_PHOTONIC: 'DEV-QP-LAB',
+  CONGLOMERATE_GEN6: 'DEV-CONG-G6',
   UNDERGROUND_CRISIS: 'DEV-UG-CRISIS',
   CUSTOM_COIN_EMPIRE: 'DEV-CUSTOM-COIN',
   CUSTOM: 'DEV-CUSTOM',
@@ -326,7 +335,7 @@ export function createScenarioState(id: DevScenarioId): GameState {
     }
     case 'GEN5': {
       const s = withRigs('fac_industrial', gen5Parts, 8, 18_000_000);
-      return {
+      const gen5State: GameState = {
         ...s,
         unlockedResearch: researchClosure([
           'res_gen5_exascale',
@@ -342,10 +351,24 @@ export function createScenarioState(id: DevScenarioId): GameState {
           'RESEARCHER',
         ]),
       };
+      const baseCong = buildDefaultConglomerate(gen5State, gen5State.conglomerate);
+      const gen5Board = generateAcquisitionBoard(gen5State, baseCong);
+      return {
+        ...gen5State,
+        conglomerate: {
+          ...baseCong,
+          acquisitions: {
+            ...baseCong.acquisitions,
+            availableTargets: gen5Board,
+            lastRefreshStep: gen5State.stepCount,
+          },
+          generation: evaluateGenerationMilestones(gen5State, baseCong),
+        },
+      };
     }
     case 'GEN6': {
       const s = withRigs('fac_megafarm', gen6Parts, 6, 65_000_000);
-      return {
+      const gen6State: GameState = {
         ...s,
         unlockedResearch: researchClosure(['res_gen6_ai_convergence', 'res_ai_thermal_fabric']),
         employees: buildEmployees([
@@ -356,6 +379,92 @@ export function createScenarioState(id: DevScenarioId): GameState {
           'RESEARCHER',
           'SYS_ENGINEER',
         ]),
+      };
+      const baseCong = buildDefaultConglomerate(gen6State, gen6State.conglomerate);
+      const gen6Board = generateAcquisitionBoard(gen6State, baseCong);
+      return {
+        ...gen6State,
+        conglomerate: {
+          ...baseCong,
+          acquisitions: {
+            ...baseCong.acquisitions,
+            availableTargets: gen6Board,
+            lastRefreshStep: gen6State.stepCount,
+          },
+          generation: evaluateGenerationMilestones(gen6State, baseCong),
+        },
+      };
+    }
+    case 'CONGLOMERATE_GEN6': {
+      const s = withRigs('fac_megafarm', gen6Parts, 6, 45_000_000);
+      const congState: GameState = {
+        ...s,
+        researchPoints: 850,
+        unlockedResearch: researchClosure([
+          'res_gen6_ai_convergence',
+          'res_ai_thermal_fabric',
+          'res_wafer_lithography',
+          'res_quant_desk',
+        ]),
+        fab: { ...buildDefaultFab(), linesCount: 3 },
+        employees: buildEmployees([
+          'TECHNICIAN',
+          'ELECTRICIAN',
+          'MANAGER',
+          'RESEARCHER',
+          'SYS_ENGINEER',
+          'ANALYST',
+        ]),
+      };
+      const baseCong = buildDefaultConglomerate(congState, congState.conglomerate);
+      const fourActiveCong = {
+        ...baseCong,
+        hq: {
+          ...baseCong.hq,
+          established: true,
+          companyName: 'Apex Hash Holdings',
+          hqLevel: 3,
+          activeSynergies: ['ENG_TO_MFG', 'MFG_TO_MINING', 'INTEL_TO_MINING'] as typeof baseCong.hq.activeSynergies,
+        },
+        businesses: {
+          ...baseCong.businesses,
+          MARKET_INTEL: {
+            ...baseCong.businesses.MARKET_INTEL,
+            status: 'ACTIVE' as const,
+            acquiredStep: 0,
+            acquiredCompanyName: 'Oracle Chain Analytics',
+            level: 2,
+          },
+          HARDWARE_ENG: {
+            ...baseCong.businesses.HARDWARE_ENG,
+            status: 'ACTIVE' as const,
+            acquiredStep: 0,
+            acquiredCompanyName: 'Aether Silicon Labs',
+            level: 2,
+          },
+          MANUFACTURING: {
+            ...baseCong.businesses.MANUFACTURING,
+            status: 'ACTIVE' as const,
+            acquiredStep: 0,
+            acquiredCompanyName: 'Helios WaferWorks',
+            level: 2,
+          },
+        },
+      };
+      const withBoard = {
+        ...fourActiveCong,
+        acquisitions: {
+          ...fourActiveCong.acquisitions,
+          availableTargets: generateAcquisitionBoard({ ...congState, conglomerate: fourActiveCong }, fourActiveCong),
+          lastRefreshStep: congState.stepCount,
+        },
+      };
+      return {
+        ...congState,
+        conglomerate: {
+          ...withBoard,
+          generation: evaluateGenerationMilestones(congState, withBoard),
+        },
       };
     }
     case 'GEN7': {
@@ -381,11 +490,21 @@ export function createScenarioState(id: DevScenarioId): GameState {
         buildDefaultConglomerate(gen7State, gen7State.conglomerate),
         gen7State.stepCount
       );
+      const apexCong = {
+        ...baseCong,
+        hq: {
+          ...baseCong.hq,
+          established: true,
+          companyName: 'Hyperion Quantum Conglomerate',
+          hqLevel: 5,
+          activeSynergies: ['ENG_TO_MFG', 'MFG_TO_MINING', 'INTEL_TO_MINING', 'INTEL_TO_TREASURY'] as typeof baseCong.hq.activeSynergies,
+        },
+      };
       return {
         ...gen7State,
         conglomerate: {
-          ...baseCong,
-          generation: evaluateGenerationMilestones(gen7State, baseCong),
+          ...apexCong,
+          generation: evaluateGenerationMilestones(gen7State, apexCong),
         },
       };
     }

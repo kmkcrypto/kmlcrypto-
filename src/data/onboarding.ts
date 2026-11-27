@@ -1,5 +1,6 @@
 import { FACILITY_TIERS } from './catalog';
 import {
+  BusinessId,
   GameState,
   CycleLedgerEntry,
   GuidedOnboardingState,
@@ -7,6 +8,23 @@ import {
   GuidedSystemStatus,
   OnboardingMode,
 } from '../types/game';
+
+export function getBusinessTutorialTopicId(businessId: BusinessId): string {
+  switch (businessId) {
+    case 'MINING':
+      return 'hardware';
+    case 'MARKET_INTEL':
+      return 'market_intel';
+    case 'HARDWARE_ENG':
+      return 'hardware_eng';
+    case 'MANUFACTURING':
+      return 'manufacturing_div';
+    case 'MINING_SERVICES':
+      return 'mining_services';
+    case 'UNDERGROUND':
+      return 'underground_div';
+  }
+}
 
 /** Facility names/specs are read from the live catalog so guide text can never drift from the data. */
 const GARAGE_FACILITY_NAME = FACILITY_TIERS[1]?.name ?? 'Garage Operation';
@@ -807,6 +825,84 @@ export const TUTORIAL_TOPICS: Record<string, TutorialTopicGuide> = {
     ],
     nextCommand: 'wallet',
   },
+  conglomerate: {
+    id: 'conglomerate',
+    title: 'EXPAND VIA M&A AND CORPORATE HQ',
+    summary: 'Acquire bankrupt industry companies, incorporate HQ, and unlock Gen-7.',
+    lines: [
+      '  Decision: which division adds the strongest margin or synergy next?',
+      '  1. Reaching Gen 5 opens distressed M&A targets matching your hidden operational affinity. Run "acquire" and "acquire inspect <#>".',
+      '  2. Newly acquired firms start RECOVERING. Run "corp turnaround <biz>" to stabilize immediately or let steps finish recovery.',
+      '  3. With 2+ businesses owned, run "hq establish" ($75k) to unlock HQ Governance, Upgrade Tiers, and Synergy Policies ("hq synergy").',
+      '  Check: owning all 6 businesses unlocks Gen-7 Quantum & Photonic R&D and grants a +10% Apex RP Dividend.',
+    ],
+    nextCommand: 'corp',
+  },
+  market_intel: {
+    id: 'market_intel',
+    title: 'MARKET INTELLIGENCE DIVISION (B2)',
+    summary: 'Monetize crypto forecasting models, subscriptions, and treasury advisory.',
+    lines: [
+      '  Decision: should Market Intel focus on recurring client subscriptions or internal trading alpha?',
+      '  1. Run "intel" for model tier, forecast accuracy, and subscriber count. Run "intel forecast" to calibrate market predictions.',
+      '  2. Scale recurring cycle income with "intel sub [qty]" and sell prediction packs via "intel license [1..3]".',
+      '  3. Toggle "intel advisory" and enable SYN-4 / SYN-5 in "hq synergy" to lift mining auto-sell payouts and cut exchange fees.',
+      '  Check: review Market Intel Net P&L in "corp ledger" after billing.',
+    ],
+    nextCommand: 'intel',
+  },
+  hardware_eng: {
+    id: 'hardware_eng',
+    title: 'HARDWARE ENGINEERING DIVISION (B3)',
+    summary: 'License foundry silicon IP, fulfill design contracts, and tune fleet thermals.',
+    lines: [
+      '  Decision: license custom blueprints externally or upgrade lab efficiency for Foundry synergy?',
+      '  1. Run "eng" to inspect Lab Tier, royalties, and thermal tuning bonuses.',
+      '  2. Monetize tested blueprints from "fab" via "eng license <bp#>" for recurring royalty payouts, or bid on "eng contract".',
+      '  3. Run "eng tune" to optimize fleet power/cooling draw, or "eng upgrade" to raise lab capacity.',
+      '  Check: link Hardware Eng to Manufacturing via SYN-1 ("hq synergy") to cut NRE tooling fees.',
+    ],
+    nextCommand: 'eng',
+  },
+  manufacturing_div: {
+    id: 'manufacturing_div',
+    title: 'MANUFACTURING DIVISION (B4)',
+    summary: 'Execute OEM fabrication contracts, sister-division supply orders, and fab QC.',
+    lines: [
+      '  Decision: ship fab inventory to external OEM buyers or supply sister divisions internally?',
+      '  1. Run "mfg" to review active OEM contract slots, QC yield score, and Foundry lines.',
+      '  2. Accept third-party runs with "mfg oem start [cat] [qty]" and fulfill from stock using "mfg oem fulfill <inv#>".',
+      '  3. Fulfill internal supply ("mfg supply <mining|services>") to credit Mining/Services equipment discounts, and run "mfg qc" to cut scrap.',
+      '  Check: activate SYN-2 and SYN-3 in "hq synergy" for vertical hardware savings.',
+    ],
+    nextCommand: 'mfg',
+  },
+  mining_services: {
+    id: 'mining_services',
+    title: 'MINING SERVICES DIVISION (B5)',
+    summary: 'Operate commercial pools, expand colocation hosting racks, and enforce SLAs.',
+    lines: [
+      '  Decision: expand rack kW capacity for long-term hosting or lease spare power short-term?',
+      '  1. Run "services" to view pool status, pool fee %, hosted clients, and SLA compliance.',
+      '  2. Toggle your commercial pool ("services pool toggle") and tune competitive fees ("services pool fee <0.25..5.0>").',
+      '  3. Expand colocation capacity ("services expand [kW]"), onboard clients ("services client add"), and run "services sla" to prevent churn.',
+      '  Check: activate SYN-3 with Manufacturing for turnkey colocation margin bonuses.',
+    ],
+    nextCommand: 'services',
+  },
+  underground_div: {
+    id: 'underground_div',
+    title: 'UNDERGROUND SUBSIDIARY (B6)',
+    summary: 'Run shell-shielded covert contracts while containing regulatory spillover.',
+    lines: [
+      '  Decision: push high-yield covert contracts or prioritize shell shielding to protect the parent corp?',
+      '  1. Run "ug" to check Subsidiary Shield %, audit firewall status, and spillover count.',
+      '  2. Harden separation via "ug shield" before accepting contracts ("ug contract [escrow|liquidity|pressure]").',
+      '  3. When Heat climbs, run "ug sweep" to scrub audit trails or "ug contain" to absorb regulatory spillover from Mining HQ.',
+      '  Check: watch Heat in "ops" — unshielded scandals still damage parent corporate credibility.',
+    ],
+    nextCommand: 'ug',
+  },
 };
 
 export const CONTEXTUAL_GUIDES: Record<
@@ -938,6 +1034,36 @@ export const CONTEXTUAL_GUIDES: Record<
     body: "Review holdings and orders in \"wallet\". Reserve money for bills before adding exposure to coin prices.",
     topic: 'exchange',
     system: 'exchange',
+  },
+  ctx_corp: {
+    title: 'CONSOLIDATE YOUR HOLDING COMPANY',
+    body: 'Check "corp ledger" for per-division net P&L, "acquire" for distressed buyouts, and "hq" for inter-division synergies.',
+    topic: 'conglomerate',
+  },
+  ctx_intel: {
+    title: 'CALIBRATE DATA BEFORE SELLING',
+    body: 'Run "intel forecast" and scale model tiers before adding subscribers. Link SYN-4 / SYN-5 once HQ is incorporated.',
+    topic: 'market_intel',
+  },
+  ctx_eng: {
+    title: 'MONETIZE VALIDATED BLUEPRINTS',
+    body: 'Prototype-tested parts from "fab" can be licensed via "eng license <bp#>" for recurring royalties without burning line capacity.',
+    topic: 'hardware_eng',
+  },
+  ctx_mfg: {
+    title: 'BALANCE OEM RUNS & INTERNAL SUPPLY',
+    body: 'Keep Foundry batches moving with "mfg qc", fulfill external OEM slots for cash, and use "mfg supply" to lower sister-division costs.',
+    topic: 'manufacturing_div',
+  },
+  ctx_services: {
+    title: 'PROTECT HOSTING SLA UPTIME',
+    body: 'Keep colocation power headroom above contracted kW and run "services sla" when SLA drops so hosted clients stay retained.',
+    topic: 'mining_services',
+  },
+  ctx_ug: {
+    title: 'SHIELD THE PARENT CORPORATION',
+    body: 'Build shell insulation with "ug shield" before running "ug contract". Run "ug contain" if subsidiary heat threatens parent credibility.',
+    topic: 'underground_div',
   },
 };
 
@@ -1148,6 +1274,35 @@ export const CODEX_ENTRIES: CodexEntry[] = [
       '  - Create, duplicate, rename, and launch custom reusable Career Presets from the Title Menu.',
       '  - Presets toggle Starting Cash, Facility/Contract, Market Rules, and Starter Rig config.',
       '  - "guide" lists business milestones that earn access. "guide pause" and "guide pace" control tips.',
+    ],
+  },
+  {
+    key: 'conglomerate',
+    title: 'CORPORATE CONGLOMERATE, M&A & GEN-7 GATE',
+    category: 'PROGRESSION',
+    keywords: ['corp', 'conglomerate', 'hq', 'synergy', 'acquire', 'buyout', 'turnaround', 'gen7', 'affinity', 'ledger'],
+    relatedKeys: ['divisions', 'gen7', 'research'],
+    body: [
+      '  - At Gen 5+, hidden Industry Affinity shapes your lead distressed M&A buyout offer ("acquire").',
+      '  - Acquired divisions begin RECOVERING at 0.75x efficiency; run "corp turnaround <biz>" or step to stabilize.',
+      '  - Incorporate Corporate HQ ("hq establish") at 2+ businesses to unlock HQ tiers and 6 Synergy Policies.',
+      '  - Career mode requires owning all 6 businesses simultaneously to unlock Gen-7 Quantum & Photonic R&D.',
+      '  - Having all 6 businesses ACTIVE with HQ established awards a +10% Apex RP Dividend.',
+    ],
+  },
+  {
+    key: 'divisions',
+    title: 'THE SIX BUSINESS PILLARS & DIVISION OPERATIONS',
+    category: 'OPERATIONS',
+    keywords: ['intel', 'eng', 'mfg', 'services', 'ug', 'oem', 'pool', 'hosting', 'firewall', 'subsidiary', 'divisions'],
+    relatedKeys: ['conglomerate', 'fab', 'investigation'],
+    body: [
+      '  - B1 Mining: Core facilities, rigs, power/cooling, and crypto production.',
+      '  - B2 Market Intel ("intel"): Forecasting models, data subscriptions, software licenses, treasury advisory.',
+      '  - B3 Hardware Eng ("eng"): External blueprint IP licensing, engineering contracts, cooling/power tuning.',
+      '  - B4 Manufacturing ("mfg"): OEM manufacturing contracts, QC audits, internal supply to Mining/Services.',
+      '  - B5 Mining Services ("services"): Commercial mining pools, colocation kW hosting, compute leases & SLAs.',
+      '  - B6 Underground ("ug"): Shell shielding, covert escrow/liquidity contracts, audit firewalls & spillover containment.',
     ],
   },
 ];

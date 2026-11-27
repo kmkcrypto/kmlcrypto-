@@ -69,6 +69,8 @@ import {
 import { createScenarioState } from '../engine/scenarios';
 import {
   advanceOneStep,
+  buildDefaultConglomerate,
+  BUSINESS_ORDER,
   calculatePartTradeInCost,
   calculateRigBuildCost,
   calculateRigResaleValue,
@@ -81,6 +83,7 @@ import {
   createNewGameState,
   ensureRigComponentHealth,
   estimateFleetHashIndex,
+  evaluateGenerationMilestones,
   executeSpotBuy,
   executeSpotSell,
   findOpenGridSlot,
@@ -96,6 +99,7 @@ import {
   getFacilityRoomExpansionCost,
   getFacilityRooms,
   getFacilityUpgradeCost,
+  grantAllSixBusinessesForScenario,
   getRigRepasteCost,
   getRigRepairCost,
   investigateRivalSyndicate,
@@ -118,6 +122,41 @@ import {
 } from '../engine/corporate';
 import { upgradeBusinessDivision } from '../engine/businesses';
 import {
+  expandIntelSubscriptions,
+  runMarketForecastModel,
+  sellPredictionSoftwareLicenses,
+  toggleIntelAdvisory,
+  upgradePredictionModel,
+} from '../engine/marketIntel';
+import {
+  dropHostingClient,
+  expandHostingInfrastructure,
+  leaseComputeCapacity,
+  onboardHostingClient,
+  performServicesSlaAudit,
+  setCommercialPoolFee,
+  toggleCommercialPool,
+} from '../engine/miningServices';
+import {
+  completeExternalDesignContract,
+  licenseBlueprintExternally,
+  runCoolingPowerEngineeringTune,
+  upgradeHardwareEngLab,
+} from '../engine/hardwareEng';
+import {
+  fulfillInternalSupplyOrder,
+  fulfillOemOrderFromInventory,
+  runManufacturingQcAudit,
+  startOemManufacturingContract,
+} from '../engine/manufacturing';
+import {
+  containParentSpillover,
+  getUndergroundDivisionEffects,
+  hardenShellSubsidiary,
+  runAuditFirewallSweep,
+  startUndergroundContract,
+} from '../engine/undergroundDiv';
+import {
   complyWithAudit,
   developShellCoin,
   executePreparedRaid,
@@ -131,6 +170,7 @@ import {
 } from '../engine/underground';
 import { calculateBaseRigPartsCost, getGlobalHardwarePriceMult, getRigChassisIssue } from '../engine/usedMarket';
 import {
+  BusinessId,
   CareerPreset,
   ChallengeId,
   ChipProcessNode,
@@ -3743,27 +3783,28 @@ export function useGameActions() {
       return { ok: false, reason: `Insufficient cash (need ${formatUsd(cost)}).` };
     }
     soundFx.playCash();
-    setState((prev) =>
-      prev
-        ? {
-            ...prev,
-            cash: prev.cash - cost,
-            regulatoryScrutiny: Math.max(0, prev.regulatoryScrutiny - 24),
-            underground: {
-              ...prev.underground,
-              launderCooldownStep: prev.stepCount + 10,
-            },
-            transactions: [
-              makeTx(prev.stepCount, 'EVENT', -cost, 'Mixer scrubbing (-24 Heat)'),
-              ...(prev.transactions ?? []),
-            ].slice(0, 200),
-            stats: {
-              ...prev.stats,
-              totalFinesAndBribesUsd: prev.stats.totalFinesAndBribesUsd + cost,
-            },
-          }
-        : prev
-    );
+    setState((prev) => {
+      if (!prev) return prev;
+      const ugFx = getUndergroundDivisionEffects(prev);
+      const heatDrop = Math.round(24 * ugFx.launderBoostMult);
+      return {
+        ...prev,
+        cash: prev.cash - cost,
+        regulatoryScrutiny: Math.max(0, prev.regulatoryScrutiny - heatDrop),
+        underground: {
+          ...prev.underground,
+          launderCooldownStep: prev.stepCount + 10,
+        },
+        transactions: [
+          makeTx(prev.stepCount, 'EVENT', -cost, `Mixer scrubbing (-${heatDrop} Heat)`),
+          ...(prev.transactions ?? []),
+        ].slice(0, 200),
+        stats: {
+          ...prev.stats,
+          totalFinesAndBribesUsd: prev.stats.totalFinesAndBribesUsd + cost,
+        },
+      };
+    });
     return { ok: true, cost };
   };
 
@@ -4322,6 +4363,70 @@ export function useGameActions() {
     showBanner('Black Market inventory refreshed.');
   };
 
+  const handleDevGrantAllBusinesses = () => {
+    soundFx.playMilestone();
+    setState((prev) => {
+      if (!prev) return prev;
+      const seeded = buildDefaultConglomerate(prev, prev.conglomerate);
+      const granted = grantAllSixBusinessesForScenario(seeded, prev.stepCount);
+      const nextCong = {
+        ...granted,
+        hq: {
+          ...granted.hq,
+          established: true,
+          hqLevel: Math.max(3, granted.hq.hqLevel),
+        },
+        acquisitions: {
+          ...granted.acquisitions,
+          expansionOpportunityUnlocked: true,
+          expansionOfferStep: granted.acquisitions.expansionOfferStep ?? prev.stepCount,
+          availableTargets: [],
+        },
+      };
+      const withGen = {
+        ...nextCong,
+        generation: evaluateGenerationMilestones(prev, nextCong),
+      };
+      return {
+        ...prev,
+        conglomerate: withGen,
+      };
+    });
+    showBanner('Dev Override: All 6 corporate divisions granted ACTIVE + HQ Lv 3+ established (Gen-7 unlocked).');
+  };
+
+  const handleDevStabilizeAllDivisions = () => {
+    soundFx.playClick();
+    setState((prev) => {
+      if (!prev) return prev;
+      const base = buildDefaultConglomerate(prev, prev.conglomerate);
+      const nextBusinesses = { ...base.businesses };
+      for (const id of BUSINESS_ORDER) {
+        const cur = nextBusinesses[id];
+        if (cur.status === 'RECOVERING' || cur.status === 'ACQUIRING') {
+          nextBusinesses[id] = {
+            ...cur,
+            status: 'ACTIVE',
+            recoveryStepsRemaining: 0,
+            efficiencyMult: Math.max(1, cur.efficiencyMult),
+          };
+        }
+      }
+      const nextCong = {
+        ...base,
+        businesses: nextBusinesses,
+      };
+      return {
+        ...prev,
+        conglomerate: {
+          ...nextCong,
+          generation: evaluateGenerationMilestones(prev, nextCong),
+        },
+      };
+    });
+    showBanner('Dev Override: All recovering corporate divisions stabilized to ACTIVE.');
+  };
+
   const handleInspectAcquisitionTarget = (targetQuery: string): { ok: boolean; summary: string } => {
     if (!state) return { ok: false, summary: 'No active game.' };
     const res = inspectAcquisitionTarget(state, targetQuery);
@@ -4416,6 +4521,273 @@ export function useGameActions() {
       showBanner(res.summary);
     }
     return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleRunMarketForecastModel = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = runMarketForecastModel(state);
+    if (res.ok) {
+      soundFx.playClick();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleUpgradePredictionModel = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = upgradePredictionModel(state);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleExpandIntelSubscriptions = (count?: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = expandIntelSubscriptions(state, count);
+    if (res.ok) {
+      soundFx.playCash();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleSellPredictionSoftwareLicenses = (packs?: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = sellPredictionSoftwareLicenses(state, packs);
+    if (res.ok) {
+      soundFx.playCash();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleToggleIntelAdvisory = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = toggleIntelAdvisory(state);
+    if (res.ok) {
+      soundFx.playClick();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleToggleCommercialPool = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = toggleCommercialPool(state);
+    if (res.ok) {
+      soundFx.playClick();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleSetCommercialPoolFee = (feePct: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = setCommercialPoolFee(state, feePct);
+    if (res.ok) {
+      soundFx.playClick();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleExpandHostingInfrastructure = (addKw?: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = expandHostingInfrastructure(state, addKw);
+    if (res.ok) {
+      soundFx.playCash();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleOnboardHostingClient = (count?: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = onboardHostingClient(state, count);
+    if (res.ok) {
+      soundFx.playCash();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleDropHostingClient = (count?: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = dropHostingClient(state, count);
+    if (res.ok) {
+      soundFx.playClick();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleLeaseComputeCapacity = (units?: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = leaseComputeCapacity(state, units);
+    if (res.ok) {
+      soundFx.playCash();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handlePerformServicesSlaAudit = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = performServicesSlaAudit(state);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleLicenseBlueprintExternally = (blueprintIdx: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = licenseBlueprintExternally(state, blueprintIdx);
+    if (res.ok) {
+      soundFx.playCash();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleCompleteExternalDesignContract = (specialty?: string): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = completeExternalDesignContract(state, specialty);
+    if (res.ok) {
+      soundFx.playCash();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleRunCoolingPowerEngineeringTune = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = runCoolingPowerEngineeringTune(state);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleUpgradeHardwareEngLab = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = upgradeHardwareEngLab(state);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleStartOemContract = (category?: string, qty?: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = startOemManufacturingContract(state, category, qty);
+    if (res.ok) {
+      soundFx.playClick();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleFulfillOemFromInventory = (invIdx: number): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = fulfillOemOrderFromInventory(state, invIdx);
+    if (res.ok) {
+      soundFx.playCash();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleFulfillInternalSupplyOrder = (target?: string): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = fulfillInternalSupplyOrder(state, target);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleRunManufacturingQcAudit = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = runManufacturingQcAudit(state);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleHardenShellSubsidiary = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = hardenShellSubsidiary(state);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleStartUndergroundContract = (kind?: string): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = startUndergroundContract(state, kind);
+    if (res.ok) {
+      soundFx.playClick();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleRunAuditFirewallSweep = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = runAuditFirewallSweep(state);
+    if (res.ok) {
+      soundFx.playCash();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleContainParentSpillover = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = containParentSpillover(state);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleMarkBusinessTutorialSeen = (businessId: BusinessId) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      const base = buildDefaultConglomerate(prev, prev.conglomerate);
+      if (base.businessTutorialsSeen.includes(businessId)) return prev;
+      return {
+        ...prev,
+        conglomerate: {
+          ...base,
+          businessTutorialsSeen: [...base.businessTutorialsSeen, businessId],
+        },
+      };
+    });
   };
 
   return {
@@ -4565,6 +4937,8 @@ export function useGameActions() {
     handleDevGrantFabBatch,
     handleDevLaunchCustomCoin,
     handleDevRefreshBlackMarket,
+    handleDevGrantAllBusinesses,
+    handleDevStabilizeAllDivisions,
     handleInspectAcquisitionTarget,
     handleAcquireTargetCompany,
     handleRefreshAcquisitionMarket,
@@ -4574,5 +4948,30 @@ export function useGameActions() {
     handleRenameCorporateHQ,
     handleToggleSynergyPolicy,
     handleUpgradeBusinessDivision,
+    handleRunMarketForecastModel,
+    handleUpgradePredictionModel,
+    handleExpandIntelSubscriptions,
+    handleSellPredictionSoftwareLicenses,
+    handleToggleIntelAdvisory,
+    handleToggleCommercialPool,
+    handleSetCommercialPoolFee,
+    handleExpandHostingInfrastructure,
+    handleOnboardHostingClient,
+    handleDropHostingClient,
+    handleLeaseComputeCapacity,
+    handlePerformServicesSlaAudit,
+    handleLicenseBlueprintExternally,
+    handleCompleteExternalDesignContract,
+    handleRunCoolingPowerEngineeringTune,
+    handleUpgradeHardwareEngLab,
+    handleStartOemContract,
+    handleFulfillOemFromInventory,
+    handleFulfillInternalSupplyOrder,
+    handleRunManufacturingQcAudit,
+    handleHardenShellSubsidiary,
+    handleStartUndergroundContract,
+    handleRunAuditFirewallSweep,
+    handleContainParentSpillover,
+    handleMarkBusinessTutorialSeen,
   };
 }

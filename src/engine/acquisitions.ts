@@ -7,6 +7,7 @@ import {
   TransactionEntry,
 } from '../types/game';
 import { formatStepLabel, formatUsd } from '../utils/format';
+import { getBusinessTutorialTopicId } from '../data/onboarding';
 import { createSeededRng } from '../utils/rng';
 import {
   BUSINESS_CATALOG,
@@ -530,13 +531,14 @@ export function acquireTargetCompany(
     description: `Acquired ${target.companyName} (${meta.name})`,
   };
 
+  const topicId = getBusinessTutorialTopicId(target.businessId);
   const newsItems: NewsItem[] = [
     {
       id: `news_acq_${target.businessId}_${state.stepCount}`,
       step: state.stepCount,
       stepLabel,
       title: `Acquired ${target.companyName} (${meta.shortName})`,
-      detail: `Closed buyout for ${formatUsd(totalClosingCost)}. Division recovering (${target.recoverySteps} steps) — run "corp turnaround ${meta.shortName.toLowerCase()}" or advance steps. Conglomerate: ${ownedNow}/6 businesses.`,
+      detail: `Closed buyout for ${formatUsd(totalClosingCost)}. Division recovering (${target.recoverySteps} steps) — run "corp turnaround ${meta.shortName.toLowerCase()}" or "tutorial ${topicId}". Conglomerate: ${ownedNow}/6 businesses.`,
       category: 'MILESTONE',
     },
   ];
@@ -568,7 +570,7 @@ export function acquireTargetCompany(
   return {
     ok: true,
     nextState,
-    summary: `Acquired ${target.companyName} as your ${meta.name} division for ${formatUsd(totalClosingCost)}! (${ownedNow}/6 businesses owned; ${target.recoverySteps} steps to full stabilization)`,
+    summary: `Acquired ${target.companyName} as your ${meta.name} division for ${formatUsd(totalClosingCost)}! (${ownedNow}/6 businesses owned; ${target.recoverySteps} steps to full stabilization · Run "tutorial ${topicId}" for briefing)`,
   };
 }
 

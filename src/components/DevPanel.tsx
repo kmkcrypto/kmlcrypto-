@@ -13,8 +13,16 @@ import {
   Zap,
   ShieldAlert,
   Layers,
+  Briefcase,
 } from 'lucide-react';
 import { FACILITY_TIERS, MARKET_REGIME_SPECS } from '../data/catalog';
+import {
+  areAllSixBusinessesOwned,
+  buildDefaultConglomerate,
+  BUSINESS_CATALOG,
+  BUSINESS_ORDER,
+  getOwnedBusinessIds,
+} from '../engine/simulation';
 import { SCENARIOS } from '../engine/scenarios';
 import { CoinSymbol, DevScenarioId, GameState, InvestigationStage, MarketRegime, MiningAlgorithm, PartCategory } from '../types/game';
 import { formatStepLabel, formatUsd } from '../utils/format';
@@ -48,6 +56,8 @@ interface DevPanelProps {
     algorithm?: MiningAlgorithm
   ) => { ok: boolean; summary: string };
   onDevRefreshBlackMarket: () => void;
+  onDevGrantAllBusinesses: () => void;
+  onDevStabilizeAllDivisions: () => void;
 }
 
 export const DevPanel: React.FC<DevPanelProps> = ({
@@ -75,9 +85,17 @@ export const DevPanel: React.FC<DevPanelProps> = ({
   onDevGrantFabBatch,
   onDevLaunchCustomCoin,
   onDevRefreshBlackMarket,
+  onDevGrantAllBusinesses,
+  onDevStabilizeAllDivisions,
 }) => {
   const coinSymbols = Object.keys(state.coins) as CoinSymbol[];
   const regimes = Object.keys(MARKET_REGIME_SPECS) as MarketRegime[];
+  const conglomerate = buildDefaultConglomerate(state, state.conglomerate);
+  const ownedDivIds = getOwnedBusinessIds({ conglomerate });
+  const gen7Unlocked = areAllSixBusinessesOwned({ conglomerate });
+  const recoveringCount = BUSINESS_ORDER.filter(
+    (id) => conglomerate.businesses[id].status === 'RECOVERING'
+  ).length;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -167,6 +185,74 @@ export const DevPanel: React.FC<DevPanelProps> = ({
                   </p>
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Conglomerate Empire & Gen-7 Gate */}
+          <div className="p-4 rounded-lg bg-[#020704] border border-green-500/20 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-green-100">
+                <Briefcase className="w-4 h-4 text-cyan-400" />
+                <span>Conglomerate Empire &amp; Gen-7 Gate</span>
+              </div>
+              <span
+                className={`text-[11px] font-mono font-semibold ${
+                  gen7Unlocked ? 'text-cyan-300' : 'text-amber-300/90'
+                }`}
+              >
+                {ownedDivIds.length}/6 Owned · Gen-7 {gen7Unlocked ? 'UNLOCKED' : 'LOCKED'} ·{' '}
+                {conglomerate.hq.established
+                  ? `HQ Lv ${conglomerate.hq.hqLevel} (${conglomerate.hq.companyName})`
+                  : 'HQ Unincorporated'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+              {BUSINESS_ORDER.map((id) => {
+                const div = conglomerate.businesses[id];
+                const meta = BUSINESS_CATALOG[id];
+                const isActive = div.status === 'ACTIVE';
+                const isRecovering = div.status === 'RECOVERING';
+                return (
+                  <div
+                    key={id}
+                    className={`p-2 rounded border text-[11px] font-mono ${
+                      isActive
+                        ? 'bg-emerald-500/10 border-emerald-500/35 text-emerald-200'
+                        : isRecovering
+                        ? 'bg-amber-500/10 border-amber-500/35 text-amber-200'
+                        : 'bg-[#030B05] border-green-500/15 text-green-300/50'
+                    }`}
+                  >
+                    <div className="font-semibold truncate">{meta.shortName}</div>
+                    <div className="text-[10px] opacity-85 mt-0.5">
+                      {div.status} {div.status !== 'UNOWNED' ? `· Lv${div.level}` : ''}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={onDevGrantAllBusinesses}
+                className="px-3 py-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-xs font-semibold text-cyan-200 transition-colors"
+              >
+                Grant All 6 Businesses + HQ
+              </button>
+              <button
+                type="button"
+                onClick={onDevStabilizeAllDivisions}
+                disabled={recoveringCount === 0}
+                className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+                  recoveringCount > 0
+                    ? 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/35 text-amber-200'
+                    : 'bg-[#030B05] border-green-500/15 text-green-500/40 cursor-not-allowed'
+                }`}
+              >
+                Stabilize Recovering Divisions ({recoveringCount})
+              </button>
             </div>
           </div>
 

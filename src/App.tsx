@@ -1,18 +1,27 @@
+import { useState } from 'react';
 import { MARKET_REGIME_SPECS } from './data/catalog';
 import { getUnlockedSystems } from './data/onboarding';
-import { getEffectiveFacilityPowerCapKw, getFacilityTotals, getStepsUntilNextBill, isAcquisitionUnlocked } from './engine/simulation';
+import {
+  getEffectiveFacilityPowerCapKw,
+  getFacilityTotals,
+  getOwnedBusinessIds,
+  getStepsUntilNextBill,
+  isAcquisitionUnlocked,
+} from './engine/simulation';
 import { formatStepLabel, formatUsd } from './utils/format';
 import { soundFx } from './utils/sound';
-import { Binary, Pause, Play, SkipForward, Volume2, VolumeX, Wrench } from 'lucide-react';
+import { Binary, Briefcase, Pause, Play, SkipForward, Volume2, VolumeX, Wrench } from 'lucide-react';
 import { useGameActions } from './hooks/useGameActions';
 import { TitleMenu } from './components/TitleMenu';
 import { EducationLanding } from './components/EducationLanding';
 import { DevPanel } from './components/DevPanel';
+import { CorporateHQDrawer } from './components/CorporateHQDrawer';
 import { TextGameTerminal } from './components/TextGameTerminal';
 import { MatrixRainCanvas } from './components/MatrixRainCanvas';
 import { SideTelemetryPanels } from './components/SideTelemetryPanels';
 
 export default function App() {
+  const [hqDrawerOpen, setHqDrawerOpen] = useState(false);
   const actions = useGameActions();
   const {
     state,
@@ -87,6 +96,8 @@ export default function App() {
   const regimeSpec = MARKET_REGIME_SPECS[state.marketRegime];
 
   const unlockedSystems = getUnlockedSystems(state);
+  const ownedBusinessCount = getOwnedBusinessIds(state).length;
+  const showCorpControls = isAcquisitionUnlocked(state) || ownedBusinessCount > 1 || state.devMode;
   const navCommands: { label: string; cmd: string }[] = [
     { label: 'Status', cmd: 'status' },
     { label: 'Rigs', cmd: 'rigs' },
@@ -98,7 +109,7 @@ export default function App() {
     { label: 'Market', cmd: 'market' },
     ...(unlockedSystems.fab ? [{ label: 'Foundry', cmd: 'fab' }] : []),
     ...(unlockedSystems.contracts ? [{ label: 'Contracts', cmd: 'contracts' }] : []),
-    ...(isAcquisitionUnlocked(state) ? [{ label: 'Corp', cmd: 'corp' }] : []),
+    ...(showCorpControls ? [{ label: 'Corp', cmd: 'corp' }] : []),
     { label: 'Stats', cmd: 'stats' },
   ];
 
@@ -293,6 +304,24 @@ export default function App() {
               )}
             </button>
 
+            {showCorpControls && (
+              <button
+                type="button"
+                onClick={() => {
+                  soundFx.playClick();
+                  setHqDrawerOpen((v) => !v);
+                }}
+                className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 font-mono tabular-nums ${
+                  hqDrawerOpen
+                    ? 'bg-cyan-500/20 hover:bg-cyan-500/30 border-cyan-400/50 text-cyan-200'
+                    : 'bg-[#030D06] hover:bg-green-950 border-green-500/25 text-green-200'
+                }`}
+              >
+                <Briefcase className="w-3.5 h-3.5" />
+                <span>HQ {ownedBusinessCount}/6</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => {
@@ -430,6 +459,31 @@ export default function App() {
                 onRenameCorporateHQ={actions.handleRenameCorporateHQ}
                 onToggleSynergyPolicy={actions.handleToggleSynergyPolicy}
                 onUpgradeBusinessDivision={actions.handleUpgradeBusinessDivision}
+                onRunMarketForecastModel={actions.handleRunMarketForecastModel}
+                onUpgradePredictionModel={actions.handleUpgradePredictionModel}
+                onExpandIntelSubscriptions={actions.handleExpandIntelSubscriptions}
+                onSellPredictionSoftwareLicenses={actions.handleSellPredictionSoftwareLicenses}
+                onToggleIntelAdvisory={actions.handleToggleIntelAdvisory}
+                onToggleCommercialPool={actions.handleToggleCommercialPool}
+                onSetCommercialPoolFee={actions.handleSetCommercialPoolFee}
+                onExpandHostingInfrastructure={actions.handleExpandHostingInfrastructure}
+                onOnboardHostingClient={actions.handleOnboardHostingClient}
+                onDropHostingClient={actions.handleDropHostingClient}
+                onLeaseComputeCapacity={actions.handleLeaseComputeCapacity}
+                onPerformServicesSlaAudit={actions.handlePerformServicesSlaAudit}
+                onLicenseBlueprintExternally={actions.handleLicenseBlueprintExternally}
+                onCompleteExternalDesignContract={actions.handleCompleteExternalDesignContract}
+                onRunCoolingPowerEngineeringTune={actions.handleRunCoolingPowerEngineeringTune}
+                onUpgradeHardwareEngLab={actions.handleUpgradeHardwareEngLab}
+                onStartOemContract={actions.handleStartOemContract}
+                onFulfillOemFromInventory={actions.handleFulfillOemFromInventory}
+                onFulfillInternalSupplyOrder={actions.handleFulfillInternalSupplyOrder}
+                onRunManufacturingQcAudit={actions.handleRunManufacturingQcAudit}
+                onHardenShellSubsidiary={actions.handleHardenShellSubsidiary}
+                onStartUndergroundContract={actions.handleStartUndergroundContract}
+                onRunAuditFirewallSweep={actions.handleRunAuditFirewallSweep}
+                onContainParentSpillover={actions.handleContainParentSpillover}
+                onMarkBusinessTutorialSeen={actions.handleMarkBusinessTutorialSeen}
                 onBackupSave={() => actions.handleBackupSave()}
                 onRestoreBackup={() => actions.handleRestoreBackup(Boolean(state.isSandbox))}
                 onExportSave={() => actions.handleExportSave(Boolean(state.isSandbox))}
@@ -451,6 +505,8 @@ export default function App() {
                 onDevGrantFabBatch={actions.handleDevGrantFabBatch}
                 onDevLaunchCustomCoin={actions.handleDevLaunchCustomCoin}
                 onDevRefreshBlackMarket={actions.handleDevRefreshBlackMarket}
+                onDevGrantAllBusinesses={actions.handleDevGrantAllBusinesses}
+                onDevStabilizeAllDivisions={actions.handleDevStabilizeAllDivisions}
                 onSetTutorialStep={actions.handleSetTutorialStep}
                 onMarkTutorialSeen={actions.handleMarkTutorialSeen}
                 onFinishGuidedLesson={actions.handleFinishGuidedLesson}
@@ -501,6 +557,26 @@ export default function App() {
           onDevGrantFabBatch={actions.handleDevGrantFabBatch}
           onDevLaunchCustomCoin={actions.handleDevLaunchCustomCoin}
           onDevRefreshBlackMarket={actions.handleDevRefreshBlackMarket}
+          onDevGrantAllBusinesses={actions.handleDevGrantAllBusinesses}
+          onDevStabilizeAllDivisions={actions.handleDevStabilizeAllDivisions}
+        />
+      )}
+
+      {hqDrawerOpen && (
+        <CorporateHQDrawer
+          state={state}
+          onClose={() => setHqDrawerOpen(false)}
+          onRunCommand={triggerTerminalCommand}
+          onEstablishHQ={actions.handleEstablishCorporateHQ}
+          onUpgradeHQ={actions.handleUpgradeCorporateHQ}
+          onRenameHQ={actions.handleRenameCorporateHQ}
+          onToggleSynergy={actions.handleToggleSynergyPolicy}
+          onUpgradeDivision={actions.handleUpgradeBusinessDivision}
+          onFundTurnaround={actions.handleFundBusinessTurnaround}
+          onInspectTarget={actions.handleInspectAcquisitionTarget}
+          onAcquireTarget={actions.handleAcquireTargetCompany}
+          onRefreshTargets={actions.handleRefreshAcquisitionMarket}
+          onMarkBusinessTutorialSeen={actions.handleMarkBusinessTutorialSeen}
         />
       )}
     </div>

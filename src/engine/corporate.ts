@@ -279,11 +279,14 @@ export function getCorporateSynergyEffects(
   const fabNreDiscount =
     (hqSpec.nreDiscountPct / 100) + (hasEngMfg ? 0.12 : 0);
 
+  const allSixActive = BUSINESS_ORDER.every((id) => isBusinessActive({ conglomerate: cong }, id));
+  const apexRpBonusPct = allSixActive ? 10 : 0;
+
   return {
     hqEstablished: true,
     hqLevel: hqSpec.level,
     activePolicyIds: validPolicies,
-    rpBonusMult: Number((1 + hqSpec.rpBonusPct / 100).toFixed(3)),
+    rpBonusMult: Number((1 + (hqSpec.rpBonusPct + apexRpBonusPct) / 100).toFixed(3)),
     miningAutoSellBonusPct: intelAutoSellBonus,
     wearReductionPct: hasMfgMining ? 0.12 : 0,
     rigPartDiscountMult: hasMfgMining ? 0.9 : 1,
@@ -689,11 +692,18 @@ export function formatCorporateHQReport(state: GameState): string {
     totalInternal += l.totalInternalCreditsUsd;
   }
 
+  const unownedShort = BUSINESS_ORDER
+    .filter((id) => !owned.includes(id))
+    .map((id) => BUSINESS_CATALOG[id].shortName);
+  const gen7Ready = owned.length >= BUSINESS_ORDER.length;
+  const allSixActive = BUSINESS_ORDER.every((id) => isBusinessActive({ conglomerate: cong }, id));
+
   return [
     `  CORPORATE HEADQUARTERS — ${hq.companyName}`,
     `  Executive Tier   : Level ${hq.hqLevel}/${MAX_HQ_LEVEL} — ${curSpec.title}`,
     `  Divisions Owned  : ${owned.length}/6 · HQ Equity Value: ${formatUsd(curSpec.equityValueUsd)}`,
-    `  HQ Perks         : +${curSpec.rpBonusPct}% Research RP · -${Math.round((1 - effects.fabNreMult) * 100)}% Fab NRE · -${effects.scrutinyDecayBonus.toFixed(2)}/st Scrutiny Shield`,
+    `  Gen-7 Program    : ${gen7Ready ? (allSixActive ? 'UNLOCKED (6/6 Active · +10% Apex RP Dividend)' : 'UNLOCKED (6/6 Owned)') : `LOCKED (Missing: ${unownedShort.join(', ')})`}`,
+    `  HQ Perks         : +${curSpec.rpBonusPct + (allSixActive ? 10 : 0)}% Research RP · -${Math.round((1 - effects.fabNreMult) * 100)}% Fab NRE · -${effects.scrutinyDecayBonus.toFixed(2)}/st Scrutiny Shield`,
     `  Cycle Governance : ${formatUsd(curSpec.cycleUpkeepUsd)} / 30-step cycle`,
     `  Synergy Slots    : ${hq.activeSynergies.length}/${curSpec.maxSynergies} Active (${activePolicies.length > 0 ? activePolicies.join(', ') : 'None'})`,
     `  Lifetime Synergy : ${formatUsd(hq.totalSynergyValueUsd)} value realized`,

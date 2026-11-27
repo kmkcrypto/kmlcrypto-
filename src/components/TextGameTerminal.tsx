@@ -65,7 +65,10 @@ import {
   inventoryItemToCustomSpec,
   isFabUnlocked,
   areAllSixBusinessesOwned,
+  BUSINESS_CATALOG,
+  BUSINESS_ORDER,
   canStartResearchNode,
+  getOwnedBusinessIds,
   isGen7ResearchNode,
   previewCustomComponentDesign,
   resolveCoolerRoomId,
@@ -362,6 +365,8 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
     onDevFinishFabBatch,
     onDevLaunchCustomCoin,
     onDevRefreshBlackMarket,
+    onDevGrantAllBusinesses,
+    onDevStabilizeAllDivisions,
     onSetTutorialStep,
     onMarkTutorialSeen,
     onSetOnboardingMode,
@@ -3184,7 +3189,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
             `    contracts | contract <accept <1..4>|abandon>   Reputation-gated enterprise contracts`,
             `    rivals [markets [COIN] | compare | log <#> | investigate <#> | intel <#>]`,
             `    pr | pr launch <1..5> <COIN>              Legal PR campaigns`,
-            `    corp [ledger|upgrade|synergies] | hq [establish|upgrade|synergy] | acquire [inspect|buy|refresh]`,
+            `    corp [ledger|upgrade|synergies] | hq [establish|upgrade|synergy] | acquire [inspect|buy|refresh] | intel | eng | mfg | services | ug`,
             `    ops [siphon|botnet|wash|pump|coin dev/seed/launch|shill|rug|raid prep/exec|audit|comply|settle|launder|bribe]`,
             `    blackmarket                               Smuggled rigs & illicit BIOS/ROM mods`,
             ...(lockedUpcoming.length > 0
@@ -3260,6 +3265,20 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         coin: 'coins',
         coins: 'coins',
         custom_coins: 'coins',
+        conglomerate: 'conglomerate',
+        corp: 'conglomerate',
+        hq: 'conglomerate',
+        acquire: 'conglomerate',
+        intel: 'market_intel',
+        market_intel: 'market_intel',
+        eng: 'hardware_eng',
+        hardware_eng: 'hardware_eng',
+        mfg: 'manufacturing_div',
+        manufacturing_div: 'manufacturing_div',
+        services: 'mining_services',
+        mining_services: 'mining_services',
+        ug: 'underground_div',
+        underground_div: 'underground_div',
       };
 
       if (arg1 === 'list' || arg1 === 'topics' || arg1 === 'all') {
@@ -3338,6 +3357,17 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       if (mappedTopic && TUTORIAL_TOPICS[mappedTopic]) {
         const t = TUTORIAL_TOPICS[mappedTopic];
         onRevisitGuidedTopic(mappedTopic);
+        const topicToBiz: Record<string, 'MARKET_INTEL' | 'HARDWARE_ENG' | 'MANUFACTURING' | 'MINING_SERVICES' | 'UNDERGROUND'> = {
+          market_intel: 'MARKET_INTEL',
+          hardware_eng: 'HARDWARE_ENG',
+          manufacturing_div: 'MANUFACTURING',
+          mining_services: 'MINING_SERVICES',
+          underground_div: 'UNDERGROUND',
+        };
+        const bizMatch = topicToBiz[mappedTopic];
+        if (bizMatch) {
+          allProps.onMarkBusinessTutorialSeen(bizMatch);
+        }
         append([
           { kind: 'HEAD', text: `TUTORIAL // ${t.title}` },
           { kind: 'PRE', text: t.lines.join('\n') },
@@ -4508,6 +4538,12 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
 
       const bypassBizGate = Boolean(state.isSandbox || state.devUnlockAll);
       const allSixOwned = areAllSixBusinessesOwned(state);
+      const ownedSet = new Set(getOwnedBusinessIds(state));
+      const missingBizNames = BUSINESS_ORDER.filter((id) => !ownedSet.has(id)).map(
+        (id) => BUSINESS_CATALOG[id].shortName
+      );
+      const hasLockedGen7 =
+        !bypassBizGate && !allSixOwned && accessible.some((n) => isGen7ResearchNode(n.id));
       const rows = accessible.map((n, i) => {
         const active = state.activeResearchId === n.id;
         const bizLocked = !bypassBizGate && isGen7ResearchNode(n.id) && !allSixOwned;
@@ -4533,6 +4569,14 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
               ? rows.join('\n')
               : '  All currently accessible R&D projects have been completed.',
         },
+        ...(hasLockedGen7
+          ? [
+              {
+                kind: 'WARN' as const,
+                text: `Gen-7 Quantum & Photonic nodes require owning all 6 businesses (${ownedSet.size}/6 owned · Missing: ${missingBizNames.join(', ')}). Run "acquire" to expand your conglomerate.`,
+              },
+            ]
+          : []),
         {
           kind: 'TEXT',
           text:
@@ -4958,6 +5002,16 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
       if (arg1 === 'blackmarket') {
         onDevRefreshBlackMarket();
         append([{ kind: 'OK', text: 'Refreshed Black Market inventory.' }]);
+        return;
+      }
+      if (arg1 === 'corp' || arg1 === 'biz') {
+        if (arg2 === 'stabilize' || arg2 === 'recover') {
+          onDevStabilizeAllDivisions();
+          append([{ kind: 'OK', text: 'Stabilized all recovering corporate divisions to ACTIVE.' }]);
+          return;
+        }
+        onDevGrantAllBusinesses();
+        append([{ kind: 'OK', text: 'Granted all 6 corporate divisions + HQ (Gen-7 R&D unlocked).' }]);
         return;
       }
       if (arg1 === 'pump' || arg1 === 'crash') {

@@ -10,6 +10,12 @@ import { getShortPositionsEquityUsd, getWalletMarketValueUsd } from './exchange'
 import { getFabInventoryValueUsd } from './fab';
 import { calculateRigResaleValue } from './usedMarket';
 import { computeConglomerateEquityUsd } from './corporate';
+import { BUSINESS_ORDER } from './affinity';
+import {
+  areAllSixBusinessesOwned,
+  getOwnedBusinessIds,
+  isBusinessActive,
+} from './conglomerate';
 
 export interface ValuationBreakdown {
   cashUsd: number;
@@ -172,6 +178,22 @@ export function evaluateProgression(
   }
   if (valuation >= 1_000_000) triggerMs('ms_millionaire_valuation');
 
+  const ownedBusinesses = getOwnedBusinessIds(state);
+  const allSixOwned = areAllSixBusinessesOwned(state);
+  const allSixActive = BUSINESS_ORDER.every((id) => isBusinessActive(state, id));
+  const hqEstablished = Boolean(state.conglomerate?.hq?.established);
+  const hasGen7Tech = state.unlockedResearch.includes('res_gen7_quantum_photonic');
+
+  if (hqEstablished && ownedBusinesses.length >= 2) {
+    triggerMs('ms_conglomerate_hq');
+  }
+  if (allSixOwned) {
+    triggerMs('ms_six_business_monopoly');
+  }
+  if (hasGen7Tech && allSixOwned) {
+    triggerMs('ms_gen7_quantum_program');
+  }
+
   // Achievements
   if (state.stats.rigPurchasesCount > 0 || totalRigsOwned > 1) triggerAch('ach_first_machine');
   if (hasProfitableCycle) triggerAch('ach_first_profit');
@@ -190,6 +212,8 @@ export function evaluateProgression(
     triggerAch('ach_overclock_king');
   }
   if (state.unlockedResearch.length >= 12) triggerAch('ach_full_house');
+  if (allSixActive && hqEstablished) triggerAch('ach_conglomerate_titan');
+  if (hasGen7Tech && allSixOwned) triggerAch('ach_gen7_architect');
 
   // Active Challenge Evaluation
   let nextActiveChallenge: ChallengeId | null = state.activeChallengeId ?? null;

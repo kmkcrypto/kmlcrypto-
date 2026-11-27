@@ -19,6 +19,7 @@ export type DevScenarioId =
   | 'MANUFACTURING'
   | 'MULTIPLAYER'
   | 'QUANTUM_PHOTONIC'
+  | 'CONGLOMERATE_GEN6'
   | 'UNDERGROUND_CRISIS'
   | 'CUSTOM_COIN_EMPIRE'
   | 'CUSTOM';
@@ -1565,6 +1566,8 @@ export interface MarketIntelDivisionState {
   softwareLicensesSold: number;
   advisoryActive: boolean;
   lastForecastScore: number;
+  lastModelRunStep?: number;
+  lastLicenseSaleStep?: number;
 }
 
 export interface HardwareEngDivisionState {
@@ -1572,6 +1575,20 @@ export interface HardwareEngDivisionState {
   licensedDesignsCount: number;
   royaltyIncomeTotalUsd: number;
   externalDesignContractsCompleted: number;
+  licensedBlueprintIds?: string[];
+  lastContractStep?: number;
+  lastTuningStep?: number;
+  coolingPowerEfficiencyBonusPct?: number;
+}
+
+export interface ManufacturingOemContract {
+  id: string;
+  clientName: string;
+  partCategory: PartCategory;
+  qty: number;
+  stepsRemaining: number;
+  totalSteps: number;
+  payoutUsd: number;
 }
 
 export interface ManufacturingDivisionState {
@@ -1579,6 +1596,9 @@ export interface ManufacturingDivisionState {
   oemContractsCompleted: number;
   internalSupplyOrdersFilled: number;
   defectRateMult: number;
+  activeOemContracts?: ManufacturingOemContract[];
+  lastInternalSupplyStep?: number;
+  qcAuditScorePct?: number;
 }
 
 export interface MiningServicesDivisionState {
@@ -1589,6 +1609,19 @@ export interface MiningServicesDivisionState {
   slaCompliancePct: number;
   totalPoolFeeUsd: number;
   totalHostingUsd: number;
+  activeComputeLeases?: number;
+  computeLeaseStepsRemaining?: number;
+  lastHostingMaintStep?: number;
+}
+
+export interface UndergroundDivisionContract {
+  id: string;
+  codeName: string;
+  kind: 'OFFSHORE_ESCROW' | 'DARK_POOL_LIQUIDITY' | 'RIVAL_PROXY_PRESSURE';
+  stepsRemaining: number;
+  totalSteps: number;
+  basePayoutUsd: number;
+  riskHeat: number;
 }
 
 export interface UndergroundDivisionState {
@@ -1596,6 +1629,10 @@ export interface UndergroundDivisionState {
   shellSubsidiaryShieldPct: number;
   parentRiskSpilloverCount: number;
   launderCapacityBonusPct: number;
+  activeContract?: UndergroundDivisionContract | null;
+  contractsCompleted?: number;
+  totalExtractedUsd?: number;
+  lastAuditFirewallStep?: number;
 }
 
 export interface ConglomerateState {

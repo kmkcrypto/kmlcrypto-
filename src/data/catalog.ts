@@ -3167,6 +3167,30 @@ export const MILESTONES: MilestoneSpec[] = [
     rewardRp: 120,
     rewardReputation: 12,
   },
+  {
+    id: 'ms_conglomerate_hq',
+    title: 'Corporate Conglomerate',
+    description: 'Establish Corporate HQ and own at least 2 industry divisions.',
+    rewardCash: 35000,
+    rewardRp: 80,
+    rewardReputation: 8,
+  },
+  {
+    id: 'ms_six_business_monopoly',
+    title: 'Six-Division Apex Conglomerate',
+    description: 'Acquire all 6 cryptocurrency-industry businesses and unlock the Gen-7 program.',
+    rewardCash: 250000,
+    rewardRp: 350,
+    rewardReputation: 15,
+  },
+  {
+    id: 'ms_gen7_quantum_program',
+    title: 'Gen-7 Quantum & Photonic Breakthrough',
+    description: 'Complete Gen-7 Quantum & Photonic Silicon R&D after unifying all 6 divisions.',
+    rewardCash: 400000,
+    rewardRp: 500,
+    rewardReputation: 18,
+  },
 ];
 
 export const ACHIEVEMENTS: AchievementSpec[] = [
@@ -3247,6 +3271,18 @@ export const ACHIEVEMENTS: AchievementSpec[] = [
     title: 'Season Champion',
     description: 'Finish a season ranked #1 against every rival syndicate.',
     category: 'EMPIRE',
+  },
+  {
+    id: 'ach_conglomerate_titan',
+    title: 'Industry Sovereign',
+    description: 'Operate all 6 industry businesses as ACTIVE divisions with Corporate HQ established.',
+    category: 'EMPIRE',
+  },
+  {
+    id: 'ach_gen7_architect',
+    title: 'Quantum & Photonic Architect',
+    description: 'Unlock Gen-7 Quantum & Photonic silicon research as a six-division conglomerate.',
+    category: 'RESEARCH',
   },
 ];
 

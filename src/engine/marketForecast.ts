@@ -65,7 +65,7 @@ export function analyzeCoinForecast(
   state: Pick<
     GameState,
     'marketRegime' | 'regimeStepsRemaining' | 'activeMarketModifiers' | 'activeCampaigns' | 'unlockedResearch' | 'employees'
-  >
+  > & { conglomerate?: GameState['conglomerate'] }
 ): CoinMarketForecast {
   const prices = coin.priceHistory.map((p) => p.price);
   if (prices.length === 0) prices.push(coin.priceUsd);
@@ -132,14 +132,17 @@ export function analyzeCoinForecast(
       ? 'OVERBOUGHT'
       : 'NEUTRAL';
 
+  const intelDivActive = state.conglomerate?.businesses?.MARKET_INTEL?.status === 'ACTIVE';
+  const intelAccuracy = state.conglomerate?.marketIntel?.predictionAccuracyPct ?? 0;
   const hasQuantDesk =
+    intelDivActive ||
     state.unlockedResearch?.includes('res_quant_forecasting') ||
     (state.employees ?? []).some((e) => e.role === 'ANALYST');
 
   const summary = hasQuantDesk
     ? `5st Outlook: ${projectedBiasPct >= 0 ? '+' : ''}${projectedBiasPct}% | Band ${formatUsd(
         supportUsd
-      )}–${formatUsd(resistanceUsd)} | ${catalysts[0] ?? 'Balanced flow'}`
+      )}–${formatUsd(resistanceUsd)}${intelDivActive ? ` | Intel Acc ${Math.round(intelAccuracy)}%` : ` | ${catalysts[0] ?? 'Balanced flow'}`}`
     : `${catalysts[0] ?? 'Balanced flow'} · RSI ${rsi14} (${signal})`;
 
   return {
@@ -166,7 +169,10 @@ export function formatMarketForecastReport(
   targetCoin?: CoinSymbol
 ): string {
   const reg = MARKET_REGIME_SPECS[state.marketRegime];
+  const intelDivActive = state.conglomerate?.businesses?.MARKET_INTEL?.status === 'ACTIVE';
+  const intelState = state.conglomerate?.marketIntel;
   const hasQuant =
+    intelDivActive ||
     state.unlockedResearch?.includes('res_quant_forecasting') ||
     state.employees.some((e) => e.role === 'ANALYST');
 
@@ -192,6 +198,11 @@ export function formatMarketForecastReport(
       `    Desk Signal:    [${f.signal}]${
         hasQuant ? ` (Quant 5-step drift bias: ${f.projectedBiasPct >= 0 ? '+' : ''}${f.projectedBiasPct}%)` : ''
       }`,
+      ...(intelDivActive && intelState
+        ? [
+            `    Market Intel:   Model Tier ${intelState.modelTier}/5 · Accuracy ${intelState.predictionAccuracyPct.toFixed(1)}% · Advisory: ${intelState.advisoryActive ? 'ACTIVE' : 'STANDBY'}`,
+          ]
+        : []),
       `    Catalysts:      ${f.catalysts.join(' · ')}`,
     ].join('\n');
   }
@@ -212,10 +223,14 @@ export function formatMarketForecastReport(
     )} ${biasStr.padStart(9)}  ${f.signal.padEnd(13)} ${f.catalysts[0] ?? ''}`;
   });
 
+  const deskLabel = intelDivActive && intelState
+    ? `DIVISION ACTIVE (Tier ${intelState.modelTier}, ${intelState.predictionAccuracyPct.toFixed(0)}% acc)`
+    : hasQuant
+    ? 'ACTIVE (5-step drift unlocked)'
+    : 'Basic (Research Quant Forecasting or hire Analyst)';
+
   return [
-    `  MACRO REGIME: ${reg.label} (${state.regimeStepsRemaining}st left) · Quant Desk: ${
-      hasQuant ? 'ACTIVE (5-step drift unlocked)' : 'Basic (Research Quant Forecasting or hire Analyst)'
-    }`,
+    `  MACRO REGIME: ${reg.label} (${state.regimeStepsRemaining}st left) · Quant Desk: ${deskLabel}`,
     ``,
     header,
     '-'.repeat(header.length + 18),

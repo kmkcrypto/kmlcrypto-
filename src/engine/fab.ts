@@ -41,9 +41,12 @@ import {
   getRigChassisIssue,
   getGlobalHardwarePriceMult,
 } from './usedMarket';
+import { isBusinessActive, recordDivisionFinancials } from './conglomerate';
 import { getCorporateSynergyEffects } from './corporate';
+import { getHardwareEngFabEffects } from './hardwareEng';
+import { getManufacturingFabEffects } from './manufacturing';
 
-const LINE_COSTS = [18000, 42000, 110000];
+const LINE_COSTS = [18000, 42000, 110000, 240000, 480000];
 
 /**
  * Blueprint design trade-offs. Every tape-out can pick a final macro profile
@@ -783,15 +786,16 @@ const BASE_ALGO_HASHRATES: Record<MiningAlgorithm, Record<ChipProcessNode, numbe
 };
 
 export function getFabEngineeringPointBudget(
-  state: Pick<GameState, 'unlockedResearch' | 'devUnlockAll'>
+  state: Pick<GameState, 'unlockedResearch' | 'devUnlockAll' | 'conglomerate'>
 ): number {
-  if (state.devUnlockAll) return 14;
+  const engBonus = getHardwareEngFabEffects(state).extraEpBudget;
+  if (state.devUnlockAll) return 14 + engBonus;
   let budget = 10;
   if (state.unlockedResearch.includes('res_gen4_hyperhash')) budget += 1;
   if (state.unlockedResearch.includes('res_gen5_exascale')) budget += 1;
   if (state.unlockedResearch.includes('res_gen6_ai_convergence')) budget += 1;
   if (state.unlockedResearch.includes('res_gen7_quantum_photonic')) budget += 1;
-  return budget;
+  return budget + engBonus;
 }
 
 export function getUnlockedFabCategories(
@@ -847,7 +851,7 @@ export function buildDefaultFab(prev?: Partial<FabState>): FabState {
   return {
     linesCount:
       typeof prev?.linesCount === 'number' && Number.isFinite(prev.linesCount)
-        ? Math.max(0, Math.min(3, Math.floor(prev.linesCount)))
+        ? Math.max(0, Math.min(5, Math.floor(prev.linesCount)))
         : 0,
     blueprints: Array.isArray(prev?.blueprints) ? prev.blueprints : [],
     draftBlueprints: Array.isArray(prev?.draftBlueprints) ? prev.draftBlueprints : [],
@@ -924,11 +928,12 @@ export function buildFabLine(state: GameState): {
   if (!gate.ok) return { ok: false, nextState: state, summary: gate.reason ?? 'Foundry locked.' };
 
   const fab = buildDefaultFab(state.fab);
-  if (fab.linesCount >= 3) {
+  const maxLines = getManufacturingFabEffects(state).maxFabLines;
+  if (fab.linesCount >= maxLines) {
     return {
       ok: false,
       nextState: state,
-      summary: 'Maximum 3 semiconductor fabrication lines already online.',
+      summary: `Maximum ${maxLines} semiconductor fabrication lines already online${maxLines === 3 ? ' (acquire & upgrade Manufacturing division to unlock lines #4–5)' : ''}.`,
     };
   }
 
@@ -962,12 +967,18 @@ export function buildFabLine(state: GameState): {
     category: 'FACILITY',
   };
 
+  const nextCong =
+    state.conglomerate && isBusinessActive(state, 'MANUFACTURING')
+      ? recordDivisionFinancials(state.conglomerate, 'MANUFACTURING', { expenseUsd: cost })
+      : state.conglomerate;
+
   return {
     ok: true,
     nextState: {
       ...state,
       cash: state.cash - cost,
       fab: { ...fab, linesCount: nextLines },
+      ...(nextCong ? { conglomerate: nextCong } : {}),
       currentCycleStats: {
         ...state.currentCycleStats,
         otherSpendUsd: state.currentCycleStats.otherSpendUsd + cost,
@@ -1340,13 +1351,17 @@ export function previewCustomComponentDesign(
     ).toFixed(2)
   );
   const wholesalePrestigeMult = 1 + Math.max(0, relDelta) * 0.04;
-  const manufacturabilityPct = computeManufacturabilityPct(
-    processNode,
-    partCategory,
-    eng,
-    params,
-    maxResearcherSkill,
-    subSpec.id
+  const engFx = getHardwareEngFabEffects(state);
+  const manufacturabilityPct = Math.min(
+    99,
+    computeManufacturabilityPct(
+      processNode,
+      partCategory,
+      eng,
+      params,
+      maxResearcherSkill,
+      subSpec.id
+    ) + engFx.mfgLiftPts
   );
 
   const nodeMult =
@@ -1385,7 +1400,9 @@ export function previewCustomComponentDesign(
       ? Math.round(spec.nreUsd * 0.6)
       : Math.round(spec.nreUsd * 0.45);
   const corpFabNreMult = getCorporateSynergyEffects(state).fabNreMult;
-  const nreCostUsd = Math.round((nreBase + subSpec.nreAddUsd) * layoutCostMult * corpFabNreMult);
+  const nreCostUsd = Math.round(
+    (nreBase + subSpec.nreAddUsd) * layoutCostMult * corpFabNreMult * engFx.nreDiscountMult
+  );
 
   let baseUnitUsd =
     partCategory === 'compute'
@@ -2041,6 +2058,11 @@ export function designCustomComponentBlueprint(
     `Taped out ${cleanName} rev 1 (${input.partCategory.toUpperCase()} · ${input.processNode} · ${preview.branch} · Mfg ${preview.manufacturabilityPct}%)`
   );
 
+  const nextCong =
+    state.conglomerate && isBusinessActive(state, 'HARDWARE_ENG')
+      ? recordDivisionFinancials(state.conglomerate, 'HARDWARE_ENG', { expenseUsd: preview.nreCostUsd })
+      : state.conglomerate;
+
   const profileSpec = DESIGN_PROFILE_SPECS[preview.designProfile];
   return {
     ok: true,
@@ -2052,6 +2074,7 @@ export function designCustomComponentBlueprint(
         blueprints: [...fab.blueprints, bp],
         manufacturingHistory: nextHistory,
       },
+      ...(nextCong ? { conglomerate: nextCong } : {}),
       currentCycleStats: {
         ...state.currentCycleStats,
         otherSpendUsd: state.currentCycleStats.otherSpendUsd + preview.nreCostUsd,
@@ -2243,6 +2266,11 @@ export function reviseBlueprint(
     description: `Revision ${nextRev} for "${existing.name}"`,
   };
 
+  const nextCong =
+    state.conglomerate && isBusinessActive(state, 'HARDWARE_ENG')
+      ? recordDivisionFinancials(state.conglomerate, 'HARDWARE_ENG', { expenseUsd: revFee })
+      : state.conglomerate;
+
   return {
     ok: true,
     nextState: {
@@ -2258,6 +2286,7 @@ export function reviseBlueprint(
           `Revised "${existing.name}" to Rev ${nextRev} (Mfg ${preview.manufacturabilityPct}%, Unit ${formatUsd(updatedSpec.unitCostUsd)})`
         ),
       },
+      ...(nextCong ? { conglomerate: nextCong } : {}),
       currentCycleStats: {
         ...state.currentCycleStats,
         otherSpendUsd: state.currentCycleStats.otherSpendUsd + revFee,
@@ -2333,11 +2362,13 @@ export function runPrototypeTest(
   const mfg = bp.manufacturabilityPct ?? 82;
   const rng = createSeededRng(`${state.runSeed}|prototest|${bp.id}|${prevRuns}|${state.stepCount}`);
   const iterationLift = prevRuns * 9;
+  const engFx = getHardwareEngFabEffects(state);
   const rawScore =
     mfg * 0.68 +
     maxResSkill * 4.5 +
     iterationLift +
     ((bp.engineering?.reliability ?? 2) * 3) +
+    engFx.protoScoreBonus +
     (rng() * 14 - 4);
   const devStatus = state.isDevSession && state.devMode ? forcedStatus : undefined;
   const validatedScore = devStatus ? { PASSED: 90, MARGINAL: 65, FAILED_FLAW: 40 }[devStatus] : Math.max(25, Math.min(99, Math.round(rawScore)));
@@ -2410,6 +2441,11 @@ export function runPrototypeTest(
       : bp.customSpec,
   };
 
+  const nextCong =
+    state.conglomerate && isBusinessActive(state, 'HARDWARE_ENG')
+      ? recordDivisionFinancials(state.conglomerate, 'HARDWARE_ENG', { expenseUsd: testCost })
+      : state.conglomerate;
+
   return {
     ok: true,
     nextState: {
@@ -2425,6 +2461,7 @@ export function runPrototypeTest(
           `Prototype #${report.runsCount} "${bp.name}": ${status} (Score ${validatedScore}/100, +${yieldBonusPct}% batch yield)`
         ),
       },
+      ...(nextCong ? { conglomerate: nextCong } : {}),
       currentCycleStats: {
         ...state.currentCycleStats,
         otherSpendUsd: state.currentCycleStats.otherSpendUsd + testCost,
@@ -2484,7 +2521,8 @@ export function queueFabProduction(
   if (!bp) {
     return { ok: false, nextState: state, summary: `Blueprint #${blueprintIdx + 1} not found.` };
   }
-  const cleanQty = Math.max(1, Math.min(20, Math.floor(qty)));
+  const mfgFx = getManufacturingFabEffects(state);
+  const cleanQty = Math.max(1, Math.min(mfgFx.maxBatchQty, Math.floor(qty)));
   const totalCost = bp.unitCostUsd * cleanQty;
   if (state.cash < totalCost) {
     return {
@@ -2525,6 +2563,11 @@ export function queueFabProduction(
     description: `Queued ${batchId}: ${cleanQty}x custom ${bp.partCategory ?? 'compute'} "${bp.name}"`,
   };
 
+  const nextCong =
+    state.conglomerate && isBusinessActive(state, 'MANUFACTURING')
+      ? recordDivisionFinancials(state.conglomerate, 'MANUFACTURING', { expenseUsd: totalCost })
+      : state.conglomerate;
+
   return {
     ok: true,
     nextState: {
@@ -2535,6 +2578,7 @@ export function queueFabProduction(
         nextBatchSeq: batchSeq + 1,
         productionQueue: [...fab.productionQueue, order],
       },
+      ...(nextCong ? { conglomerate: nextCong } : {}),
       currentCycleStats: {
         ...state.currentCycleStats,
         otherSpendUsd: state.currentCycleStats.otherSpendUsd + totalCost,
@@ -2594,7 +2638,7 @@ export function stepFabProduction(
   nextStep: number,
   stepLabel: string,
   forcedQa?: 'PASS' | 'SCRAP',
-  synergyOptions?: { extraLines?: number; qualityBonus?: number }
+  synergyOptions?: { extraLines?: number; qualityBonus?: number; defectRateMult?: number }
 ): { nextFab: FabState; news: NewsItem[] } {
   const fab = buildDefaultFab(fabInput);
   if (fab.linesCount <= 0 || fab.productionQueue.length === 0) {
@@ -2634,9 +2678,10 @@ export function stepFabProduction(
       );
       const mfgPct = ord.manufacturabilityPct ?? bp?.manufacturabilityPct ?? 85;
       const defectRelief = bp?.prototypeReport ? bp.prototypeReport.defectReductionPct / 100 : 0;
+      const divDefectMult = Math.max(0.35, synergyOptions?.defectRateMult ?? 1);
 
       // Guarantee full output on small batches / high manufacturability, penalize pushing risky large lots without QC
-      let defectRate = Math.max(0, (74 - mfgPct) / 140) * (1 - defectRelief);
+      let defectRate = Math.max(0, (74 - mfgPct) / 140) * (1 - defectRelief) * divDefectMult;
       if (bp?.prototypeReport?.status === 'FAILED_FLAW') defectRate = Math.max(defectRate, 0.25);
       const rawScrap = ord.qty >= 3 ? Math.floor(ord.qty * defectRate) : 0;
       const scrappedQty = forcedQa === 'SCRAP' ? ord.qty : forcedQa === 'PASS' ? 0 : Math.min(Math.max(0, ord.qty - 1), rawScrap);
@@ -3386,6 +3431,11 @@ export function sellCustomAsicsWholesale(
     description: `Wholesale export ${sellQty}x "${item.name}" (${(item.partCategory ?? 'compute').toUpperCase()})`,
   };
 
+  const nextCong =
+    state.conglomerate && isBusinessActive(state, 'MANUFACTURING')
+      ? recordDivisionFinancials(state.conglomerate, 'MANUFACTURING', { revenueUsd: revenue })
+      : state.conglomerate;
+
   return {
     ok: true,
     nextState: {
@@ -3403,6 +3453,7 @@ export function sellCustomAsicsWholesale(
           `Exported ${sellQty}x "${item.name}" for +${formatUsd(revenue)}`
         ),
       },
+      ...(nextCong ? { conglomerate: nextCong } : {}),
       transactions: [tx, ...(state.transactions ?? [])].slice(0, 200),
     },
     summary: `Exported ${sellQty}x "${item.name}" wholesale for +${formatUsd(revenue)}!`,
@@ -3481,7 +3532,10 @@ export function formatManufacturingHistoryReport(state: GameState): string {
 export function formatFabStatusReport(state: GameState): string {
   const gate = isFabUnlocked(state);
   const fab = buildDefaultFab(state.fab);
-  const nextLineCost = fab.linesCount < 3 ? formatUsd(getFabLineCost(fab.linesCount)) : 'MAX';
+  const engFx = getHardwareEngFabEffects(state);
+  const mfgFx = getManufacturingFabEffects(state);
+  const maxLines = mfgFx.maxFabLines;
+  const nextLineCost = fab.linesCount < maxLines ? formatUsd(getFabLineCost(fab.linesCount)) : 'MAX';
 
   if (!gate.ok) {
     return [
@@ -3541,12 +3595,21 @@ export function formatFabStatusReport(state: GameState): string {
         });
 
   return [
-    `  CUSTOM HARDWARE & SILICON FOUNDRY (Lines: ${fab.linesCount}/3 · Upkeep: ${formatUsd(
+    `  CUSTOM HARDWARE & SILICON FOUNDRY (Lines: ${fab.linesCount}/${maxLines} · Upkeep: ${formatUsd(
       getFabCycleUpkeep(fab.linesCount)
     )}/cycle · Built: ${fab.totalUnitsManufactured} · Exports: ${formatUsd(
       fab.totalExportRevenueUsd
     )})`,
     `  Next Fab Line Cost: ${nextLineCost} · Engineering Budget: ${getFabEngineeringPointBudget(state)} pts · Drafts: ${(fab.draftBlueprints ?? []).length}`,
+    ...(engFx.active || mfgFx.active
+      ? [
+          `  Corporate Divisions: ${
+            engFx.active ? `HW Eng Lab T${engFx.labTier} (-${Math.round((1 - engFx.nreDiscountMult) * 100)}% NRE)` : 'HW Eng [Unacquired]'
+          } · ${
+            mfgFx.active ? `Mfg Lv${mfgFx.level} (Defect ${mfgFx.defectRateMult.toFixed(2)}x, Max Batch ${mfgFx.maxBatchQty})` : 'Mfg [Unacquired]'
+          } · Run "eng" / "mfg"`,
+        ]
+      : []),
     ``,
     `  BLUEPRINTS ("fab design" wizard | "fab proto <#>" | "fab revise <#>" | "fab compare <a#> <b#>")`,
     ...bpRows,
@@ -3558,12 +3621,12 @@ export function formatFabStatusReport(state: GameState): string {
     ...invRows,
     ``,
     `  COMMANDS:`,
-    `    fab line build                               Commission cleanroom fab line (1..3)`,
+    `    fab line build                               Commission cleanroom fab line (1..${maxLines})`,
     `    fab design                                   Interactive Component Engineering Wizard (All 7 parts)`,
     `    fab proto <bp#>                              Run prototype validation & calibration bench test`,
     `    fab revise <bp#> <perf|bal|eff|compact>      Create numbered blueprint revision (45% NRE)`,
     `    fab compare <bpA#> <bpB#>                    Compare specs, manufacturability & yield side-by-side`,
-    `    fab produce <bp#> <qty>                      Manufacture tracked QA batch (1..20) with serials`,
+    `    fab produce <bp#> <qty>                      Manufacture tracked QA batch (1..${mfgFx.maxBatchQty}) with serials`,
     `    fab history | fab batch <#> | fab serial <S> Inspect batch QC & unit serial genealogy`,
     `    fab deploy <inv#> <rig#> [gpuSlot]           Install custom part into a rig`,
     `    fab strip <rig#> [slot] [gpuSlot]            Pull custom part back into inventory (2% refurb)`,

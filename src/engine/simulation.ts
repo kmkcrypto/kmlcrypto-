@@ -238,6 +238,62 @@ import {
   stepCorporateAndSynergies,
   upgradeBusinessDivision,
 } from './businesses';
+import {
+  expandIntelSubscriptions,
+  formatMarketIntelReport,
+  getMaxIntelSubscriptions,
+  getSubscriptionStepRevenueUsd,
+  MAX_INTEL_MODEL_TIER,
+  runMarketForecastModel,
+  sellPredictionSoftwareLicenses,
+  stepMarketIntelDivision,
+  toggleIntelAdvisory,
+  upgradePredictionModel,
+} from './marketIntel';
+import {
+  dropHostingClient,
+  expandHostingInfrastructure,
+  formatMiningServicesReport,
+  getAllocatedHostingKw,
+  getMaxHostedClients,
+  leaseComputeCapacity,
+  onboardHostingClient,
+  performServicesSlaAudit,
+  setCommercialPoolFee,
+  stepMiningServicesDivision,
+  toggleCommercialPool,
+} from './miningServices';
+import {
+  completeExternalDesignContract,
+  formatHardwareEngReport,
+  getHardwareEngFabEffects,
+  getLicensedBlueprintStepRoyaltyUsd,
+  getMaxLicensedBlueprints,
+  licenseBlueprintExternally,
+  MAX_HW_LAB_TIER,
+  runCoolingPowerEngineeringTune,
+  stepHardwareEngDivision,
+  upgradeHardwareEngLab,
+} from './hardwareEng';
+import {
+  formatManufacturingDivisionReport,
+  fulfillInternalSupplyOrder,
+  fulfillOemOrderFromInventory,
+  getManufacturingFabEffects,
+  runManufacturingQcAudit,
+  startOemManufacturingContract,
+  stepManufacturingDivision,
+} from './manufacturing';
+import {
+  containParentSpillover,
+  formatUndergroundDivisionReport,
+  getUndergroundDivisionEffects,
+  hardenShellSubsidiary,
+  MAX_SUBSIDIARY_SHIELD_PCT,
+  runAuditFirewallSweep,
+  startUndergroundContract,
+  stepUndergroundDivision,
+} from './undergroundDiv';
 
 export type { CustomBlueprintDesignInput, CreatePlayerCoinInput };
 
@@ -351,6 +407,52 @@ export {
   getDivisionUpgradeCost,
   stepCorporateAndSynergies,
   upgradeBusinessDivision,
+  expandIntelSubscriptions,
+  formatMarketIntelReport,
+  getMaxIntelSubscriptions,
+  getSubscriptionStepRevenueUsd,
+  MAX_INTEL_MODEL_TIER,
+  runMarketForecastModel,
+  sellPredictionSoftwareLicenses,
+  stepMarketIntelDivision,
+  toggleIntelAdvisory,
+  upgradePredictionModel,
+  dropHostingClient,
+  expandHostingInfrastructure,
+  formatMiningServicesReport,
+  getAllocatedHostingKw,
+  getMaxHostedClients,
+  leaseComputeCapacity,
+  onboardHostingClient,
+  performServicesSlaAudit,
+  setCommercialPoolFee,
+  stepMiningServicesDivision,
+  toggleCommercialPool,
+  completeExternalDesignContract,
+  formatHardwareEngReport,
+  getHardwareEngFabEffects,
+  getLicensedBlueprintStepRoyaltyUsd,
+  getMaxLicensedBlueprints,
+  licenseBlueprintExternally,
+  MAX_HW_LAB_TIER,
+  runCoolingPowerEngineeringTune,
+  stepHardwareEngDivision,
+  upgradeHardwareEngLab,
+  formatManufacturingDivisionReport,
+  fulfillInternalSupplyOrder,
+  fulfillOemOrderFromInventory,
+  getManufacturingFabEffects,
+  runManufacturingQcAudit,
+  startOemManufacturingContract,
+  stepManufacturingDivision,
+  containParentSpillover,
+  formatUndergroundDivisionReport,
+  getUndergroundDivisionEffects,
+  hardenShellSubsidiary,
+  MAX_SUBSIDIARY_SHIELD_PCT,
+  runAuditFirewallSweep,
+  startUndergroundContract,
+  stepUndergroundDivision,
 };
 
 export const BILLING_CYCLE_STEPS = 30;
@@ -2413,9 +2515,11 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   if (exStep.news.length > 0) newNews.unshift(...exStep.news);
   if (exStep.transactions.length > 0) newTransactions.unshift(...exStep.transactions);
 
+  const mfgFabFx = getManufacturingFabEffects(prev);
   const fabStep = stepFabProduction(prev.fab, nextStep, stepLabel, undefined, {
     extraLines: corpEffects.fabExtraThroughput,
     qualityBonus: corpEffects.fabQualityRollBonus,
+    defectRateMult: mfgFabFx.defectRateMult,
   });
   if (fabStep.news.length > 0) {
     newNews.unshift(...fabStep.news);
@@ -3302,9 +3406,42 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     nextStep,
     stepLabel
   );
-  const corpStep = stepCorporateAndSynergies(
+  const intelStep = stepMarketIntelDivision(
     nextState,
     acqStep.conglomerate,
+    nextStep
+  );
+  const srvStep = stepMiningServicesDivision(
+    nextState,
+    intelStep.conglomerate,
+    nextStep,
+    stepLabel,
+    {
+      breakerOverloaded,
+      facilityRate: effectiveRate,
+      strikeStepsRemaining: nextStrikeSteps,
+    }
+  );
+  const engStep = stepHardwareEngDivision(
+    nextState,
+    srvStep.conglomerate,
+    nextStep
+  );
+  const mfgStep = stepManufacturingDivision(
+    nextState,
+    engStep.conglomerate,
+    nextStep,
+    stepLabel
+  );
+  const ugStep = stepUndergroundDivision(
+    nextState,
+    mfgStep.conglomerate,
+    nextStep,
+    stepLabel
+  );
+  const corpStep = stepCorporateAndSynergies(
+    nextState,
+    ugStep.conglomerate,
     nextStep,
     stepLabel,
     {
@@ -3319,15 +3456,52 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     generation: evaluateGenerationMilestones(nextState, corpStep.conglomerate),
   };
   if (acqStep.milestoneHit) milestoneHit = true;
+  if (ugStep.alertHit) alertHit = true;
   billsSettledUsd += corpStep.billsAddedUsd;
-  const combinedCorpNews = [...acqStep.news, ...corpStep.news];
+  const combinedCorpNews = [
+    ...acqStep.news,
+    ...srvStep.news,
+    ...mfgStep.news,
+    ...ugStep.news,
+    ...corpStep.news,
+  ];
+  const combinedCorpTxs = [
+    ...mfgStep.transactions,
+    ...ugStep.transactions,
+    ...corpStep.transactions,
+  ];
   nextState = {
     ...nextState,
-    cash: nextState.cash + corpStep.cashDeltaUsd,
+    cash:
+      nextState.cash +
+      intelStep.cashDeltaUsd +
+      srvStep.cashDeltaUsd +
+      engStep.cashDeltaUsd +
+      mfgStep.cashDeltaUsd +
+      ugStep.cashDeltaUsd +
+      corpStep.cashDeltaUsd,
+    mediaCredibility: Math.max(
+      5,
+      Math.min(100, nextState.mediaCredibility + ugStep.mediaCredibilityDelta)
+    ),
+    underground:
+      ugStep.confidencePenaltyDeltaPct > 0
+        ? {
+            ...nextState.underground,
+            marketConfidencePenaltyPct: Number(
+              Math.min(
+                25,
+                (nextState.underground.marketConfidencePenaltyPct ?? 0) +
+                  ugStep.confidencePenaltyDeltaPct
+              ).toFixed(2)
+            ),
+          }
+        : nextState.underground,
+    researchPoints: nextState.researchPoints + intelStep.rpBonus,
     news: combinedCorpNews.length > 0 ? [...combinedCorpNews, ...nextState.news].slice(0, 60) : nextState.news,
     transactions:
-      corpStep.transactions.length > 0
-        ? [...corpStep.transactions, ...(nextState.transactions ?? [])].slice(0, 200)
+      combinedCorpTxs.length > 0
+        ? [...combinedCorpTxs, ...(nextState.transactions ?? [])].slice(0, 200)
         : nextState.transactions,
     conglomerate: nextConglomerate,
   };

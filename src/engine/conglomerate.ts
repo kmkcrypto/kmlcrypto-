@@ -211,6 +211,12 @@ function buildDefaultMarketIntelDiv(
     advisoryActive: Boolean(seed?.advisoryActive),
     lastForecastScore:
       typeof seed?.lastForecastScore === 'number' ? seed.lastForecastScore : 0,
+    ...(typeof seed?.lastModelRunStep === 'number' && Number.isFinite(seed.lastModelRunStep)
+      ? { lastModelRunStep: seed.lastModelRunStep }
+      : {}),
+    ...(typeof seed?.lastLicenseSaleStep === 'number' && Number.isFinite(seed.lastLicenseSaleStep)
+      ? { lastLicenseSaleStep: seed.lastLicenseSaleStep }
+      : {}),
   };
 }
 
@@ -227,6 +233,18 @@ function buildDefaultHardwareEngDiv(
       typeof seed?.externalDesignContractsCompleted === 'number'
         ? Math.max(0, Math.floor(seed.externalDesignContractsCompleted))
         : 0,
+    ...(Array.isArray(seed?.licensedBlueprintIds)
+      ? { licensedBlueprintIds: seed.licensedBlueprintIds.filter((s): s is string => typeof s === 'string') }
+      : {}),
+    ...(typeof seed?.lastContractStep === 'number' && Number.isFinite(seed.lastContractStep)
+      ? { lastContractStep: seed.lastContractStep }
+      : {}),
+    ...(typeof seed?.lastTuningStep === 'number' && Number.isFinite(seed.lastTuningStep)
+      ? { lastTuningStep: seed.lastTuningStep }
+      : {}),
+    ...(typeof seed?.coolingPowerEfficiencyBonusPct === 'number' && Number.isFinite(seed.coolingPowerEfficiencyBonusPct)
+      ? { coolingPowerEfficiencyBonusPct: Math.max(0, Math.min(12, seed.coolingPowerEfficiencyBonusPct)) }
+      : {}),
   };
 }
 
@@ -244,6 +262,13 @@ function buildDefaultManufacturingDiv(
         : 0,
     defectRateMult:
       typeof seed?.defectRateMult === 'number' && seed.defectRateMult > 0 ? seed.defectRateMult : 1,
+    ...(Array.isArray(seed?.activeOemContracts) ? { activeOemContracts: seed.activeOemContracts } : {}),
+    ...(typeof seed?.lastInternalSupplyStep === 'number' && Number.isFinite(seed.lastInternalSupplyStep)
+      ? { lastInternalSupplyStep: seed.lastInternalSupplyStep }
+      : {}),
+    ...(typeof seed?.qcAuditScorePct === 'number' && Number.isFinite(seed.qcAuditScorePct)
+      ? { qcAuditScorePct: Math.max(50, Math.min(100, seed.qcAuditScorePct)) }
+      : {}),
   };
 }
 
@@ -264,6 +289,15 @@ function buildDefaultMiningServicesDiv(
       typeof seed?.totalPoolFeeUsd === 'number' ? seed.totalPoolFeeUsd : 0,
     totalHostingUsd:
       typeof seed?.totalHostingUsd === 'number' ? seed.totalHostingUsd : 0,
+    ...(typeof seed?.activeComputeLeases === 'number' && seed.activeComputeLeases >= 0
+      ? { activeComputeLeases: Math.floor(seed.activeComputeLeases) }
+      : {}),
+    ...(typeof seed?.computeLeaseStepsRemaining === 'number' && seed.computeLeaseStepsRemaining >= 0
+      ? { computeLeaseStepsRemaining: Math.floor(seed.computeLeaseStepsRemaining) }
+      : {}),
+    ...(typeof seed?.lastHostingMaintStep === 'number' && Number.isFinite(seed.lastHostingMaintStep)
+      ? { lastHostingMaintStep: seed.lastHostingMaintStep }
+      : {}),
   };
 }
 
@@ -284,6 +318,16 @@ function buildDefaultUndergroundDiv(
       typeof seed?.launderCapacityBonusPct === 'number'
         ? Math.max(0, seed.launderCapacityBonusPct)
         : 0,
+    ...(seed?.activeContract ? { activeContract: seed.activeContract } : {}),
+    ...(typeof seed?.contractsCompleted === 'number'
+      ? { contractsCompleted: Math.max(0, Math.floor(seed.contractsCompleted)) }
+      : {}),
+    ...(typeof seed?.totalExtractedUsd === 'number'
+      ? { totalExtractedUsd: Number(seed.totalExtractedUsd.toFixed(2)) }
+      : {}),
+    ...(typeof seed?.lastAuditFirewallStep === 'number'
+      ? { lastAuditFirewallStep: seed.lastAuditFirewallStep }
+      : {}),
   };
 }
 
