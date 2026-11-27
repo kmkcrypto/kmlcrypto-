@@ -8,6 +8,7 @@ import {
   TransactionEntry,
 } from '../types/game';
 import { formatCoinAmount, formatStepLabel, formatUsd } from '../utils/format';
+import { getCorporateSynergyEffects } from './corporate';
 
 const STARTER_COINS: CoinSymbol[] = ['BTC', 'LTC', 'DOGE', 'RVN', 'XMR', 'ETH', 'ZEC', 'XCH', 'QBC'];
 
@@ -29,7 +30,9 @@ export function buildDefaultWallet(
 }
 
 export function getSpotExchangeFeePct(
-  state: Pick<GameState, 'unlockedResearch' | 'employees'>
+  state: Pick<GameState, 'unlockedResearch' | 'employees'> & {
+    conglomerate?: GameState['conglomerate'];
+  }
 ): number {
   let fee = 0.012; // 1.2%
   if (state.unlockedResearch?.includes('res_quant_forecasting')) {
@@ -39,7 +42,10 @@ export function getSpotExchangeFeePct(
     .filter((e) => e.role === 'ANALYST')
     .reduce((s, e) => s + (e.skillLevel ?? 1), 0);
   fee *= Math.max(0.45, 1 - analystLvls * 0.08);
-  return Number(Math.max(0.0035, fee).toFixed(4));
+  const synergyMult = getCorporateSynergyEffects({ conglomerate: state.conglomerate }).exchangeFeeMult;
+  fee *= synergyMult;
+  const minFloor = synergyMult < 1 ? 0.0024 : 0.0035;
+  return Number(Math.max(minFloor, fee).toFixed(4));
 }
 
 export function getWalletMarketValueUsd(state: Pick<GameState, 'wallet' | 'coins'>): number {
@@ -369,6 +375,7 @@ export function stepExchangeOrdersAndShorts(
     shortPositions: ShortPosition[];
     unlockedResearch: string[];
     employees: GameState['employees'];
+    conglomerate?: GameState['conglomerate'];
   },
   nextCoins: Record<CoinSymbol, CoinMarketState>,
   nextStep: number,

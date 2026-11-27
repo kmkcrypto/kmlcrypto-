@@ -58,6 +58,9 @@ export function formatValuationReport(state: GameState): string {
     `    Expansion Wings Equity: ${padL(formatUsd(val.expansionWingsUsd), 12)} (${state.facilityExtraRooms ?? 0} wings)`,
     `    R&D Patent IP Value:    ${padL(formatUsd(val.researchIpUsd), 12)} (${state.unlockedResearch.length} techs)`,
     `    Custom ASIC Inventory:  ${padL(formatUsd(val.fabInventoryUsd), 12)} (${(state.fab?.inventory ?? []).reduce((s, i) => s + i.qty, 0)} chips)`,
+    ...(val.conglomerateEquityUsd > 0
+      ? [`    Subsidiaries & HQ:      ${padL(formatUsd(val.conglomerateEquityUsd), 12)} (Corporate equity)`]
+      : []),
     `    ────────────────────────────────────────`,
     `    TOTAL ENTERPRISE VALUE: ${padL(formatUsd(val.totalUsd), 12)}`,
     ``,

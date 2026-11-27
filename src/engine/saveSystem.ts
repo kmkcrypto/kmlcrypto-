@@ -16,6 +16,8 @@ import { buildDefaultFab } from './fab';
 import { MANUAL_STEP_CAPACITY } from './manualSteps';
 import { createInitialRivals } from './rivals';
 import { buildDefaultWorld } from './world';
+import { buildDefaultConglomerate } from './conglomerate';
+import { evaluateGenerationMilestones } from './generations';
 import {
   computeAverageRigHealth,
   ensureRigComponentHealth,
@@ -381,6 +383,12 @@ export function hydrateSavedState(rawInput: unknown): GameState | null {
     if (hydrated.usedMarketListings.length === 0) {
       hydrated.usedMarketListings = generateUsedMarketListings(hydrated);
     }
+
+    const migratedConglomerate = buildDefaultConglomerate(hydrated, candidate.conglomerate);
+    hydrated.conglomerate = {
+      ...migratedConglomerate,
+      generation: evaluateGenerationMilestones(hydrated, migratedConglomerate),
+    };
 
     return recordGuidedProgress(hydrated, !candidate.guidedOnboarding?.systemOpensAt);
   } catch {

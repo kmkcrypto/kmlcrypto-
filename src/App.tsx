@@ -1,6 +1,6 @@
 import { MARKET_REGIME_SPECS } from './data/catalog';
 import { getUnlockedSystems } from './data/onboarding';
-import { getEffectiveFacilityPowerCapKw, getFacilityTotals, getStepsUntilNextBill } from './engine/simulation';
+import { getEffectiveFacilityPowerCapKw, getFacilityTotals, getStepsUntilNextBill, isAcquisitionUnlocked } from './engine/simulation';
 import { formatStepLabel, formatUsd } from './utils/format';
 import { soundFx } from './utils/sound';
 import { Binary, Pause, Play, SkipForward, Volume2, VolumeX, Wrench } from 'lucide-react';
@@ -98,6 +98,7 @@ export default function App() {
     { label: 'Market', cmd: 'market' },
     ...(unlockedSystems.fab ? [{ label: 'Foundry', cmd: 'fab' }] : []),
     ...(unlockedSystems.contracts ? [{ label: 'Contracts', cmd: 'contracts' }] : []),
+    ...(isAcquisitionUnlocked(state) ? [{ label: 'Corp', cmd: 'corp' }] : []),
     { label: 'Stats', cmd: 'stats' },
   ];
 
@@ -420,6 +421,15 @@ export default function App() {
                 onDeployCustomAsic={actions.handleDeployCustomAsic}
                 onSellCustomAsic={actions.handleSellCustomAsic}
                 onStripCustomAsic={actions.handleStripCustomAsic}
+                onInspectAcquisitionTarget={actions.handleInspectAcquisitionTarget}
+                onAcquireTargetCompany={actions.handleAcquireTargetCompany}
+                onRefreshAcquisitionMarket={actions.handleRefreshAcquisitionMarket}
+                onFundBusinessTurnaround={actions.handleFundBusinessTurnaround}
+                onEstablishCorporateHQ={actions.handleEstablishCorporateHQ}
+                onUpgradeCorporateHQ={actions.handleUpgradeCorporateHQ}
+                onRenameCorporateHQ={actions.handleRenameCorporateHQ}
+                onToggleSynergyPolicy={actions.handleToggleSynergyPolicy}
+                onUpgradeBusinessDivision={actions.handleUpgradeBusinessDivision}
                 onBackupSave={() => actions.handleBackupSave()}
                 onRestoreBackup={() => actions.handleRestoreBackup(Boolean(state.isSandbox))}
                 onExportSave={() => actions.handleExportSave(Boolean(state.isSandbox))}

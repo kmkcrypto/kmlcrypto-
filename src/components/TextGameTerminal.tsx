@@ -64,6 +64,9 @@ import {
   getUnlockedFabSubFeatures,
   inventoryItemToCustomSpec,
   isFabUnlocked,
+  areAllSixBusinessesOwned,
+  canStartResearchNode,
+  isGen7ResearchNode,
   previewCustomComponentDesign,
   resolveCoolerRoomId,
 } from '../engine/simulation';
@@ -142,6 +145,7 @@ import {
   PortfolioChartMetric,
 } from './terminal/reports';
 import { handleCoinAndExchangeCommand } from './terminal/coinAndExchangeCommands';
+import { handleCorpCommand } from './terminal/corpCommands';
 import { handleFabCommand } from './terminal/fabCommands';
 import { handleOnboardingAndCodexCommand } from './terminal/onboardingAndCodexCommands';
 import { handleOpsAndBlackMarketCommand } from './terminal/opsAndBlackMarketCommands';
@@ -3180,6 +3184,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
             `    contracts | contract <accept <1..4>|abandon>   Reputation-gated enterprise contracts`,
             `    rivals [markets [COIN] | compare | log <#> | investigate <#> | intel <#>]`,
             `    pr | pr launch <1..5> <COIN>              Legal PR campaigns`,
+            `    corp [ledger|upgrade|synergies] | hq [establish|upgrade|synergy] | acquire [inspect|buy|refresh]`,
             `    ops [siphon|botnet|wash|pump|coin dev/seed/launch|shill|rug|raid prep/exec|audit|comply|settle|launder|bribe]`,
             `    blackmarket                               Smuggled rigs & illicit BIOS/ROM mods`,
             ...(lockedUpcoming.length > 0
@@ -3405,6 +3410,7 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
 
     if (handleOnboardingAndCodexCommand(cmdCtx)) return;
     if (handleCoinAndExchangeCommand(cmdCtx)) return;
+    if (handleCorpCommand(cmdCtx)) return;
     if (handleFabCommand(cmdCtx)) return;
     if (handleRigCommand(cmdCtx)) return;
     if (handleOpsAndBlackMarketCommand(cmdCtx)) return;
@@ -4491,18 +4497,24 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
           return;
         }
         const ok = onStartResearch(node.id);
+        const reason = ok ? '' : canStartResearchNode(state, node.id).reason;
         append([
           ok
             ? { kind: 'OK', text: `Started R&D: ${node.name}.` }
-            : { kind: 'ERR', text: 'Cannot start research (busy or insufficient cash).' },
+            : { kind: 'ERR', text: reason ?? 'Cannot start research (busy or insufficient cash).' },
         ]);
         return;
       }
 
+      const bypassBizGate = Boolean(state.isSandbox || state.devUnlockAll);
+      const allSixOwned = areAllSixBusinessesOwned(state);
       const rows = accessible.map((n, i) => {
         const active = state.activeResearchId === n.id;
+        const bizLocked = !bypassBizGate && isGen7ResearchNode(n.id) && !allSixOwned;
         const status = active
           ? `[ACTIVE ${Math.round(state.activeResearchProgress)}/${n.costRp}]`
+          : bizLocked
+          ? '[6/6 BIZ REQ]'
           : '[READY]';
         return `  ${i + 1}. [${padRight(n.category, 10)}] ${padRight(n.name, 31)} ${padLeft(`${n.costRp} RP`, 6)} ${padLeft(
           formatUsd(n.costCash),
@@ -4580,13 +4592,15 @@ export const TextGameTerminal: React.FC<TextGameTerminalProps> = (allProps) => {
         trade: 'EXCHANGE',
         fab: 'FAB',
         foundry: 'FAB',
+        corp: 'CORPORATE',
+        corporate: 'CORPORATE',
       };
       const filterCat = arg1 ? catMap[arg1] : undefined;
       if (arg1 && !filterCat && arg1 !== 'all') {
         append([
           {
             kind: 'ERR',
-            text: 'Filter options: hardware, sale, repair, facility, power, staff, contract, research, event, reward, exchange, fab',
+            text: 'Filter options: hardware, sale, repair, facility, power, staff, contract, research, event, reward, exchange, fab, corp',
           },
         ]);
         return;

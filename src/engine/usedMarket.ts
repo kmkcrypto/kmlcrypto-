@@ -28,6 +28,7 @@ import {
   UsedMarketListing,
 } from '../types/game';
 import { createSeededRng } from '../utils/rng';
+import { getCorporateSynergyEffects } from './corporate';
 
 export function createInitialComponentHealth(
   gpuCount: number,
@@ -321,7 +322,10 @@ export function getRigGeneration(
 }
 
 export function getGlobalHardwarePriceMult(
-  state: Pick<GameState, 'activeMarketModifiers'> & { marketRegime?: GameState['marketRegime'] }
+  state: Pick<GameState, 'activeMarketModifiers'> & {
+    marketRegime?: GameState['marketRegime'];
+    conglomerate?: GameState['conglomerate'];
+  }
 ): number {
   const mods = state.activeMarketModifiers ?? [];
   const modMult = mods.reduce((m, item) => m * item.hardwarePriceMult, 1.0);
@@ -331,7 +335,8 @@ export function getGlobalHardwarePriceMult(
       : state.marketRegime === 'CRYPTO_WINTER'
       ? 0.92
       : 1.0;
-  return Number((modMult * regimeMult).toFixed(4));
+  const supplyMult = getCorporateSynergyEffects({ conglomerate: state.conglomerate }).rigPartDiscountMult;
+  return Number((modMult * regimeMult * supplyMult).toFixed(4));
 }
 
 export function getGlobalResaleValueMult(

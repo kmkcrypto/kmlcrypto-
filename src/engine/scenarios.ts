@@ -14,6 +14,8 @@ import { createInitialComponentHealth } from './usedMarket';
 import { createNewGameState, getFacility } from './simulation';
 import { buildDefaultFab } from './fab';
 import { launchShellCoin, prepareVaultRaid } from './underground';
+import { buildDefaultConglomerate, grantAllSixBusinessesForScenario } from './conglomerate';
+import { evaluateGenerationMilestones } from './generations';
 import { buildDefaultWorld, stepSharedWorld } from './world';
 
 /**
@@ -358,7 +360,7 @@ export function createScenarioState(id: DevScenarioId): GameState {
     }
     case 'GEN7': {
       const s = withRigs('fac_megafarm', gen7Parts, 6, 220_000_000);
-      return {
+      const gen7State: GameState = {
         ...s,
         unlockedResearch: researchClosure([
           'res_gen7_quantum_photonic',
@@ -374,6 +376,17 @@ export function createScenarioState(id: DevScenarioId): GameState {
           'RESEARCHER',
           'SYS_ENGINEER',
         ]),
+      };
+      const baseCong = grantAllSixBusinessesForScenario(
+        buildDefaultConglomerate(gen7State, gen7State.conglomerate),
+        gen7State.stepCount
+      );
+      return {
+        ...gen7State,
+        conglomerate: {
+          ...baseCong,
+          generation: evaluateGenerationMilestones(gen7State, baseCong),
+        },
       };
     }
     case 'MANUFACTURING': {
@@ -439,7 +452,7 @@ export function createScenarioState(id: DevScenarioId): GameState {
         },
         'fac_megafarm'
       );
-      return {
+      const qpState: GameState = {
         ...s,
         rigs: [qRig1, qRig2, ...s.rigs.slice(2)],
         unlockedResearch: researchClosure([
@@ -452,6 +465,17 @@ export function createScenarioState(id: DevScenarioId): GameState {
         ]),
         fab: { ...buildDefaultFab(), linesCount: 3 },
         employees: buildEmployees(['RESEARCHER', 'RESEARCHER', 'SYS_ENGINEER', 'ELECTRICIAN', 'TECHNICIAN']),
+      };
+      const qpCong = grantAllSixBusinessesForScenario(
+        buildDefaultConglomerate(qpState, qpState.conglomerate),
+        qpState.stepCount
+      );
+      return {
+        ...qpState,
+        conglomerate: {
+          ...qpCong,
+          generation: evaluateGenerationMilestones(qpState, qpCong),
+        },
       };
     }
     case 'UNDERGROUND_CRISIS': {

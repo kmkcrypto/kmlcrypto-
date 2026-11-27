@@ -41,6 +41,7 @@ import {
   getRigChassisIssue,
   getGlobalHardwarePriceMult,
 } from './usedMarket';
+import { getCorporateSynergyEffects } from './corporate';
 
 const LINE_COSTS = [18000, 42000, 110000];
 
@@ -1383,7 +1384,8 @@ export function previewCustomComponentDesign(
       : partCategory === 'cooling'
       ? Math.round(spec.nreUsd * 0.6)
       : Math.round(spec.nreUsd * 0.45);
-  const nreCostUsd = Math.round((nreBase + subSpec.nreAddUsd) * layoutCostMult);
+  const corpFabNreMult = getCorporateSynergyEffects(state).fabNreMult;
+  const nreCostUsd = Math.round((nreBase + subSpec.nreAddUsd) * layoutCostMult * corpFabNreMult);
 
   let baseUnitUsd =
     partCategory === 'compute'
@@ -2591,14 +2593,15 @@ export function stepFabProduction(
   fabInput: FabState | undefined,
   nextStep: number,
   stepLabel: string,
-  forcedQa?: 'PASS' | 'SCRAP'
+  forcedQa?: 'PASS' | 'SCRAP',
+  synergyOptions?: { extraLines?: number; qualityBonus?: number }
 ): { nextFab: FabState; news: NewsItem[] } {
   const fab = buildDefaultFab(fabInput);
   if (fab.linesCount <= 0 || fab.productionQueue.length === 0) {
     return { nextFab: fab, news: [] };
   }
 
-  let budget = fab.linesCount;
+  let budget = fab.linesCount + Math.max(0, synergyOptions?.extraLines ?? 0);
   const remainingQueue: FabProductionOrder[] = [];
   const nextInventory: CustomAsicInventoryItem[] = fab.inventory.map((i) => ({
     ...i,
@@ -2626,7 +2629,9 @@ export function stepFabProduction(
       remainingQueue.push({ ...ord, stepsRemaining: rem });
     } else {
       const bp = fab.blueprints.find((b) => b.id === ord.blueprintId);
-      const roll = ord.qualityRoll ?? 1;
+      const roll = Number(
+        Math.min(1.12, (ord.qualityRoll ?? 1) + Math.max(0, synergyOptions?.qualityBonus ?? 0)).toFixed(3)
+      );
       const mfgPct = ord.manufacturabilityPct ?? bp?.manufacturabilityPct ?? 85;
       const defectRelief = bp?.prototypeReport ? bp.prototypeReport.defectReductionPct / 100 : 0;
 

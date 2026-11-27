@@ -197,6 +197,15 @@ export interface TextGameTerminalProps {
     slot?: PartCategory,
     gpuSlotIdx?: number
   ) => { ok: boolean; summary: string };
+  onInspectAcquisitionTarget: (targetQuery: string) => { ok: boolean; summary: string };
+  onAcquireTargetCompany: (targetQuery: string) => { ok: boolean; summary: string };
+  onRefreshAcquisitionMarket: () => { ok: boolean; summary: string };
+  onFundBusinessTurnaround: (businessQuery: string) => { ok: boolean; summary: string };
+  onEstablishCorporateHQ: (companyName?: string) => { ok: boolean; summary: string };
+  onUpgradeCorporateHQ: () => { ok: boolean; summary: string };
+  onRenameCorporateHQ: (companyName: string) => { ok: boolean; summary: string };
+  onToggleSynergyPolicy: (policyQuery: string) => { ok: boolean; summary: string };
+  onUpgradeBusinessDivision: (businessQuery: string) => { ok: boolean; summary: string };
   onBackupSave: () => boolean;
   onRestoreBackup: () => boolean;
   onExportSave: () => string | null;

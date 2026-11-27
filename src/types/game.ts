@@ -801,7 +801,8 @@ export type TransactionCategory =
   | 'EVENT'
   | 'REWARD'
   | 'EXCHANGE'
-  | 'FAB';
+  | 'FAB'
+  | 'CORPORATE';
 
 export interface TransactionEntry {
   id: string;
@@ -1001,6 +1002,8 @@ export interface GameState {
   world?: SharedWorldState;
   /** Completed seasons, newest first. Drives the "leaderboard" hall of fame. */
   seasonHistory?: SeasonRecord[];
+  /** Multi-business cryptocurrency conglomerate simulation state (Phase 2+). */
+  conglomerate?: ConglomerateState;
 }
 
 export type RigQualificationGoal = 'efficiency' | 'output' | 'quiet';
@@ -1457,3 +1460,155 @@ export interface SaveFileEnvelope {
   isSandbox: boolean;
   state: GameState;
 }
+
+export type BusinessId =
+  | 'MINING'
+  | 'MARKET_INTEL'
+  | 'HARDWARE_ENG'
+  | 'MANUFACTURING'
+  | 'MINING_SERVICES'
+  | 'UNDERGROUND';
+
+export type ConglomerateGeneration = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+export type BusinessDivisionStatus = 'UNOWNED' | 'ACQUIRING' | 'RECOVERING' | 'ACTIVE';
+
+export interface BusinessDivisionLedger {
+  totalRevenueUsd: number;
+  totalExpenseUsd: number;
+  totalInternalCreditsUsd: number;
+  lastStepRevenueUsd: number;
+  lastStepExpenseUsd: number;
+  lastStepNetUsd: number;
+  cycleRevenueUsd: number;
+  cycleExpenseUsd: number;
+  cycleInternalCreditsUsd: number;
+}
+
+export interface BusinessDivisionState {
+  id: BusinessId;
+  name: string;
+  acquiredCompanyName?: string;
+  status: BusinessDivisionStatus;
+  acquiredStep: number | null;
+  level: number;
+  reputation: number;
+  efficiencyMult: number;
+  recoveryStepsRemaining: number;
+  turnaroundCostUsd?: number;
+  staffAssigned: number;
+  ledger: BusinessDivisionLedger;
+}
+
+export interface IndustryAffinityProfile {
+  scores: Record<BusinessId, number>;
+  signalCounts: Record<BusinessId, number>;
+  lastUpdatedStep: number;
+  dominantBusinessId: BusinessId;
+}
+
+export interface AcquisitionTarget {
+  id: string;
+  businessId: BusinessId;
+  companyName: string;
+  distressReason: string;
+  purchasePriceUsd: number;
+  assumedDebtUsd: number;
+  turnaroundCostUsd: number;
+  recoverySteps: number;
+  existingStaffCount: number;
+  existingAssetSummary: string;
+  affinityMatchPct: number;
+  inspected: boolean;
+  expiresAtStep: number;
+}
+
+export interface AcquisitionState {
+  expansionOpportunityUnlocked: boolean;
+  expansionOfferStep: number | null;
+  availableTargets: AcquisitionTarget[];
+  completedCount: number;
+  lastRefreshStep: number;
+}
+
+export type SynergyPolicyId =
+  | 'ENG_TO_MFG'
+  | 'MFG_TO_MINING'
+  | 'MFG_TO_SERVICES'
+  | 'INTEL_TO_MINING'
+  | 'INTEL_TO_TREASURY'
+  | 'UG_BLACK_SILICON';
+
+export interface CorporateHQState {
+  established: boolean;
+  hqLevel: number;
+  companyName: string;
+  activeSynergies: SynergyPolicyId[];
+  totalSynergyValueUsd: number;
+  lastConsolidatedStep: number;
+}
+
+export interface GenerationMilestoneState {
+  currentGeneration: ConglomerateGeneration;
+  highestGenerationReached: ConglomerateGeneration;
+  gen5ExpansionTriggered: boolean;
+  gen5ExpansionStep: number | null;
+  gen6Unlocked: boolean;
+  gen7ConglomerateUnlocked: boolean;
+  gen7UnlockedStep: number | null;
+}
+
+export interface MarketIntelDivisionState {
+  modelTier: number;
+  predictionAccuracyPct: number;
+  activeSubscriptions: number;
+  softwareLicensesSold: number;
+  advisoryActive: boolean;
+  lastForecastScore: number;
+}
+
+export interface HardwareEngDivisionState {
+  labTier: number;
+  licensedDesignsCount: number;
+  royaltyIncomeTotalUsd: number;
+  externalDesignContractsCompleted: number;
+}
+
+export interface ManufacturingDivisionState {
+  contractSlots: number;
+  oemContractsCompleted: number;
+  internalSupplyOrdersFilled: number;
+  defectRateMult: number;
+}
+
+export interface MiningServicesDivisionState {
+  poolOperatorActive: boolean;
+  poolFeePct: number;
+  hostedClientsCount: number;
+  rentedCapacityKw: number;
+  slaCompliancePct: number;
+  totalPoolFeeUsd: number;
+  totalHostingUsd: number;
+}
+
+export interface UndergroundDivisionState {
+  subsidiaryStructured: boolean;
+  shellSubsidiaryShieldPct: number;
+  parentRiskSpilloverCount: number;
+  launderCapacityBonusPct: number;
+}
+
+export interface ConglomerateState {
+  businesses: Record<BusinessId, BusinessDivisionState>;
+  affinity: IndustryAffinityProfile;
+  acquisitions: AcquisitionState;
+  hq: CorporateHQState;
+  generation: GenerationMilestoneState;
+  businessTutorialsSeen: BusinessId[];
+  marketIntel: MarketIntelDivisionState;
+  hardwareEng: HardwareEngDivisionState;
+  manufacturing: ManufacturingDivisionState;
+  miningServices: MiningServicesDivisionState;
+  undergroundDiv: UndergroundDivisionState;
+}
+

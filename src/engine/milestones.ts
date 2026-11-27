@@ -9,6 +9,7 @@ import { formatStepLabel, formatUsd } from '../utils/format';
 import { getShortPositionsEquityUsd, getWalletMarketValueUsd } from './exchange';
 import { getFabInventoryValueUsd } from './fab';
 import { calculateRigResaleValue } from './usedMarket';
+import { computeConglomerateEquityUsd } from './corporate';
 
 export interface ValuationBreakdown {
   cashUsd: number;
@@ -19,6 +20,7 @@ export interface ValuationBreakdown {
   expansionWingsUsd: number;
   researchIpUsd: number;
   fabInventoryUsd: number;
+  conglomerateEquityUsd: number;
   totalUsd: number;
 }
 
@@ -42,6 +44,7 @@ export function computeValuationBreakdown(state: GameState): ValuationBreakdown 
   const expansionWingsUsd = Math.round((state.facilityExtraRooms ?? 0) * 1800);
   const researchIpUsd = state.unlockedResearch.length * 1400;
   const fabInventoryUsd = Math.round(getFabInventoryValueUsd(state.fab));
+  const conglomerateEquityUsd = Math.round(computeConglomerateEquityUsd(state));
   const totalUsd = Math.round(
     cashUsd +
       walletValueUsd +
@@ -50,7 +53,8 @@ export function computeValuationBreakdown(state: GameState): ValuationBreakdown 
       facilityEquityUsd +
       expansionWingsUsd +
       researchIpUsd +
-      fabInventoryUsd
+      fabInventoryUsd +
+      conglomerateEquityUsd
   );
   return {
     cashUsd,
@@ -61,6 +65,7 @@ export function computeValuationBreakdown(state: GameState): ValuationBreakdown 
     expansionWingsUsd,
     researchIpUsd,
     fabInventoryUsd,
+    conglomerateEquityUsd,
     totalUsd,
   };
 }

@@ -73,6 +73,7 @@ import {
   calculateRigBuildCost,
   calculateRigResaleValue,
   cancelLimitOrder,
+  canStartResearchNode,
   claimCompletedObjectives,
   closeShortPosition,
   computeAverageRigHealth,
@@ -102,6 +103,20 @@ import {
   placeLimitOrder,
   resolvePendingEvent,
 } from '../engine/simulation';
+import {
+  acquireTargetCompany,
+  fundBusinessTurnaround,
+  inspectAcquisitionTarget,
+  refreshAcquisitionMarket,
+} from '../engine/acquisitions';
+import {
+  establishCorporateHQ,
+  getCorporateSynergyEffects,
+  renameCorporateHQ,
+  toggleSynergyPolicy,
+  upgradeCorporateHQ,
+} from '../engine/corporate';
+import { upgradeBusinessDivision } from '../engine/businesses';
 import {
   complyWithAudit,
   developShellCoin,
@@ -3093,15 +3108,15 @@ export function useGameActions() {
   };
 
   const handleStartResearch = (nodeId: string): boolean => {
-    if (!state || state.activeResearchId || state.unlockedResearch.includes(nodeId)) return false;
-    const node = RESEARCH_NODES.find((n) => n.id === nodeId);
-    if (!node || state.cash < node.costCash) return false;
-    if (!state.devUnlockAll && !node.prereqIds.every((p) => state.unlockedResearch.includes(p))) {
+    if (!state) return false;
+    const gate = canStartResearchNode(state, nodeId);
+    if (!gate.ok) {
+      if (gate.reason) showBanner(gate.reason);
       return false;
     }
 
     setState((prev) => {
-      if (!prev || prev.activeResearchId || prev.unlockedResearch.includes(nodeId)) return prev;
+      if (!prev || !canStartResearchNode(prev, nodeId).ok) return prev;
       const n = RESEARCH_NODES.find((item) => item.id === nodeId);
       if (!n || prev.cash < n.costCash) return prev;
 
@@ -3791,8 +3806,10 @@ export function useGameActions() {
     if (!state) return { ok: false, summary: 'No game active.' };
     const item = state.underground.blackMarketListings.find((b) => b.id === listingId);
     if (!item) return { ok: false, summary: 'Black-market listing unavailable.' };
-    if (state.cash < item.costUsd) {
-      return { ok: false, summary: `Insufficient cash (need ${formatUsd(item.costUsd)}).` };
+    const bmMult = getCorporateSynergyEffects(state).blackMarketDiscountMult;
+    const effectiveCostUsd = Math.round(item.costUsd * bmMult);
+    if (state.cash < effectiveCostUsd) {
+      return { ok: false, summary: `Insufficient cash (need ${formatUsd(effectiveCostUsd)}).` };
     }
 
     if (item.kind === 'SMUGGLED_RIG' && item.presetConfig) {
@@ -3838,7 +3855,7 @@ export function useGameActions() {
           conditionTier: isLemon ? 'DAMAGED' : 'USED',
           ageSteps: isLemon ? 45 : 20,
           failureCount: 0,
-          purchasePriceUsd: item.costUsd,
+          purchasePriceUsd: effectiveCostUsd,
           status: 'MINING',
           lastStepCoins: 0,
           lastStepUsd: 0,
@@ -3848,7 +3865,7 @@ export function useGameActions() {
         };
         return {
           ...prev,
-          cash: prev.cash - item.costUsd,
+          cash: prev.cash - effectiveCostUsd,
           regulatoryScrutiny: Math.min(100, prev.regulatoryScrutiny + item.heatGain + traceHeat),
           rigs: [...prev.rigs, newRig],
           underground: {
@@ -3858,7 +3875,7 @@ export function useGameActions() {
             ),
           },
           transactions: [
-            makeTx(prev.stepCount, 'HARDWARE', -item.costUsd, `Black market: ${item.title}`),
+            makeTx(prev.stepCount, 'HARDWARE', -effectiveCostUsd, `Black market: ${item.title}`),
             ...(prev.transactions ?? []),
           ].slice(0, 200),
           stats: {
@@ -3875,7 +3892,7 @@ export function useGameActions() {
       const traceNote = traceHeat > 0 ? ' (+4 serialized audit Heat)' : '';
       return {
         ok: true,
-        summary: `Acquired ${item.title} for ${formatUsd(item.costUsd)} (+${
+        summary: `Acquired ${item.title} for ${formatUsd(effectiveCostUsd)} (+${
           item.heatGain + traceHeat
         } Heat${traceNote}).${lemonNote}`,
       };
@@ -3891,7 +3908,7 @@ export function useGameActions() {
         prev
           ? {
               ...prev,
-              cash: prev.cash - item.costUsd,
+              cash: prev.cash - effectiveCostUsd,
               regulatoryScrutiny: Math.min(100, prev.regulatoryScrutiny + item.heatGain),
               rigs: prev.rigs.map((r, i) =>
                 i === rigIdx ? { ...r, illicitMod: item.modId! } : r
@@ -3906,7 +3923,7 @@ export function useGameActions() {
                 makeTx(
                   prev.stepCount,
                   'HARDWARE',
-                  -item.costUsd,
+                  -effectiveCostUsd,
                   `Flashed ${item.title} onto ${targetRig.name}`
                 ),
                 ...(prev.transactions ?? []),
@@ -3917,7 +3934,7 @@ export function useGameActions() {
       );
       return {
         ok: true,
-        summary: `Flashed ${item.title} onto ${targetRig.name} for ${formatUsd(item.costUsd)} (+${
+        summary: `Flashed ${item.title} onto ${targetRig.name} for ${formatUsd(effectiveCostUsd)} (+${
           item.heatGain
         } Heat).`,
       };
@@ -4305,6 +4322,102 @@ export function useGameActions() {
     showBanner('Black Market inventory refreshed.');
   };
 
+  const handleInspectAcquisitionTarget = (targetQuery: string): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = inspectAcquisitionTarget(state, targetQuery);
+    if (res.ok) {
+      soundFx.playClick();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleAcquireTargetCompany = (targetQuery: string): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = acquireTargetCompany(state, targetQuery);
+    if (res.ok) {
+      soundFx.playCash();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleRefreshAcquisitionMarket = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = refreshAcquisitionMarket(state);
+    if (res.ok) {
+      soundFx.playClick();
+      setState(res.nextState);
+    }
+    return res;
+  };
+
+  const handleFundBusinessTurnaround = (businessQuery: string): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = fundBusinessTurnaround(state, businessQuery);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleEstablishCorporateHQ = (companyName?: string): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = establishCorporateHQ(state, companyName);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleUpgradeCorporateHQ = (): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = upgradeCorporateHQ(state);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleRenameCorporateHQ = (companyName: string): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = renameCorporateHQ(state, companyName);
+    if (res.ok) {
+      soundFx.playClick();
+      setState(res.nextState);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleToggleSynergyPolicy = (policyQuery: string): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = toggleSynergyPolicy(state, policyQuery);
+    if (res.ok) {
+      soundFx.playClick();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
+  const handleUpgradeBusinessDivision = (businessQuery: string): { ok: boolean; summary: string } => {
+    if (!state) return { ok: false, summary: 'No active game.' };
+    const res = upgradeBusinessDivision(state, businessQuery);
+    if (res.ok) {
+      soundFx.playMilestone();
+      setState(res.nextState);
+      showBanner(res.summary);
+    }
+    return { ok: res.ok, summary: res.summary };
+  };
+
   return {
     state,
     setState,
@@ -4452,5 +4565,14 @@ export function useGameActions() {
     handleDevGrantFabBatch,
     handleDevLaunchCustomCoin,
     handleDevRefreshBlackMarket,
+    handleInspectAcquisitionTarget,
+    handleAcquireTargetCompany,
+    handleRefreshAcquisitionMarket,
+    handleFundBusinessTurnaround,
+    handleEstablishCorporateHQ,
+    handleUpgradeCorporateHQ,
+    handleRenameCorporateHQ,
+    handleToggleSynergyPolicy,
+    handleUpgradeBusinessDivision,
   };
 }

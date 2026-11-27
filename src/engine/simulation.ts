@@ -185,6 +185,59 @@ import {
   getGlobalHardwarePriceMult,
   getRigGeneration,
 } from './usedMarket';
+import {
+  BUSINESS_CATALOG,
+  BUSINESS_ORDER,
+  computeStepBehavioralSignals,
+  getRankedAffinityBusinesses,
+  recordAffinitySignals,
+} from './affinity';
+import {
+  areAllSixBusinessesOwned,
+  buildDefaultConglomerate,
+  getOwnedBusinessIds,
+  grantAllSixBusinessesForScenario,
+  isBusinessActive,
+  isBusinessOwned,
+  recordDivisionFinancials,
+  resetDivisionCycleLedgers,
+} from './conglomerate';
+import {
+  canStartResearchNode,
+  computeCurrentGeneration,
+  evaluateGenerationMilestones,
+  isGen7ResearchNode,
+} from './generations';
+import {
+  acquireTargetCompany,
+  formatAcquisitionsReport,
+  formatCorporateStatusReport,
+  fundBusinessTurnaround,
+  inspectAcquisitionTarget,
+  isAcquisitionUnlocked,
+  refreshAcquisitionMarket,
+  stepAcquisitionsAndRecoveries,
+} from './acquisitions';
+import {
+  computeConglomerateEquityUsd,
+  establishCorporateHQ,
+  formatCorporateHQReport,
+  formatSynergiesReport,
+  getCorporateSynergyEffects,
+  HQ_ESTABLISH_COST_USD,
+  HQ_LEVEL_SPECS,
+  renameCorporateHQ,
+  SYNERGY_ORDER,
+  SYNERGY_POLICIES,
+  toggleSynergyPolicy,
+  upgradeCorporateHQ,
+} from './corporate';
+import {
+  formatDivisionLedgerReport,
+  getDivisionUpgradeCost,
+  stepCorporateAndSynergies,
+  upgradeBusinessDivision,
+} from './businesses';
 
 export type { CustomBlueprintDesignInput, CreatePlayerCoinInput };
 
@@ -259,6 +312,45 @@ export {
   sellCustomAsicsWholesale,
   stripCustomAsicFromRig,
   stripCustomPartFromRig,
+  areAllSixBusinessesOwned,
+  buildDefaultConglomerate,
+  BUSINESS_CATALOG,
+  BUSINESS_ORDER,
+  canStartResearchNode,
+  computeCurrentGeneration,
+  evaluateGenerationMilestones,
+  getOwnedBusinessIds,
+  getRankedAffinityBusinesses,
+  grantAllSixBusinessesForScenario,
+  isBusinessActive,
+  isBusinessOwned,
+  isGen7ResearchNode,
+  recordAffinitySignals,
+  recordDivisionFinancials,
+  acquireTargetCompany,
+  formatAcquisitionsReport,
+  formatCorporateStatusReport,
+  fundBusinessTurnaround,
+  inspectAcquisitionTarget,
+  isAcquisitionUnlocked,
+  refreshAcquisitionMarket,
+  stepAcquisitionsAndRecoveries,
+  computeConglomerateEquityUsd,
+  establishCorporateHQ,
+  formatCorporateHQReport,
+  formatSynergiesReport,
+  getCorporateSynergyEffects,
+  HQ_ESTABLISH_COST_USD,
+  HQ_LEVEL_SPECS,
+  renameCorporateHQ,
+  SYNERGY_ORDER,
+  SYNERGY_POLICIES,
+  toggleSynergyPolicy,
+  upgradeCorporateHQ,
+  formatDivisionLedgerReport,
+  getDivisionUpgradeCost,
+  stepCorporateAndSynergies,
+  upgradeBusinessDivision,
 };
 
 export const BILLING_CYCLE_STEPS = 30;
@@ -292,7 +384,10 @@ export function getPartBundle(
 
 export function calculateRigBuildCost(
   config: RigBuildConfig,
-  state?: Pick<GameState, 'activeMarketModifiers'> & { marketRegime?: GameState['marketRegime'] }
+  state?: Pick<GameState, 'activeMarketModifiers'> & {
+    marketRegime?: GameState['marketRegime'];
+    conglomerate?: GameState['conglomerate'];
+  }
 ): number {
   const base = calculateStockBuildPartsCost(config);
   const mult = state ? getGlobalHardwarePriceMult(state) : 1.0;
@@ -770,14 +865,19 @@ export function computeRigTelemetry(
 }
 
 export function getAutoSellMultiplier(
-  state: Pick<GameState, 'unlockedResearch' | 'employees' | 'strikeStepsRemaining'>
+  state: Pick<GameState, 'unlockedResearch' | 'employees' | 'strikeStepsRemaining'> & {
+    conglomerate?: GameState['conglomerate'];
+  }
 ): number {
   const strike = state.strikeStepsRemaining ?? 0;
   const analysts = state.employees.filter((e) => e.role === 'ANALYST');
   const quantBonus = state.unlockedResearch.includes('res_quant_desk') ? 0.06 : 0;
   const analystBonus = Math.min(0.12, analysts.reduce((s, a) => s + 0.03 * (1 + ((a.skillLevel ?? 1) - 1) * 0.15) * getEmployeeEfficiencyMult(a, strike), 0));
   const mgrBonus = getManagerBonuses(state).opsEfficiencyBonus * 0.35;
-  return 1 + quantBonus + analystBonus + mgrBonus;
+  const intelSynergyBonus = getCorporateSynergyEffects({
+    conglomerate: state.conglomerate,
+  }).miningAutoSellBonusPct;
+  return 1 + quantBonus + analystBonus + mgrBonus + intelSynergyBonus;
 }
 
 const MINING_PAYOUT_CURVES: Partial<Record<MiningAlgorithm, readonly (readonly [number, number])[]>> = {
@@ -1328,6 +1428,11 @@ export function createNewGameState(
   });
   baseState.usedMarketListings = generateUsedMarketListings(baseState);
   baseState.underground.blackMarketListings = generateBlackMarketListings(baseState);
+  const initialConglomerate = buildDefaultConglomerate(baseState);
+  baseState.conglomerate = {
+    ...initialConglomerate,
+    generation: evaluateGenerationMilestones(baseState, initialConglomerate),
+  };
   return baseState;
 }
 
@@ -2080,15 +2185,17 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   const modCoinDrift = nextModifiers.reduce((s, m) => s + m.coinPriceDriftDelta, 0);
   const modRivalGrowth = nextModifiers.reduce((s, m) => s * m.rivalGrowthMult, 1.0);
 
+  const corpEffects = getCorporateSynergyEffects(prev);
+
   // 2. Process active PR campaigns
   const nextCampaigns = [];
   const prImpulseByCoin: Partial<Record<CoinSymbol, number>> = {};
   const prSentimentByCoin: Partial<Record<CoinSymbol, number>> = {};
   for (const camp of prev.activeCampaigns) {
     prImpulseByCoin[camp.targetCoin] =
-      (prImpulseByCoin[camp.targetCoin] ?? 0) + camp.stepPriceImpulse;
+      (prImpulseByCoin[camp.targetCoin] ?? 0) + camp.stepPriceImpulse * corpEffects.prBonusMult;
     prSentimentByCoin[camp.targetCoin] =
-      (prSentimentByCoin[camp.targetCoin] ?? 0) + camp.sentimentDeltaPerStep;
+      (prSentimentByCoin[camp.targetCoin] ?? 0) + camp.sentimentDeltaPerStep * corpEffects.prBonusMult;
     if (camp.stepsRemaining > 1) {
       nextCampaigns.push({ ...camp, stepsRemaining: camp.stepsRemaining - 1 });
     } else {
@@ -2216,7 +2323,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   });
 
   // 5. RP generation & active research progress
-  const stepRp =
+  const baseStepRp =
     0.75 +
     researchers.reduce((sum, r) => {
       const mult = r.shift === 'ROTATION_24_7' ? 1.35 : 1.0;
@@ -2225,6 +2332,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       const moraleEff = getEmployeeEfficiencyMult(r, nextStrikeSteps);
       return sum + 4.5 * mult * prio * skill * moraleEff;
     }, 0);
+  const stepRp = Number((baseStepRp * corpEffects.rpBonusMult).toFixed(3));
 
   let nextRp = prev.researchPoints + stepRp;
   let nextActiveResearchId = prev.activeResearchId;
@@ -2295,6 +2403,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       shortPositions: prev.shortPositions ?? [],
       unlockedResearch: nextUnlocked,
       employees: nextEmployees,
+      conglomerate: prev.conglomerate,
     },
     nextCoins,
     nextStep,
@@ -2304,7 +2413,10 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   if (exStep.news.length > 0) newNews.unshift(...exStep.news);
   if (exStep.transactions.length > 0) newTransactions.unshift(...exStep.transactions);
 
-  const fabStep = stepFabProduction(prev.fab, nextStep, stepLabel);
+  const fabStep = stepFabProduction(prev.fab, nextStep, stepLabel, undefined, {
+    extraLines: corpEffects.fabExtraThroughput,
+    qualityBonus: corpEffects.fabQualityRollBonus,
+  });
   if (fabStep.news.length > 0) {
     newNews.unshift(...fabStep.news);
     milestoneHit = true;
@@ -2338,6 +2450,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       unlockedResearch: nextUnlocked,
       employees: nextEmployees,
       strikeStepsRemaining: nextStrikeSteps,
+      conglomerate: prev.conglomerate,
     }) * sanctionPayoutMult;
 
   // 7. Step each mining rig + condition wear, failures, auto-maintenance, and payouts
@@ -2534,7 +2647,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
       ocWearMult *
       distWearRelief *
       condTierWear *
-      (1 - techBonus.wearReduction);
+      (1 - techBonus.wearReduction) *
+      (1 - corpEffects.wearReductionPct);
 
     const compH = ensureRigComponentHealth(rig);
     const { psu, storage, os } = getPartBundle(rig);
@@ -2667,7 +2781,9 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
 
   // 8. Underground active ops
   const nextUnderground = { ...prev.underground };
-  let stepScrutinyDelta = nextUnderground.bribeProtectionSteps > 0 ? -0.35 : -0.15;
+  let stepScrutinyDelta =
+    (nextUnderground.bribeProtectionSteps > 0 ? -0.35 : -0.15) -
+    corpEffects.scrutinyDecayBonus;
 
   if (nextUnderground.powerSiphonActive) {
     stepScrutinyDelta += nextUnderground.bribeProtectionSteps > 0 ? 0.45 : 1.7;
@@ -2989,6 +3105,7 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   };
   const nextLedger = [...prev.ledger];
   let billsSettledUsd = 0;
+  let cycleFixedOverheadSettledUsd = 0;
 
   if (nextStep % BILLING_CYCLE_STEPS === 0) {
     const cycleNumber = nextStep / BILLING_CYCLE_STEPS;
@@ -3009,6 +3126,8 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
     const cyclePayroll = totalsNow.cyclePayrollUsd;
     const cycleMaint = totalsNow.cycleMaintenanceUsd;
 
+    cycleFixedOverheadSettledUsd =
+      totalsNow.cycleFixedContractFee + cycleRent + cyclePayroll + cycleMaint;
     billsSettledUsd = cycleElec + cycleRent + cyclePayroll + cycleMaint;
     nextCash -= billsSettledUsd;
     nextStats.totalPayrollCostUsd += cyclePayroll;
@@ -3157,6 +3276,61 @@ export function advanceOneStep(prev: GameState): StepAdvanceResult {
   const recorded = recordGuidedProgress(nextState);
   nextState = announceGuidedUnlocks(prev, recorded);
   if (nextState !== recorded) milestoneHit = true;
+
+  // 12b. Update Conglomerate division ledger, hidden Industry Affinity & Generation state (no RNG consumed)
+  let nextConglomerate = buildDefaultConglomerate(prev, prev.conglomerate);
+  if (nextStep % BILLING_CYCLE_STEPS === 0) {
+    nextConglomerate = resetDivisionCycleLedgers(nextConglomerate);
+  }
+  nextConglomerate = recordDivisionFinancials(nextConglomerate, 'MINING', {
+    revenueUsd: stepMiningUsd,
+    expenseUsd: stepElecCost + cycleFixedOverheadSettledUsd,
+    setStepSnapshot: true,
+  });
+  const affinityDeltas = computeStepBehavioralSignals(prev, nextState);
+  nextConglomerate = {
+    ...nextConglomerate,
+    affinity: recordAffinitySignals(nextConglomerate.affinity, affinityDeltas, nextStep),
+  };
+  nextConglomerate = {
+    ...nextConglomerate,
+    generation: evaluateGenerationMilestones(nextState, nextConglomerate),
+  };
+  const acqStep = stepAcquisitionsAndRecoveries(
+    nextState,
+    nextConglomerate,
+    nextStep,
+    stepLabel
+  );
+  const corpStep = stepCorporateAndSynergies(
+    nextState,
+    acqStep.conglomerate,
+    nextStep,
+    stepLabel,
+    {
+      stepMiningUsd,
+      enabledRigsCount: nextRigs.filter((r) => r.enabled && r.status !== 'FAILED').length,
+      fabQueueActive: (prev.fab?.productionQueue.length ?? 0) > 0,
+      isCycleBillingStep: nextStep % BILLING_CYCLE_STEPS === 0,
+    }
+  );
+  nextConglomerate = {
+    ...corpStep.conglomerate,
+    generation: evaluateGenerationMilestones(nextState, corpStep.conglomerate),
+  };
+  if (acqStep.milestoneHit) milestoneHit = true;
+  billsSettledUsd += corpStep.billsAddedUsd;
+  const combinedCorpNews = [...acqStep.news, ...corpStep.news];
+  nextState = {
+    ...nextState,
+    cash: nextState.cash + corpStep.cashDeltaUsd,
+    news: combinedCorpNews.length > 0 ? [...combinedCorpNews, ...nextState.news].slice(0, 60) : nextState.news,
+    transactions:
+      corpStep.transactions.length > 0
+        ? [...corpStep.transactions, ...(nextState.transactions ?? [])].slice(0, 200)
+        : nextState.transactions,
+    conglomerate: nextConglomerate,
+  };
 
   // 13. Interactive Decision Event Roll (Strike takes priority)
   let eventTriggered: PendingEvent | null = null;
